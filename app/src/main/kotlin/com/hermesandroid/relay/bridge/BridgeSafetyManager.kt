@@ -1,0 +1,624 @@
+package com.hermesandroid.relay.bridge
+
+import android.content.Context
+import android.util.Log
+import com.hermesandroid.relay.data.BridgeSafetyPreferencesRepository
+import com.hermesandroid.relay.data.BridgeSafetySettings
+import com.hermesandroid.relay.data.BridgeCapabilityPolicyRepository
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.plus
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
+
+/**
+ * Phase 3 — safety-rails `bridge-safety-rails`
+ *
+ * Central enforcement point for Tier 5 safety: connection-scoped capabilities,
+ * per-app blocklist, destructive confirmation, and timed screen access. Owned as a singleton-per-
+ * process by [ConnectionViewModel] and injected into [BridgeCommandHandler].
+ *
+ * # Integration surface
+ *
+ *  - [checkPackageAllowed] — called with the currently foregrounded package
+ *    (from `HermesAccessibilityService.currentApp`). Returns false if the
+ *    user has that package on the blocklist. Caller maps false → HTTP 403.
+ *
+ *  - [requiresConfirmation] — cheap synchronous predicate: does the agent's
+ *    requested action (`/tap_text` / `/type`) carry one of the user's
+ *    destructive verbs in its body? Returns false for every other path.
+ *
+ *  - [awaitConfirmation] — suspend function that shows a system-overlay
+ *    modal and waits for the user to tap Allow / Deny. Returns true on
+ *    allow, false on deny or on [BridgeSafetySettings.confirmationTimeoutSeconds]
+ *    timeout. The suspending `BridgeCommandHandler` action coroutine is
+ *    what's held here — the phone's agent call stays open until the user
+ *    reacts, which is exactly the UX we want (the server sees a slow
+ *    response, not a denial race).
+ *
+ *  - [rescheduleAutoDisable] — accepted timed screen commands bump the idle
+ *    expiry forward; after [BridgeSafetySettings.autoDisableMinutes] of
+ *    silence only timed screen authority is revoked and a notification fires.
+ *    [cancelAutoDisable] cancels the pending timer (called when the master
+ *    toggle flips off manually, so we don't race the timer against the
+ *    user).
+ *
+ * # Overlay <-> coroutine wiring
+ *
+ * The confirmation modal lives in a [SYSTEM_ALERT_WINDOW]-backed overlay
+ * (see [ConfirmationOverlayHost]). The `awaitConfirmation` coroutine
+ * registers a pending entry keyed by a monotonic request id, shows the
+ * overlay, and then waits on the entry's `CompletableDeferred<Boolean>`
+ * under a `withTimeout`. The overlay's Allow / Deny buttons complete the
+ * deferred. On timeout we dismiss the overlay from the manager side and
+ * return false ("treat silence as deny"). If the overlay host is not
+ * available — e.g. the user hasn't granted `SYSTEM_ALERT_WINDOW` yet — we
+ * fail-closed and return false so no destructive action slips through.
+ *
+ * # No WorkManager
+ *
+ * The Android app does not depend on androidx.work. [AutoDisableWorker]
+ * documents the canonical pattern, but the live path is a coroutine
+ * `Job` owned by this manager, delayed by the configured minutes. This is
+ * acceptable because authorization stores an absolute expiry in DataStore.
+ * After process death or reconnect, the command boundary compares that expiry
+ * to wall clock and denies stale authority even if the notification job did not run.
+ */
+class BridgeSafetyManager(
+    context: Context,
+    private val scope: CoroutineScope,
+    private val activeConnectionId: StateFlow<String?>,
+) {
+    companion object {
+        private const val TAG = "BridgeSafetyMgr"
+
+        @Volatile
+        private var INSTANCE: BridgeSafetyManager? = null
+
+        /**
+         * Process-wide accessor. Both [BridgeCommandHandler] and the overlay
+         * host need to reach the same manager instance without a DI graph;
+         * [ConnectionViewModel] calls [install] once at init time.
+         */
+        fun peek(): BridgeSafetyManager? = INSTANCE
+
+        fun install(
+            context: Context,
+            scope: CoroutineScope,
+            activeConnectionId: StateFlow<String?>,
+        ): BridgeSafetyManager {
+            val existing = INSTANCE
+            if (existing != null) return existing
+            val created = BridgeSafetyManager(context.applicationContext, scope, activeConnectionId)
+            INSTANCE = created
+            return created
+        }
+    }
+
+    private val appContext: Context = context.applicationContext
+    private val prefsRepo = BridgeSafetyPreferencesRepository(appContext)
+    private val capabilityRepo = BridgeCapabilityPolicyRepository(appContext)
+    private val _activeCapabilityPolicy = MutableStateFlow(BridgeCapabilityPolicy())
+    val activeCapabilityPolicy: StateFlow<BridgeCapabilityPolicy> =
+        _activeCapabilityPolicy.asStateFlow()
+
+    /** Latest settings snapshot — UI + checks read this via [settings]. */
+    private val _settings = MutableStateFlow(BridgeSafetySettings())
+    val settings: StateFlow<BridgeSafetySettings> = _settings.asStateFlow()
+
+    /**
+     * "Don't ask again" set for destructive verbs. When a confirmation is
+     * about to fire and the matched verb is in this set, we short-circuit
+     * to Allow (and let the normal activity-log path record the action so
+     * the user still has an audit trail). This does NOT bypass the master
+     * blocklist or the master-disable toggle — both of those gates run in
+     * [BridgeCommandHandler] before the code ever reaches [awaitConfirmation].
+     */
+    private val _trustedDestructiveVerbs = MutableStateFlow<Set<String>>(emptySet())
+    val trustedDestructiveVerbs: StateFlow<Set<String>> =
+        _trustedDestructiveVerbs.asStateFlow()
+
+    /** True once the DataStore collector has ticked at least once. */
+    @Volatile
+    private var settingsHydrated: Boolean = false
+
+    /** True once the trusted-verbs collector has ticked at least once. */
+    @Volatile
+    private var trustedHydrated: Boolean = false
+
+    /**
+     * Pending confirmation requests keyed by a monotonic id. The overlay's
+     * Allow / Deny callbacks complete the deferred by looking up the id the
+     * overlay was opened for. [ConcurrentHashMap] because the completion
+     * happens on the Compose overlay thread and registration on the bridge
+     * scope's dispatcher.
+     */
+    private val pendingConfirmations = ConcurrentHashMap<Long, PendingConfirmation>()
+    private val nextRequestId = AtomicLong(0L)
+
+    /** Coroutine job that prunes timed screen authority after idle. */
+    @Volatile
+    private var autoDisableJob: Job? = null
+
+    /**
+     * Remaining time (epoch millis) for current timed screen authority, or
+     * null when idle. BridgeSafetySummaryCard reads this as a countdown.
+     */
+    private val _autoDisableAtMs = MutableStateFlow<Long?>(null)
+    val autoDisableAtMs: StateFlow<Long?> = _autoDisableAtMs.asStateFlow()
+
+    init {
+        // Eagerly observe DataStore — writes from the settings screen flow
+        // into the cache so checkPackageAllowed / requiresConfirmation can
+        // read synchronously without a suspend hop.
+        scope.launch {
+            prefsRepo.settings.collect { latest ->
+                _settings.value = latest
+                settingsHydrated = true
+            }
+        }
+        scope.launch {
+            prefsRepo.trustedDestructiveVerbs.collect { latest ->
+                _trustedDestructiveVerbs.value = latest
+                trustedHydrated = true
+            }
+        }
+        scope.launch {
+            activeConnectionId.collectLatest { connectionId ->
+                schedulePersistedExpiry(connectionId)
+                capabilityRepo.policy(connectionId).collect { policy ->
+                    _activeCapabilityPolicy.value = policy
+                }
+            }
+        }
+    }
+
+    data class CapabilityAuthorization(
+        val allowed: Boolean,
+        val authority: BridgeCommandAuthority? = null,
+        val errorCode: String? = null,
+    )
+
+    fun capabilityPolicy(connectionId: String?): Flow<BridgeCapabilityPolicy> =
+        capabilityRepo.policy(connectionId)
+
+    suspend fun authorizeCapability(
+        path: String,
+        method: String,
+        nowMs: Long = System.currentTimeMillis(),
+    ): CapabilityAuthorization {
+        val authority = BridgeCommandRegistry.resolve(path, method)
+            ?: return CapabilityAuthorization(false, errorCode = "unknown_bridge_command")
+        if (authority.grant == BridgeCapabilityGrant.EXEMPT) {
+            return CapabilityAuthorization(true, authority)
+        }
+        val connectionId = activeConnectionId.value
+            ?: return CapabilityAuthorization(false, authority, "bridge_policy_unbound")
+        val capability = authority.capability
+            ?: return CapabilityAuthorization(false, authority, "bridge_policy_invalid")
+        val policy = capabilityRepo.snapshot(connectionId)
+        return if (policy.allows(capability, nowMs)) {
+            CapabilityAuthorization(true, authority)
+        } else {
+            CapabilityAuthorization(
+                false,
+                authority,
+                if (capability.timed) "bridge_capability_expired" else "bridge_capability_denied",
+            )
+        }
+    }
+
+    suspend fun setPermanentCapability(
+        connectionId: String?,
+        capability: BridgeCapability,
+        allowed: Boolean,
+    ) {
+        capabilityRepo.setPermanent(connectionId, capability, allowed)
+    }
+
+    suspend fun replacePermanentCapabilities(
+        connectionId: String?,
+        capabilities: Set<BridgeCapability>,
+    ) {
+        capabilityRepo.replacePermanent(connectionId, capabilities)
+    }
+
+    suspend fun setTimedCapability(
+        connectionId: String?,
+        capability: BridgeCapability,
+        allowed: Boolean,
+    ) {
+        if (!allowed) {
+            capabilityRepo.revoke(connectionId, capability)
+            if (capability == BridgeCapability.SCREEN_CONTROL) {
+                prefsRepo.setUnattendedAccessEnabled(false)
+            }
+            schedulePersistedExpiry(connectionId)
+            return
+        }
+        val fireAt = System.currentTimeMillis() + currentSettings().autoDisableMinutes * 60_000L
+        capabilityRepo.grantTimed(connectionId, capability, fireAt)
+        schedulePersistedExpiry(connectionId)
+    }
+
+    suspend fun replaceTimedCapabilities(
+        connectionId: String?,
+        capabilities: Set<BridgeCapability>,
+        durationMinutes: Int,
+        unlimited: Boolean = false,
+    ) {
+        val fireAt = if (unlimited) {
+            BridgeCapabilityPolicy.NEVER_EXPIRES_AT_MS
+        } else {
+            System.currentTimeMillis() + durationMinutes * 60_000L
+        }
+        capabilityRepo.replaceTimed(connectionId, capabilities, fireAt)
+        if (BridgeCapability.SCREEN_CONTROL !in capabilities) {
+            prefsRepo.setUnattendedAccessEnabled(false)
+        }
+        schedulePersistedExpiry(connectionId)
+    }
+
+    // ── Blocklist ────────────────────────────────────────────────────────
+
+    /**
+     * Returns false iff [packageName] is explicitly blocklisted. A null
+     * or blank package (accessibility service hasn't seen a window yet)
+     * is treated as allowed — we can't block what we don't know.
+     */
+    suspend fun checkPackageAllowed(packageName: String?): Boolean {
+        if (packageName.isNullOrBlank()) return true
+        val snapshot = currentSettings()
+        return packageName !in snapshot.blocklist
+    }
+
+    // ── Destructive verbs ────────────────────────────────────────────────
+
+    suspend fun requiresConfirmation(method: String, text: String?): Boolean {
+        if (text.isNullOrBlank()) return false
+        // Pre-0.4.0 only /tap_text and /type were gated — node-id taps
+        // slipped past because the gate never looked up the tapped
+        // node's text. Bailey 2026-04-15 hit this: after denying an
+        // SMS, the agent fell back to android_open_app + android_tap
+        // (by nodeId) on the Messages app's "Send" button, bypassing
+        // the verb modal. BridgeCommandHandler.extractDestructiveVerbText
+        // now resolves the node's text for /tap + /long_press too, and
+        // this method gates on any of the four paths as long as the
+        // caller supplies a text argument.
+        if (method != "/tap_text" &&
+            method != "/type" &&
+            method != "/tap" &&
+            method != "/long_press"
+        ) return false
+        val verbs = currentSettings().destructiveVerbs
+        if (verbs.isEmpty()) return false
+        return containsDestructiveVerb(text, verbs)
+    }
+
+    /**
+     * Show the confirmation overlay and suspend until the user reacts or
+     * the timeout elapses. Returns true to allow, false to deny.
+     *
+     * Fail-closed: if the SYSTEM_ALERT_WINDOW permission hasn't been
+     * granted, or if the overlay host can't be reached for any reason, we
+     * return false and log a warning. Better a missed agent command than
+     * a silently-allowed destructive action.
+     */
+    suspend fun awaitConfirmation(method: String, text: String?): Boolean {
+        val snapshot = currentSettings()
+        val timeoutMs = snapshot.confirmationTimeoutSeconds * 1000L
+        val requestId = nextRequestId.incrementAndGet()
+
+        val matchedVerb = text?.let { firstMatchedVerb(it, snapshot.destructiveVerbs) }.orEmpty()
+
+        // "Don't ask again" short-circuit. If the user has previously
+        // allowed this verb with the trust checkbox ticked, skip the
+        // modal entirely and return allow. We intentionally only short-
+        // circuit when the matched verb is non-empty — routes like /call
+        // and /send_sms whose confirm text doesn't match any user verb
+        // (verb = "") always prompt so irreversible actions never bypass.
+        //
+        // This path is NOT consulted before the master blocklist or the
+        // master-disable toggle — both of those live in BridgeCommandHandler
+        // and fail earlier, so even a trusted verb can't slip through a
+        // blocklisted app or a disabled bridge.
+        if (matchedVerb.isNotBlank() &&
+            currentTrustedVerbs().contains(matchedVerb.lowercase())
+        ) {
+            Log.i(TAG, "awaitConfirmation: verb '$matchedVerb' is trusted — auto-allowing")
+            return true
+        }
+
+        val deferred = CompletableDeferred<Boolean>()
+        val pending = PendingConfirmation(
+            id = requestId,
+            method = method,
+            text = text.orEmpty(),
+            verb = matchedVerb,
+            deferred = deferred,
+        )
+        pendingConfirmations[requestId] = pending
+
+        val host = ConfirmationOverlayHost.instance
+        if (host == null) {
+            Log.w(TAG, "awaitConfirmation: no overlay host installed — failing closed (deny)")
+            pendingConfirmations.remove(requestId)
+            return false
+        }
+
+        // ComposeView creation + setContent inside BridgeStatusOverlay.showConfirmation
+        // must run on the Main thread. This awaitConfirmation call can originate
+        // from either the WSS-incoming BridgeCommandHandler path (already on Main
+        // via ChannelMultiplexer's dispatcher) OR from the in-process voice-intent
+        // local-dispatch path (Dispatchers.Default, via RealVoiceBridgeIntentHandler's
+        // own scope). Using Dispatchers.Main.immediate makes the first case a no-op
+        // and only schedules on Main for the second — one line handles both callers.
+        //
+        // Before this fix the off-thread call threw from ComposeView.setContent,
+        // the outer runCatching swallowed it, and the log message mislabelled the
+        // cause as "likely overlay permission missing" which sent debugging up a
+        // wrong tree (2026-04-15 on-device test with overlay permission granted
+        // but voice SMS still never showed the modal).
+        val shown = runCatching {
+            withContext(Dispatchers.Main.immediate) {
+                host.showConfirmation(pending) { resolution ->
+                    resolveConfirmation(requestId, resolution)
+                }
+            }
+        }
+        if (shown.isFailure) {
+            Log.w(TAG, "awaitConfirmation: host.showConfirmation threw — denying", shown.exceptionOrNull())
+            pendingConfirmations.remove(requestId)
+            return false
+        }
+
+        return try {
+            withTimeout(timeoutMs) { deferred.await() }
+        } catch (_: TimeoutCancellationException) {
+            Log.i(TAG, "awaitConfirmation: timed out after ${timeoutMs}ms — denying")
+            host.dismissConfirmation(requestId)
+            pendingConfirmations.remove(requestId)
+            false
+        } catch (t: Throwable) {
+            Log.w(TAG, "awaitConfirmation: unexpected failure — denying", t)
+            host.dismissConfirmation(requestId)
+            pendingConfirmations.remove(requestId)
+            false
+        }
+    }
+
+    /**
+     * Called from the overlay UI when the user taps Allow / Deny (or when
+     * the overlay is dismissed programmatically). Safe to call for an
+     * unknown id (we just drop on the floor).
+     */
+    fun resolveConfirmation(requestId: Long, allowed: Boolean) {
+        val pending = pendingConfirmations.remove(requestId) ?: return
+        pending.deferred.complete(allowed)
+    }
+
+    // ── Timed screen-access expiry ──────────────────────────────────────
+
+    /**
+     * Refresh active timed grants and arm their shared idle expiry. Permanent
+     * capability activity never calls this method.
+     */
+    fun rescheduleAutoDisable() {
+        val connectionId = activeConnectionId.value ?: return
+        val minutes = _settings.value.autoDisableMinutes
+        val fireAt = System.currentTimeMillis() + minutes * 60_000L
+        autoDisableJob?.cancel()
+        autoDisableJob = (scope + SupervisorJob()).launch {
+            try {
+                val snapshot = capabilityRepo.snapshot(connectionId)
+                val nowMs = System.currentTimeMillis()
+                val finite = snapshot.timedExpiriesMs.filterValues {
+                    it != BridgeCapabilityPolicy.NEVER_EXPIRES_AT_MS && it > nowMs
+                }
+                if (finite.isEmpty()) {
+                    _autoDisableAtMs.value = null
+                    return@launch
+                }
+                capabilityRepo.refreshActiveTimed(connectionId, fireAt)
+                _autoDisableAtMs.value = fireAt
+                val delayMs = (fireAt - System.currentTimeMillis()).coerceAtLeast(0L)
+                delay(delayMs)
+                Log.i(TAG, "Timed Bridge capabilities expired after $minutes min of idle")
+                capabilityRepo.pruneExpired(connectionId, System.currentTimeMillis())
+                clearUnattendedIfControlEnded(connectionId)
+                AutoDisableWorker(appContext).run()
+            } catch (_: Throwable) {
+                // Cancellation is expected on reschedule — swallow quietly.
+            } finally {
+                if (_autoDisableAtMs.value == fireAt) _autoDisableAtMs.value = null
+            }
+        }
+    }
+
+    fun cancelAutoDisable() {
+        autoDisableJob?.cancel()
+        autoDisableJob = null
+        _autoDisableAtMs.value = null
+    }
+
+    fun revokeTimedCapabilities() {
+        val connectionId = activeConnectionId.value ?: return
+        cancelAutoDisable()
+        scope.launch {
+            capabilityRepo.revokeTimed(connectionId)
+            prefsRepo.setUnattendedAccessEnabled(false)
+        }
+    }
+
+    private suspend fun schedulePersistedExpiry(connectionId: String?) {
+        autoDisableJob?.cancel()
+        val policy = capabilityRepo.snapshot(connectionId)
+        val nextExpiry = policy.timedExpiriesMs.values
+            .filter { it != BridgeCapabilityPolicy.NEVER_EXPIRES_AT_MS }
+            .maxOrNull()
+        if (nextExpiry == null) {
+            _autoDisableAtMs.value = null
+            return
+        }
+        if (nextExpiry <= System.currentTimeMillis()) {
+            capabilityRepo.pruneExpired(connectionId, System.currentTimeMillis())
+            clearUnattendedIfControlEnded(connectionId)
+            _autoDisableAtMs.value = null
+            return
+        }
+        _autoDisableAtMs.value = nextExpiry
+        autoDisableJob = (scope + SupervisorJob()).launch {
+            delay((nextExpiry - System.currentTimeMillis()).coerceAtLeast(0L))
+            capabilityRepo.pruneExpired(connectionId, System.currentTimeMillis())
+            clearUnattendedIfControlEnded(connectionId)
+            AutoDisableWorker(appContext).run()
+            if (activeConnectionId.value == connectionId) _autoDisableAtMs.value = null
+        }
+    }
+
+    private suspend fun clearUnattendedIfControlEnded(connectionId: String?) {
+        val policy = capabilityRepo.snapshot(connectionId)
+        if (!policy.allows(BridgeCapability.SCREEN_CONTROL, System.currentTimeMillis())) {
+            prefsRepo.setUnattendedAccessEnabled(false)
+        }
+    }
+
+    // ── Internals ────────────────────────────────────────────────────────
+
+    /**
+     * Add [verb] to the trusted-verb set. Idempotent; no-op on blank input.
+     * Called from the overlay host when the user ticks "Don't ask again"
+     * and taps Allow. Verbs are persisted lowercase/trimmed by the
+     * underlying repository.
+     */
+    fun trustDestructiveVerb(verb: String) {
+        val normalized = verb.trim().lowercase()
+        if (normalized.isEmpty()) return
+        scope.launch {
+            runCatching { prefsRepo.addTrustedDestructiveVerb(normalized) }
+                .onFailure { Log.w(TAG, "trustDestructiveVerb('$verb') failed", it) }
+        }
+    }
+
+    /**
+     * Wipe the trusted-verb set. Called from [BridgeScreen]'s "Reset"
+     * affordance after the user confirms. After this, every destructive
+     * verb prompts again.
+     */
+    fun clearTrustedDestructiveVerbs() {
+        scope.launch {
+            runCatching { prefsRepo.clearTrustedDestructiveVerbs() }
+                .onFailure { Log.w(TAG, "clearTrustedDestructiveVerbs failed", it) }
+        }
+    }
+
+    private suspend fun currentTrustedVerbs(): Set<String> {
+        if (trustedHydrated) return _trustedDestructiveVerbs.value
+        return try {
+            val first = prefsRepo.trustedDestructiveVerbs.first()
+            _trustedDestructiveVerbs.value = first
+            trustedHydrated = true
+            first
+        } catch (t: Throwable) {
+            Log.w(TAG, "currentTrustedVerbs: DataStore read failed — using empty", t)
+            emptySet()
+        }
+    }
+
+    private suspend fun currentSettings(): BridgeSafetySettings {
+        // Prefer the cached value once the DataStore collector has ticked
+        // at least once. Before that, fall back to a one-shot read of
+        // DataStore so the very first command after install() doesn't
+        // race the collector and see stale defaults.
+        if (settingsHydrated) return _settings.value
+        return try {
+            val first = prefsRepo.settings.first()
+            _settings.value = first
+            settingsHydrated = true
+            first
+        } catch (t: Throwable) {
+            Log.w(TAG, "currentSettings: DataStore read failed — using defaults", t)
+            BridgeSafetySettings()
+        }
+    }
+
+    private fun containsDestructiveVerb(text: String, verbs: Set<String>): Boolean {
+        if (text.isBlank()) return false
+        val lower = text.lowercase()
+        for (verb in verbs) {
+            val v = verb.lowercase()
+            if (v.isBlank()) continue
+            // \b<verb>\b — word-boundary match, so "send" matches "send it"
+            // but not "sender" or "sendmail". Kotlin's Regex `\b` uses the
+            // JVM Pattern engine; we pre-escape the verb in case a user
+            // added something like `pay.` via the settings screen.
+            val pattern = Regex("\\b${Regex.escape(v)}\\b", RegexOption.IGNORE_CASE)
+            if (pattern.containsMatchIn(lower)) return true
+        }
+        return false
+    }
+
+    private fun firstMatchedVerb(text: String, verbs: Set<String>): String? {
+        if (text.isBlank()) return null
+        val lower = text.lowercase()
+        return verbs.firstOrNull { v ->
+            val vl = v.lowercase()
+            vl.isNotBlank() && Regex("\\b${Regex.escape(vl)}\\b", RegexOption.IGNORE_CASE)
+                .containsMatchIn(lower)
+        }
+    }
+}
+
+/**
+ * One in-flight confirmation modal. Held in [BridgeSafetyManager.pendingConfirmations]
+ * and surfaced to the overlay host so the Compose dialog can render the
+ * full context.
+ */
+data class PendingConfirmation(
+    val id: Long,
+    val method: String,
+    val text: String,
+    val verb: String,
+    val deferred: CompletableDeferred<Boolean>,
+)
+
+/**
+ * Abstraction the safety manager talks to when it needs a modal on screen.
+ * The live implementation lives in [BridgeStatusOverlay] (it's the same
+ * [WindowManager] pipeline that hosts the ambient status dot, so we only
+ * hold one SYSTEM_ALERT_WINDOW attachment per process).
+ */
+interface ConfirmationOverlayHost {
+    /**
+     * Render the confirmation modal. Must be idempotent per [request.id] —
+     * calling twice with the same id is a no-op. [onResult] is invoked once
+     * when the user reacts (or when the modal is dismissed externally, in
+     * which case pass `false`).
+     */
+    fun showConfirmation(
+        request: PendingConfirmation,
+        onResult: (allowed: Boolean) -> Unit,
+    )
+
+    /** Dismiss a modal without resolving the deferred (the manager side does that). */
+    fun dismissConfirmation(requestId: Long)
+
+    companion object {
+        @Volatile
+        var instance: ConfirmationOverlayHost? = null
+    }
+}

@@ -1,0 +1,328 @@
+package com.hermesandroid.relay.data
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class AgentDisplayTest {
+
+    private val defaultProfile = Profile(
+        name = "default",
+        model = "grok-default",
+        description = "House Agent",
+    )
+
+    private val mizu = Profile(
+        name = "mizu",
+        model = "grok-mizu",
+        description = "Mizu",
+    )
+
+    @Test
+    fun effectiveProfile_prefersSelectedProfileOverDefaultProfile() {
+        val effective = AgentDisplay.effectiveProfile(
+            selectedProfile = mizu,
+            profiles = listOf(defaultProfile, mizu),
+        )
+
+        assertEquals(mizu, effective)
+    }
+
+    @Test
+    fun effectiveProfile_isNullWithoutAnExplicitPick() {
+        // No fallback to the advertised "default" profile - its verbose SOUL
+        // summary must not replace the personality-derived agent name.
+        val effective = AgentDisplay.effectiveProfile(
+            selectedProfile = null,
+            profiles = listOf(mizu, defaultProfile),
+        )
+
+        assertEquals(null, effective)
+    }
+
+    @Test
+    fun effectiveDisplayProfile_doesNotAssumeRootWhenScopeIsUnknown() {
+        val effective = AgentDisplay.effectiveDisplayProfile(
+            selectedProfile = null,
+            profiles = listOf(mizu, defaultProfile),
+        )
+
+        assertNull(effective)
+    }
+
+    @Test
+    fun effectiveDisplayProfile_resolvesPinnedServerDefaultToNamedProfile() {
+        val pinned = Profile(
+            name = "pinned",
+            model = "gpt-pinned",
+            description = "Pinned profile",
+        )
+
+        val effective = AgentDisplay.effectiveDisplayProfile(
+            selectedProfile = null,
+            profiles = listOf(defaultProfile, pinned, mizu),
+            serverDefaultProfileName = "pinned",
+        )
+
+        assertEquals(pinned, effective)
+    }
+
+    @Test
+    fun effectiveDisplayProfile_keepsExplicitSelectionAheadOfPinnedDefault() {
+        val pinned = Profile(name = "pinned", model = "gpt-pinned")
+
+        val effective = AgentDisplay.effectiveDisplayProfile(
+            selectedProfile = mizu,
+            profiles = listOf(defaultProfile, pinned, mizu),
+            serverDefaultProfileName = "pinned",
+        )
+
+        assertEquals(mizu, effective)
+    }
+
+    @Test
+    fun agentName_usesProfileNameNotVerboseDescription() {
+        // The name slot shows the NAME, even when a (verbose) description exists.
+        assertEquals(
+            "mizu",
+            AgentDisplay.agentName(
+                profile = mizu.copy(description = "Builds and maintains the codebase"),
+                selectedPersonality = "friendly",
+                defaultPersonality = "default-persona",
+                connectionLabel = "Lab",
+            ),
+        )
+
+        assertEquals(
+            "coder",
+            AgentDisplay.agentName(
+                profile = mizu.copy(name = "coder", description = ""),
+                selectedPersonality = "friendly",
+                defaultPersonality = "default-persona",
+                connectionLabel = "Lab",
+            ),
+        )
+    }
+
+    @Test
+    fun agentName_usesDisplayNameAndNeverInfersIdentityFromDescription() {
+        assertEquals(
+            "Victor",
+            AgentDisplay.agentName(
+                profile = defaultProfile.copy(displayName = "Victor", description = "Summary"),
+                selectedPersonality = "default",
+                defaultPersonality = "",
+                connectionLabel = "Lab",
+            ),
+        )
+
+        assertEquals(
+            "default",
+            AgentDisplay.agentName(
+                profile = defaultProfile.copy(description = "Builds and maintains the codebase."),
+                selectedPersonality = "default",
+                defaultPersonality = "",
+                connectionLabel = "Lab",
+            ),
+        )
+    }
+
+    @Test
+    fun agentName_usesLocalAliasForDisplayOnly() {
+        assertEquals(
+            "House",
+            AgentDisplay.agentName(
+                profile = defaultProfile.copy(description = "Builds and maintains the codebase."),
+                selectedPersonality = "default",
+                defaultPersonality = "",
+                connectionLabel = "Lab",
+                localDisplayAlias = "  House  ",
+            ),
+        )
+
+        assertEquals(
+            "Code Guide",
+            AgentDisplay.agentName(
+                profile = mizu,
+                selectedPersonality = "default",
+                defaultPersonality = "",
+                connectionLabel = "Lab",
+                localDisplayAlias = "Code\nGuide",
+            ),
+        )
+    }
+
+    @Test
+    fun agentName_fallsBackToPersonalityConnectionThenHermes() {
+        assertEquals(
+            "Research",
+            AgentDisplay.agentName(
+                profile = null,
+                selectedPersonality = "research",
+                defaultPersonality = "default",
+                connectionLabel = "Lab",
+            ),
+        )
+        assertEquals(
+            "Default persona",
+            AgentDisplay.agentName(
+                profile = null,
+                selectedPersonality = "default",
+                defaultPersonality = "default persona",
+                connectionLabel = "Lab",
+            ),
+        )
+        assertEquals(
+            "Hermes",
+            AgentDisplay.agentName(
+                profile = null,
+                selectedPersonality = "default",
+                defaultPersonality = "",
+                connectionLabel = "Lab",
+            ),
+        )
+        assertEquals(
+            "Hermes",
+            AgentDisplay.agentName(
+                profile = null,
+                selectedPersonality = "default",
+                defaultPersonality = "",
+                connectionLabel = "",
+            ),
+        )
+    }
+
+    @Test
+    fun isClearedPersonality_coversUpstreamClearAliases() {
+        assertTrue(AgentDisplay.isClearedPersonality("none"))
+        assertTrue(AgentDisplay.isClearedPersonality("None"))
+        assertTrue(AgentDisplay.isClearedPersonality(" NEUTRAL "))
+        assertTrue(AgentDisplay.isClearedPersonality("default"))
+        assertTrue(AgentDisplay.isClearedPersonality(""))
+        assertFalse(AgentDisplay.isClearedPersonality("pirate"))
+    }
+
+    @Test
+    fun agentName_treatsNoneAsClearedOverlay() {
+        // "none" must NOT render as the literal agent name — it falls through to
+        // the server default, then the connection label, then Hermes.
+        assertEquals(
+            "Concise",
+            AgentDisplay.agentName(
+                profile = null,
+                selectedPersonality = "none",
+                defaultPersonality = "concise",
+                connectionLabel = "Lab",
+            ),
+        )
+        assertEquals(
+            "Hermes",
+            AgentDisplay.agentName(
+                profile = null,
+                selectedPersonality = "none",
+                defaultPersonality = "",
+                connectionLabel = "Lab",
+            ),
+        )
+    }
+
+    @Test
+    fun personalityLabel_showsNoneWhenClearedWithNoConfiguredDefault() {
+        assertEquals("None", AgentDisplay.personalityLabel("none", ""))
+        // A configured server default still wins the header label.
+        assertEquals("Concise", AgentDisplay.personalityLabel("none", "concise"))
+        assertEquals("Pirate", AgentDisplay.personalityLabel("pirate", ""))
+        assertEquals("Default", AgentDisplay.personalityLabel("default", ""))
+    }
+
+    @Test
+    fun profileRequestName_keepsLiteralDefaultDistinctFromServerDefault() {
+        assertNull(AgentDisplay.profileRequestName(null))
+        assertNull(AgentDisplay.profileRequestName("  "))
+        assertEquals("default", AgentDisplay.profileRequestName(" default "))
+        assertNull(AgentDisplay.profileRequestName(AgentDisplay.SERVER_DEFAULT_PROFILE_KEY))
+        assertEquals("mizu", AgentDisplay.profileRequestName("mizu"))
+    }
+
+    @Test
+    fun effectiveSessionProfileName_resolvesServerDefaultWithoutOverridingExplicitPick() {
+        assertEquals("victor", AgentDisplay.effectiveSessionProfileName(null, " victor "))
+        assertEquals("default", AgentDisplay.effectiveSessionProfileName("default", "victor"))
+        assertEquals("default", AgentDisplay.effectiveSessionProfileName(null, "default"))
+        assertEquals("mizu", AgentDisplay.effectiveSessionProfileName("mizu", "victor"))
+        assertNull(AgentDisplay.effectiveSessionProfileName(null, null))
+    }
+
+    @Test
+    fun confirmedDefaultKeepsItsNameWhileRosterLoadsAndDoesNotBorrowRootMetadata() {
+        val effective = AgentDisplay.effectiveDisplayProfile(null, listOf(defaultProfile), "victor")
+        assertEquals("victor", effective?.name)
+        assertEquals("victor", AgentDisplay.profileDisplayName(effective))
+        assertEquals("default", AgentDisplay.profileDisplayName(defaultProfile))
+        val victor = Profile("victor", "", displayName = "Victor")
+        assertEquals("Victor", AgentDisplay.profileDisplayName(
+            AgentDisplay.effectiveDisplayProfile(null, listOf(defaultProfile, victor), "victor")))
+        assertEquals(defaultProfile, AgentDisplay.effectiveDisplayProfile(defaultProfile, listOf(victor), "victor"))
+    }
+
+    @Test
+    fun displayModelName_hidesGenericApiAlias() {
+        assertNull(AgentDisplay.displayModelName("hermes-agent"))
+        assertNull(AgentDisplay.displayModelName(" Hermes Agent "))
+        assertEquals("gpt-5.5", AgentDisplay.displayModelName(" gpt-5.5 "))
+    }
+
+    @Test
+    fun normalizeSelection_keepsLiteralDefaultProfile() {
+        assertEquals(defaultProfile, AgentDisplay.normalizeSelection(defaultProfile))
+        assertEquals(mizu, AgentDisplay.normalizeSelection(mizu))
+    }
+
+    @Test
+    fun profileContextKey_distinguishesLiteralDefaultFromServerDefault() {
+        assertEquals(
+            "conn::default",
+            AgentDisplay.profileContextKey("conn", "default"),
+        )
+        assertEquals("conn::__server_default__", AgentDisplay.profileContextKey("conn", null))
+        assertEquals("conn::mizu", AgentDisplay.profileContextKey("conn", "mizu"))
+    }
+
+    @Test
+    fun parseProfileContextKey_preservesRequestIdentityAndConnectionScope() {
+        val serverDefault = AgentDisplay.parseProfileContextKey(
+            AgentDisplay.profileContextKey("connection-a", null),
+        )
+        assertEquals("connection-a", serverDefault?.connectionId)
+        assertEquals(AgentDisplay.SERVER_DEFAULT_PROFILE_KEY, serverDefault?.profileKey)
+        assertNull(serverDefault?.requestProfileName)
+
+        val literalDefault = AgentDisplay.parseProfileContextKey(
+            AgentDisplay.profileContextKey("connection-a", "default"),
+        )
+        assertEquals("default", literalDefault?.profileKey)
+        assertEquals("default", literalDefault?.requestProfileName)
+
+        val named = AgentDisplay.parseProfileContextKey(
+            AgentDisplay.profileContextKey("connection-b", "mizu"),
+        )
+        assertEquals("connection-b", named?.connectionId)
+        assertEquals("mizu", named?.requestProfileName)
+
+        val delimitedProfile = AgentDisplay.parseProfileContextKey(
+            AgentDisplay.profileContextKey("connection-c", "team::writer"),
+        )
+        assertEquals("connection-c", delimitedProfile?.connectionId)
+        assertEquals("team::writer", delimitedProfile?.requestProfileName)
+    }
+
+    @Test
+    fun parseProfileContextKey_failsClosedForLegacyOrMalformedKeys() {
+        assertNull(AgentDisplay.parseProfileContextKey("connection/profile-default"))
+        assertNull(AgentDisplay.parseProfileContextKey("connection-a::"))
+        assertNull(AgentDisplay.parseProfileContextKey("::default"))
+        assertNull(AgentDisplay.parseProfileContextKey(null))
+    }
+}

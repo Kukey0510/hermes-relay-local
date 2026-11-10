@@ -1,0 +1,1485 @@
+package com.hermesandroid.relay.auth
+
+import android.content.Context
+import android.provider.Settings
+import android.util.Log
+import com.hermesandroid.relay.data.Connection
+import com.hermesandroid.relay.data.EndpointCandidate
+import com.hermesandroid.relay.data.BrokerEndpoint
+import com.hermesandroid.relay.data.hasHermesReach
+import com.hermesandroid.relay.data.replaceHermesReachCredential
+import com.hermesandroid.relay.data.sameBrokerAuthority
+import com.hermesandroid.relay.data.PairingPreferences
+import com.hermesandroid.relay.data.Profile
+import com.hermesandroid.relay.data.SupervisedModePolicy
+import com.hermesandroid.relay.data.isSafeProfileUiMeta
+import com.hermesandroid.relay.network.relay.ChannelMultiplexer
+import com.hermesandroid.relay.network.relay.models.Envelope
+import com.hermesandroid.relay.network.shared.InvalidCredentialException
+import com.hermesandroid.relay.network.shared.normalizeCredentialForHeader
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
+import kotlinx.serialization.json.put
+
+sealed class AuthState {
+    data object Unpaired : AuthState()
+    data object Pairing : AuthState()
+    data class Paired(val token: String) : AuthState()
+    data class Failed(val reason: String) : AuthState()
+}
+
+internal fun relaySupervisedModePayload(policy: SupervisedModePolicy): JsonObject {
+    if (!policy.isActive) return buildJsonObject { put("active", false) }
+    val capabilities = buildList {
+        add("text_chat")
+        if (policy.capabilities.newChat) add("new_chat")
+        if (policy.capabilities.cancelResponse) add("cancel")
+        if (policy.capabilities.steerResponse) add("steer")
+        if (policy.capabilities.attachments) add("attachments")
+        if (policy.capabilities.voice) add("voice")
+        if (policy.capabilities.generatedImages) add("generated_images")
+        if (policy.capabilities.shareGeneratedImages) add("share_images")
+        if (policy.capabilities.copyResponses) add("copy")
+        if (policy.capabilities.retryResponse) add("retry")
+        if (policy.capabilities.quoteReplies) add("quote_reply")
+        if (policy.visibility.resolved().showTimestamps) add("timestamps")
+    }.take(12)
+    return buildJsonObject {
+        put("active", true)
+        put("profile_label", policy.pinnedProfileName.orEmpty().take(80))
+        put("capabilities", JsonArray(capabilities.map(::JsonPrimitive)))
+    }
+}
+
+internal fun relaySupervisedModeUpdateEnvelope(
+    policy: SupervisedModePolicy,
+): Envelope = Envelope(
+    channel = "system",
+    type = "supervised.update",
+    payload = buildJsonObject {
+        put("supervised_mode", relaySupervisedModePayload(policy))
+    },
+)
+
+@Serializable
+data class ConnectionAuthSecrets(
+    val sessionToken: String? = null,
+    val refreshToken: String? = null,
+    val deviceId: String? = null,
+    val apiKey: String? = null,
+    val profileApiKeys: Map<String, String> = emptyMap(),
+    val pairedSessionMetaJson: String? = null,
+)
+
+/**
+ * Orchestrates pairing + session token lifecycle for the relay channel.
+ *
+ * **Security overhaul (2026-04-11):**
+ *
+ *  - Token storage is abstracted behind [SessionTokenStore]. On first run
+ *    we try [KeystoreTokenStore] (StrongBox-preferred) and fall back to
+ *    [LegacyEncryptedPrefsTokenStore] when Keystore init fails. Existing
+ *    tokens are migrated one-shot from the legacy prefs file on first
+ *    launch so users don't need to re-pair after the upgrade.
+ *
+ *  - TTL + grants + transport_hint are now parsed from the server's
+ *    `auth.ok` payload and exposed via [currentPairedSession] so the UI can
+ *    display expiry badges and per-channel grant chips.
+ *
+ *  - The next [authenticate] call sends a user-selected `ttl_seconds` from
+ *    the [SessionTtlPickerDialog]. See [setPendingTtlSeconds].
+ *
+ *  - TOFU cert pinning lives in [CertPinStore]; re-pair flows call
+ *    [CertPinStore.removePinFor] to reset trust for the target host.
+ */
+class AuthManager(
+    private val context: Context,
+    private val multiplexer: ChannelMultiplexer,
+    private val scope: CoroutineScope,
+    /**
+     * Multi-connection: the id of the [com.hermesandroid.relay.data.Connection]
+     * this AuthManager is bound to. Drives which EncryptedSharedPreferences
+     * file the underlying [SessionTokenStore] reads/writes.
+     *
+     * Defaults to [CONNECTION_ID_LEGACY] so the pre-multi-connection call site
+     * in `ConnectionViewModel` still compiles. Worker B removes the default
+     * and passes a real connection id when they wire the active connection
+     * through.
+     */
+    private val connectionId: String = CONNECTION_ID_LEGACY,
+    /**
+     * Exact EncryptedSharedPreferences filename for this connection. New
+     * connections use the deterministic id-derived name, but the migrated
+     * legacy connection intentionally keeps [Connection.LEGACY_TOKEN_STORE_KEY].
+     */
+    private val tokenStoreKey: String? = null,
+    /**
+     * When false, [init] skips the eager session-token hydration (and the
+     * keyset decrypt it forces). Used for the throwaway LEGACY SENTINEL manager
+     * that `ConnectionViewModel` builds at field-init and replaces as soon as
+     * the active connection hydrates — decrypting its keyset only to discard it
+     * is a measured ~600 ms of wasted startup keystore work, and on a device
+     * whose active connection isn't connection 0 the sentinel's file has no
+     * token anyway. The real per-connection manager (created via the active
+     * connection, [eagerHydrate] = true) hydrates normally; the
+     * `restorePersistedActiveConnectionContext` path even awaits its
+     * Paired/Failed state. Channel handlers are still registered either way.
+     */
+    private val eagerHydrate: Boolean = true,
+) : ChannelMultiplexer.ChannelHandler {
+
+    @Volatile
+    private var supervisedMode: SupervisedModePolicy = SupervisedModePolicy()
+
+    @Volatile
+    private var supervisedMetadataReconnectFallback: (() -> Unit)? = null
+    private var pendingSupervisedUpdateId: String? = null
+    private var supervisedUpdateFallbackJob: Job? = null
+
+    /**
+     * Update the public client-mode tag sent on Relay auth. This does not grant
+     * authority: Relay labels enforcement_owner=android_client and the Android
+     * policy remains the enforcing surface.
+     */
+    fun updateSupervisedMode(policy: SupervisedModePolicy) {
+        if (supervisedMode == policy) return
+        supervisedMode = policy
+        if (_authState.value is AuthState.Paired) sendSupervisedModeUpdate()
+    }
+
+    /**
+     * Install the narrow compatibility path used when an older Relay ignores
+     * `system/supervised.update`. Reopening the authenticated socket causes
+     * the current policy to travel through the legacy `system/auth` payload.
+     */
+    fun setSupervisedMetadataReconnectFallback(callback: () -> Unit) {
+        supervisedMetadataReconnectFallback = callback
+    }
+
+    private fun sendSupervisedModeUpdate() {
+        val envelope = relaySupervisedModeUpdateEnvelope(supervisedMode)
+        pendingSupervisedUpdateId = envelope.id
+        supervisedUpdateFallbackJob?.cancel()
+        multiplexer.send(envelope)
+        supervisedUpdateFallbackJob = scope.launch {
+            delay(SUPERVISED_UPDATE_ACK_TIMEOUT_MS)
+            if (pendingSupervisedUpdateId == envelope.id) {
+                pendingSupervisedUpdateId = null
+                Log.i(TAG, "supervised.update unsupported or unacknowledged; refreshing Relay socket")
+                supervisedMetadataReconnectFallback?.invoke()
+            }
+        }
+    }
+
+    private fun settleSupervisedModeUpdate(envelope: Envelope, unsupported: Boolean) {
+        if (envelope.id != pendingSupervisedUpdateId) return
+        pendingSupervisedUpdateId = null
+        supervisedUpdateFallbackJob?.cancel()
+        supervisedUpdateFallbackJob = null
+        if (unsupported) {
+            Log.i(TAG, "supervised.update rejected; refreshing Relay socket for compatibility")
+            supervisedMetadataReconnectFallback?.invoke()
+        }
+    }
+
+    companion object {
+        private const val TAG = "AuthManager"
+        private const val KEY_SESSION_TOKEN = "session_token"
+        private const val KEY_REFRESH_TOKEN = "refresh_token"
+        private const val KEY_DEVICE_ID = "device_id"
+        private const val KEY_API_KEY = "api_server_key"
+        private const val KEY_PROFILE_API_KEYS = "profile_api_server_keys"
+        private const val HINT_API_KEY_PRESENT = "api_key_present"
+        private const val KEY_PAIRED_META = "paired_session_meta_json"
+        // Marker (in the connection-0 token store) recording that the one-shot
+        // pre-StrongBox `hermes_companion_auth` → `hermes_companion_auth_hw`
+        // migration has run, so we never rebuild the legacy keyset to re-check.
+        private const val KEY_LEGACY_MIGRATED = "legacy_migrated"
+        private const val PAIRING_CODE_LENGTH = 6
+        private const val SUPERVISED_UPDATE_ACK_TIMEOUT_MS = 2_000L
+        private val PAIRING_CODE_CHARS = ('A'..'Z') + ('0'..'9')
+
+        /**
+         * Sentinel [connectionId] meaning "bind this AuthManager to the legacy
+         * single-connection EncryptedSharedPreferences file
+         * ([Connection.LEGACY_TOKEN_STORE_KEY])". Used as the default ctor arg
+         * so existing call sites don't need to change until Worker B threads
+         * a real connection id through.
+         */
+        const val CONNECTION_ID_LEGACY: String = "legacy"
+
+        internal fun encodeProfileApiKeys(keys: Map<String, String>): String =
+            Json.encodeToString(
+                keys.mapNotNull { (profile, key) ->
+                    val normalizedProfile = profile.trim()
+                    val normalizedKey = key.trim()
+                    if (normalizedProfile.isBlank() || normalizedKey.isBlank()) null
+                    else normalizedProfile to normalizedKey
+                }.toMap(),
+            )
+
+        internal fun decodeProfileApiKeys(raw: String?): Map<String, String> {
+            if (raw.isNullOrBlank()) return emptyMap()
+            return runCatching { Json.decodeFromString<Map<String, String>>(raw) }
+                .getOrDefault(emptyMap())
+                .mapNotNull { (profile, key) ->
+                    val normalizedProfile = profile.trim()
+                    val normalizedKey = key.trim()
+                    if (normalizedProfile.isBlank() || normalizedKey.isBlank()) null
+                    else normalizedProfile to normalizedKey
+                }
+                .toMap()
+        }
+
+        internal fun shouldPreservePairedSessionOnAuthFail(
+            currentState: AuthState,
+            rawReason: String,
+        ): Boolean {
+            val lower = rawReason.lowercase()
+            return currentState is AuthState.Paired &&
+                "timeout" in lower &&
+                ("auth" in lower || "authentication" in lower)
+        }
+
+        /**
+         * Best-effort read of a connection's stored device id without making
+         * that connection active. Used by the connection removal path so it
+         * can delete the per-device route list before deleting the token
+         * store backing file.
+         */
+        suspend fun readStoredDeviceId(context: Context, tokenStoreKey: String): String? =
+            withContext(Dispatchers.IO) {
+                val appContext = context.applicationContext
+                val primary = KeystoreTokenStore.tryCreate(appContext, tokenStoreKey)
+                    ?: LegacyEncryptedPrefsTokenStore(appContext, tokenStoreKey)
+                primary.getString(KEY_DEVICE_ID)
+                    ?: if (tokenStoreKey == Connection.LEGACY_TOKEN_STORE_KEY) {
+                        runCatching {
+                            LegacyEncryptedPrefsTokenStore(appContext).getString(KEY_DEVICE_ID)
+                        }.getOrNull()
+                    } else {
+                        null
+                    }
+            }
+
+        suspend fun exportStoredSecrets(
+            context: Context,
+            tokenStoreKey: String,
+        ): ConnectionAuthSecrets = withContext(Dispatchers.IO) {
+            val store = tokenStoreForBackup(context, tokenStoreKey)
+            ConnectionAuthSecrets(
+                sessionToken = store.getString(KEY_SESSION_TOKEN),
+                refreshToken = store.getString(KEY_REFRESH_TOKEN),
+                deviceId = store.getString(KEY_DEVICE_ID),
+                apiKey = store.getString(KEY_API_KEY),
+                profileApiKeys = decodeProfileApiKeys(store.getString(KEY_PROFILE_API_KEYS)),
+                pairedSessionMetaJson = store.getString(KEY_PAIRED_META),
+            )
+        }
+
+        suspend fun importStoredSecrets(
+            context: Context,
+            tokenStoreKey: String,
+            secrets: ConnectionAuthSecrets,
+        ) {
+            val normalized = normalizeStoredSecrets(secrets)
+            withContext(Dispatchers.IO) {
+                val store = tokenStoreForBackup(context, tokenStoreKey)
+                writeOrRemove(store, KEY_SESSION_TOKEN, normalized.sessionToken)
+                writeOrRemove(store, KEY_REFRESH_TOKEN, normalized.refreshToken)
+                writeOrRemove(store, KEY_DEVICE_ID, normalized.deviceId)
+                writeOrRemove(store, KEY_API_KEY, normalized.apiKey)
+                writeOrRemove(
+                    store,
+                    KEY_PROFILE_API_KEYS,
+                    normalized.profileApiKeys
+                        .takeIf { it.isNotEmpty() }
+                        ?.let(::encodeProfileApiKeys),
+                )
+                writeOrRemove(store, KEY_PAIRED_META, normalized.pairedSessionMetaJson)
+            }
+        }
+
+        /** Validate a backup fully before any existing encrypted state is replaced. */
+        fun validateStoredSecrets(secrets: ConnectionAuthSecrets) {
+            normalizeStoredSecrets(secrets)
+        }
+
+        private fun normalizeStoredSecrets(secrets: ConnectionAuthSecrets): ConnectionAuthSecrets =
+            secrets.copy(
+                sessionToken = secrets.sessionToken?.let {
+                    normalizeCredentialForHeader(it, "Relay session credential")
+                }?.takeIf { it.isNotEmpty() },
+                refreshToken = secrets.refreshToken?.let {
+                    normalizeCredentialForHeader(it, "Relay refresh credential")
+                }?.takeIf { it.isNotEmpty() },
+                apiKey = secrets.apiKey?.let {
+                    normalizeCredentialForHeader(it, "API credential")
+                }?.takeIf { it.isNotEmpty() },
+                profileApiKeys = secrets.profileApiKeys
+                    .mapValues { (_, value) ->
+                        normalizeCredentialForHeader(value, "Profile API credential")
+                    }
+                    .filterValues { it.isNotEmpty() },
+            )
+
+        private fun tokenStoreForBackup(
+            context: Context,
+            tokenStoreKey: String,
+        ): SessionTokenStore {
+            val appContext = context.applicationContext
+            return KeystoreTokenStore.tryCreate(appContext, tokenStoreKey)
+                ?: LegacyEncryptedPrefsTokenStore(appContext, tokenStoreKey)
+        }
+
+        private fun writeOrRemove(
+            store: SessionTokenStore,
+            key: String,
+            value: String?,
+        ) {
+            if (value == null) {
+                store.remove(key)
+            } else {
+                store.putString(key, value)
+            }
+        }
+
+        /**
+         * Parse the `profiles` array from an `auth.ok` payload into a list of
+         * [Profile] entries. Extracted out of [handleAuthOk] so it's
+         * exercisable from a pure JVM unit test without constructing an
+         * Android [Context] / [kotlinx.coroutines.CoroutineScope].
+         *
+         * Defensive rules, in order:
+         *  - Non-[JsonObject] entries (stray strings, numbers) are dropped.
+         *  - An entry missing `name` is dropped — the picker has no label
+         *    to render for it.
+         *  - `model` defaults to `"unknown"` so a profile without a model
+         *    still renders as a selectable chip (server misconfiguration,
+         *    but we don't want to silently drop the only profile).
+         *  - `description` defaults to `""`.
+         *  - `system_message` is passed through as-is, including JSON `null`.
+         *    A null or missing value means "this profile has no SOUL.md on
+         *    disk — fall back to the personality/default system prompt at
+         *    send time". Kept separate from an empty string so ChatViewModel
+         *    can cleanly detect "no override" via `systemMessage?.isNotBlank()`.
+         *  - `gateway_running`, `has_soul`, `skill_count` (v0.7.0 runtime
+         *    metadata) are optional on the wire. Missing / malformed values
+         *    fall back to `false` / `false` / `0` so older relays stay
+         *    compatible and bad server data can't crash the pairing handshake.
+         *  - `api_server_*` metadata is optional. When present, it lets the
+         *    client route chat through a profile's isolated Hermes API
+         *    server without exposing that profile server's key.
+         */
+        fun parseAgentProfiles(array: JsonArray): List<Profile> {
+            return array.mapNotNull { entry ->
+                val obj = entry as? JsonObject ?: return@mapNotNull null
+                val name = obj["name"]?.jsonPrimitive?.contentOrNull
+                    ?: return@mapNotNull null
+                val model = obj["model"]?.jsonPrimitive?.contentOrNull
+                    ?: "unknown"
+                val provider = obj["provider"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val description = obj["description"]?.jsonPrimitive?.contentOrNull
+                    ?: ""
+                val systemMessage = obj["system_message"]?.jsonPrimitive?.contentOrNull
+                val gatewayRunning = obj["gateway_running"]
+                    ?.jsonPrimitive?.booleanOrNull ?: false
+                val hasSoul = obj["has_soul"]
+                    ?.jsonPrimitive?.booleanOrNull ?: false
+                val skillCount = obj["skill_count"]
+                    ?.jsonPrimitive?.intOrNull ?: 0
+                val apiServerEnabled = obj["api_server_enabled"]
+                    ?.jsonPrimitive?.booleanOrNull ?: false
+                val apiServerUrl = obj["api_server_url"]
+                    ?.jsonPrimitive?.contentOrNull
+                val apiServerHost = obj["api_server_host"]
+                    ?.jsonPrimitive?.contentOrNull
+                val apiServerPort = obj["api_server_port"]
+                    ?.jsonPrimitive?.intOrNull
+                val apiServerKeyPresent = obj["api_server_key_present"]
+                    ?.jsonPrimitive?.booleanOrNull ?: false
+                val isDefault = obj["is_default"]?.jsonPrimitive?.booleanOrNull ?: false
+                val hasAvatar = obj["has_avatar"]?.jsonPrimitive?.booleanOrNull ?: false
+                val uiMeta = (obj["ui_meta"] as? JsonObject)
+                    ?.takeIf(::isSafeProfileUiMeta)
+                    ?: JsonObject(emptyMap())
+                Profile(
+                    name = name,
+                    model = model,
+                    provider = provider,
+                    description = description,
+                    systemMessage = systemMessage,
+                    gatewayRunning = gatewayRunning,
+                    hasSoul = hasSoul,
+                    skillCount = skillCount,
+                    apiServerEnabled = apiServerEnabled,
+                    apiServerUrl = apiServerUrl,
+                    apiServerHost = apiServerHost,
+                    apiServerPort = apiServerPort,
+                    apiServerKeyPresent = apiServerKeyPresent,
+                    isDefault = isDefault,
+                    hasAvatar = hasAvatar,
+                    uiMeta = uiMeta,
+                )
+            }
+        }
+    }
+
+    private val json = Json { ignoreUnknownKeys = true }
+
+    // --- Token store (new, hardware-backed preferred) -----------------------
+
+    private var _store: SessionTokenStore? = null
+    private val storeMutex = Mutex()
+    private val profileApiKeysMutex = Mutex()
+
+    /**
+     * The encrypted-store filename for this connection — shared by [store]
+     * and the plain hint file below so they always describe the same store.
+     */
+    private val tokenPrefsName: String =
+        tokenStoreKey ?: if (connectionId == CONNECTION_ID_LEGACY) {
+            Connection.LEGACY_TOKEN_STORE_KEY
+        } else {
+            Connection.buildTokenStoreKey(connectionId)
+        }
+
+    /**
+     * Plain (non-encrypted) mirror of one boolean fact: "does this
+     * connection have an API key stored?". Read at startup WITHOUT touching
+     * the Keystore, so [ConnectionViewModel] can build the API client
+     * immediately for key-less connections — the common local setup —
+     * instead of queueing behind the encrypted store's first decrypt.
+     *
+     * Why this exists: on StrongBox devices every keystore operation runs
+     * ~550ms and Tink serializes them process-globally; a measured S25
+     * Ultra cold start spent 15 seconds in that marathon before
+     * `getApiKey()` could return — only to answer "there is no key".
+     *
+     * The hint stores ONLY presence, never key material. It defaults to
+     * `true` (unknown ⇒ assume a key exists ⇒ wait for the real decrypt),
+     * so a missing or stale hint can never strip auth off a keyed
+     * connection — the failure mode is "slow like before", never "401s".
+     * It converges in [setApiKey]/[clearApiKey], in init's store
+     * hydration, and after legacy migration.
+     */
+    private val hintPrefs by lazy {
+        context.getSharedPreferences("${tokenPrefsName}_plain_hints", Context.MODE_PRIVATE)
+    }
+
+    /** True only when a previously-recorded hint says "no API key stored". */
+    fun apiKeyKnownAbsent(): Boolean = !hintPrefs.getBoolean(HINT_API_KEY_PRESENT, true)
+
+    private fun recordApiKeyHint(present: Boolean) {
+        _apiKeyPresent.value = present
+        hintPrefs.edit().putBoolean(HINT_API_KEY_PRESENT, present).apply()
+    }
+
+    /**
+     * Lazily construct the best available token store. First tries
+     * [KeystoreTokenStore] — if that fails on broken OEM keystores we fall
+     * back to [LegacyEncryptedPrefsTokenStore]. The chosen store is cached
+     * for the lifetime of this manager.
+     *
+     * After picking a store we run [migrateFromLegacyIfNeeded] once so any
+     * existing session token lands in the new location without forcing the
+     * user to re-pair.
+     */
+    private suspend fun store(): SessionTokenStore {
+        _store?.let { return it }
+        return storeMutex.withLock {
+            _store?.let { return it }
+            val picked = withContext(Dispatchers.IO) {
+                // One keyset build per file, process-wide (see [SecureStoreCache]).
+                // The legacy sentinel is deferred (eagerHydrate=false) and the
+                // dashboard cookie store now shares this same file, so the active
+                // connection's token keyset is the ONLY one built on the cold-
+                // start critical path. [tokenPrefsName] picks the file.
+                //
+                // The build decrypts its Tink keyset eagerly, so a corrupt file
+                // can throw AEADBadTagException — KeystoreTokenStore.tryCreate
+                // degrades to null, the legacy store self-heals in its ctor, and
+                // a fundamentally broken keystore falls back to InMemory (the app
+                // stays up; the user re-pairs). See [buildRawTokenStore].
+                val s = SecureStoreCache.getOrBuild(tokenPrefsName) {
+                    buildRawTokenStore(context, tokenPrefsName)
+                }
+                // Migration runs AFTER the (shared) build so the cookie store can
+                // trigger the build without needing token-migration logic; a
+                // marker makes it read the legacy file at most once ever.
+                migrateFromLegacyIfNeeded(s)
+                s
+            }
+            _store = picked
+            picked
+        }
+    }
+
+    /**
+     * One-shot migration: copy session token + device ID + API key from the
+     * legacy [EncryptedSharedPreferences] file into the new store, then
+     * clear the legacy file. No-op when [picked] is itself the legacy store
+     * (nothing to migrate from — they're the same file).
+     */
+    private fun migrateFromLegacyIfNeeded(picked: SessionTokenStore) {
+        if (picked is LegacyEncryptedPrefsTokenStore) return
+        // Gate on the FILE, not the connection id. Only the legacy connection-0
+        // file (`hermes_companion_auth_hw`) inherits from the pre-multi-
+        // connection `hermes_companion_auth` file; a freshly-minted per-
+        // connection store (`hermes_auth_<id>`) must NOT be seeded from it or
+        // we'd copy connection 0's token into every new connection.
+        //
+        // Why file-gated rather than `connectionId == CONNECTION_ID_LEGACY`:
+        // the store build is now cached/deduped across the legacy sentinel and
+        // the real connection-0 manager, so whichever one builds the file first
+        // runs this migration. Both share `tokenPrefsName == LEGACY_TOKEN_STORE_KEY`
+        // but only the sentinel had `connectionId == CONNECTION_ID_LEGACY`, so
+        // the old id-based gate would skip migration whenever the real manager
+        // won the race — dropping a pre-StrongBox user's token. The file name is
+        // the same for both, so gating on it is race-proof.
+        if (tokenPrefsName != Connection.LEGACY_TOKEN_STORE_KEY) return
+        // Read the legacy file at most ONCE ever. The build is now cache-shared
+        // (and the cookie store can trigger it without migrating), so without
+        // this marker every freshly-rebuilt connection-0 AuthManager would
+        // re-build the legacy `hermes_companion_auth` keyset just to find it
+        // already drained — re-introducing the startup cost we just removed.
+        if (picked.contains(KEY_LEGACY_MIGRATED)) return
+        val legacy = try {
+            LegacyEncryptedPrefsTokenStore(context)
+        } catch (_: Exception) {
+            // Legacy file unreadable/corrupt — nothing to inherit. Still mark
+            // done so its keyset isn't rebuilt on every launch.
+            picked.putString(KEY_LEGACY_MIGRATED, "1")
+            return
+        }
+
+        val keysToMigrate = listOf(
+            KEY_SESSION_TOKEN,
+            KEY_REFRESH_TOKEN,
+            KEY_DEVICE_ID,
+            KEY_API_KEY,
+            KEY_PROFILE_API_KEYS,
+            KEY_PAIRED_META,
+        )
+        var migrated = false
+        for (k in keysToMigrate) {
+            val existing = legacy.getString(k) ?: continue
+            if (!picked.contains(k)) {
+                picked.putString(k, existing)
+                migrated = true
+            }
+        }
+        if (migrated) {
+            // Wipe the legacy file so we don't keep cleartext-equivalent
+            // backup copies of the session token lying around.
+            legacy.clearAll()
+        }
+        picked.putString(KEY_LEGACY_MIGRATED, "1")
+    }
+
+    /** Cert pin store — shared across all relay connections. */
+    val certPinStore: CertPinStore = CertPinStore(context)
+
+    /** True when the resolved token store reports StrongBox-backed storage. */
+    val hasHardwareBackedStorage: Boolean
+        get() = _store?.hasHardwareBackedStorage ?: false
+
+    private val _authState = MutableStateFlow<AuthState>(AuthState.Unpaired)
+    val authState: StateFlow<AuthState> = _authState.asStateFlow()
+
+    private val _pairingCode = MutableStateFlow(generatePairingCode())
+    val pairingCode: StateFlow<String> = _pairingCode.asStateFlow()
+
+    /**
+     * Snapshot of the current paired session metadata — token, expiry,
+     * grants, transport hint. `null` when unpaired. Exposed to the UI via
+     * [com.hermesandroid.relay.viewmodel.ConnectionViewModel.currentPairedSession].
+     */
+    private val _currentPairedSession = MutableStateFlow<PairedSession?>(null)
+    val currentPairedSession: StateFlow<PairedSession?> = _currentPairedSession.asStateFlow()
+
+    /**
+     * When non-null, the next [authenticate] call sends this code instead
+     * of [_pairingCode]. Populated via [applyServerIssuedCode] when the
+     * user scans a QR that carries a server-issued relay pairing code.
+     *
+     * Cleared automatically after a successful `auth.ok` so we fall back
+     * to the locally-generated code (which stays as the trust anchor for
+     * the phone → server direction used by the Phase 3 bridge channel).
+     */
+    private var serverIssuedCode: String? = null
+
+    /**
+     * Read-only view of whether this AuthManager currently has something to
+     * say in an auth envelope — either a pending server-issued pair code
+     * from a fresh QR scan or a stored session token (via [authState]).
+     *
+     * Used by [com.hermesandroid.relay.viewmodel.ConnectionViewModel.connectRelay]
+     * to gate WSS connect attempts. Without a pair context, firing the WSS
+     * handshake just sends a doomed auth envelope, which makes the relay
+     * tick its rate limiter 5 times in 60 seconds and then block the IP
+     * for 5 minutes — exactly the scenario that bit us on the first cycle
+     * of the inbound media test.
+     *
+     * Returns true if **any** of:
+     *  1. `authState` is [AuthState.Paired] (we have a session token)
+     *  2. `authState` is [AuthState.Pairing] (mid-handshake)
+     *  3. [serverIssuedCode] is non-null (fresh QR scan just landed, about
+     *     to authenticate)
+     *
+     * Does NOT consider the locally-generated [_pairingCode] as a valid
+     * context — that code is for the Phase 3 phone→host direction and is
+     * NOT registered on the relay side, so sending it yields guaranteed
+     * auth failures.
+     */
+    val hasPairContext: Boolean
+        get() = _authState.value is AuthState.Paired ||
+            _authState.value is AuthState.Pairing ||
+            serverIssuedCode != null
+
+    /**
+     * TTL the user picked at the [SessionTtlPickerDialog]. Included in the
+     * next auth envelope's payload as `ttl_seconds`. `null` means "use
+     * server default" (equivalent to the pre-overhaul behavior — the
+     * server's own policy kicks in). `0` means "never expire".
+     */
+    private var pendingTtlSeconds: Long? = null
+
+    /**
+     * Optional per-channel grant preferences from the QR. If set, included
+     * in the auth envelope so the server can issue shorter-lived tokens for
+     * specific channels. Null means "use the server's default for each
+     * channel".
+     */
+    private var pendingGrants: Map<String, Long>? = null
+
+    /**
+     * Optional endpoint-candidate list from the pairing QR (ADR 24, v3+).
+     * Persisted via [PairingPreferences.setDeviceEndpoints] once the server
+     * confirms the pair in `auth.ok` so the reachability probe + network-aware
+     * switch (Kt-Probe) can read them on subsequent connects.
+     *
+     * `null` means "no endpoint list to persist on this pair" — either a v1/v2
+     * QR hit the legacy path without going through [setPendingEndpoints], or
+     * we're in a session-token refresh where the endpoint list doesn't change.
+     * Either way, we leave the previously-persisted list untouched.
+     */
+    private var pendingEndpoints: List<EndpointCandidate>? = null
+    private var activeEndpointProvider: () -> EndpointCandidate? = { null }
+
+    /** Bind auth.ok route credentials to the transport that actually carried them. */
+    fun setActiveEndpointProvider(provider: () -> EndpointCandidate?) {
+        activeEndpointProvider = provider
+    }
+
+    /**
+     * Server-advertised agent profiles from the `auth.ok` payload's
+     * `profiles` field. Each entry corresponds to a named agent config in
+     * the server's `~/.hermes/config.yaml` (see Hermes's `_load_profiles`).
+     *
+     * This replaces the old `_sessionLabels` field (2026-04-18, Pass 2).
+     * The previous code parsed each entry as a raw [String] via
+     * `it.jsonPrimitive.content`, which blew up silently on the real
+     * object-shaped payload the server actually sends — so the list was
+     * always empty in practice. [parseAgentProfiles] is the structured
+     * replacement.
+     *
+     * Exposed via [com.hermesandroid.relay.viewmodel.ConnectionViewModel.agentProfiles]
+     * to the profile picker UI. Empty when unpaired or when the server
+     * returned no `profiles` entry.
+     */
+    private val _agentProfiles = MutableStateFlow<List<Profile>>(emptyList())
+    val agentProfiles: StateFlow<List<Profile>> = _agentProfiles.asStateFlow()
+
+    /**
+     * Whether an API key is currently stored. Updated reactively by
+     * [setApiKey] / [clearApiKey] so composables can show "API key: already
+     * set — leave blank to keep" without suspending.
+     */
+    private val _apiKeyPresent = MutableStateFlow(false)
+    val apiKeyPresent: StateFlow<Boolean> = _apiKeyPresent.asStateFlow()
+    private val _apiKeyError = MutableStateFlow<String?>(null)
+    val apiKeyError: StateFlow<String?> = _apiKeyError.asStateFlow()
+
+    init {
+        // Register as system channel handler for auth messages
+        multiplexer.registerHandler("system", this)
+        // Also listen on the "pairing" channel for server-initiated
+        // pushes — currently just profiles.updated (v0.7.1+ relay).
+        // Routed through the same onMessage dispatcher which switches
+        // by envelope type so adding new pairing.* events later is a
+        // one-line change in [onMessage].
+        multiplexer.registerHandler("pairing", this)
+
+        // Check for existing session token off main thread. Skipped for the
+        // throwaway sentinel (eagerHydrate=false) so it never pays the keyset
+        // decrypt for a store that's about to be replaced (see [eagerHydrate]).
+        if (eagerHydrate) {
+            scope.launch {
+                val s = store()
+                val existingToken = s.getString(KEY_SESSION_TOKEN)
+                if (existingToken != null) {
+                    runCatching {
+                        normalizeCredentialForHeader(existingToken, "Relay session credential")
+                            .also { require(it.isNotEmpty()) }
+                    }.onSuccess { normalized ->
+                        if (normalized != existingToken) s.putString(KEY_SESSION_TOKEN, normalized)
+                        _authState.value = AuthState.Paired(normalized)
+                        _currentPairedSession.value = loadStoredMetadata(normalized)
+                        Log.i(TAG, "init: hydrated existing session credential")
+                    }.onFailure {
+                        _authState.value = AuthState.Failed(
+                            "Saved Relay credential is malformed. Re-pair this connection.",
+                        )
+                        Log.w(TAG, "init: rejected malformed saved Relay credential")
+                    }
+                } else {
+                    Log.i(TAG, "init: no stored session_token → authState stays Unpaired")
+                }
+                // Converge the plain api-key-present hint with the decrypted
+                // truth (also repairs a hint that predates legacy migration).
+                val storedApiKey = s.getString(KEY_API_KEY)
+                if (storedApiKey != null) {
+                    runCatching {
+                        normalizeCredentialForHeader(storedApiKey, "API credential")
+                            .also { require(it.isNotEmpty()) }
+                    }.onSuccess { normalized ->
+                        if (normalized != storedApiKey) s.putString(KEY_API_KEY, normalized)
+                        _apiKeyError.value = null
+                    }.onFailure {
+                        _apiKeyError.value =
+                            "Saved API credential is malformed. Replace or clear it."
+                        Log.w(TAG, "init: rejected malformed saved API credential")
+                    }
+                }
+                recordApiKeyHint(!storedApiKey.isNullOrBlank())
+            }
+        }
+    }
+
+    /**
+     * Re-hydrate a [PairedSession] snapshot from the JSON blob we persisted
+     * alongside the session token. Returns a minimal fallback when metadata
+     * is missing (old installs without the blob).
+     */
+    private suspend fun loadStoredMetadata(token: String): PairedSession {
+        val s = store()
+        val rawMeta = s.getString(KEY_PAIRED_META)
+        val now = System.currentTimeMillis() / 1000L
+        val defaults = PairedSession(
+            token = token,
+            deviceName = relayDeviceName(),
+            expiresAt = null,
+            grants = emptyMap(),
+            transportHint = null,
+            firstSeen = now,
+            hasHardwareStorage = s.hasHardwareBackedStorage,
+        )
+        if (rawMeta.isNullOrBlank()) return defaults
+
+        return try {
+            val obj = json.decodeFromString<JsonObject>(rawMeta)
+            val expiresAt = obj["expires_at"]?.jsonPrimitive?.longOrNull
+                ?: obj["expires_at"]?.jsonPrimitive?.doubleOrNull?.toLong()
+            val grants = obj["grants"]?.jsonObject?.mapValues { (_, v) ->
+                (v as? JsonPrimitive)?.longOrNull
+                    ?: (v as? JsonPrimitive)?.doubleOrNull?.toLong()
+            } ?: emptyMap()
+            val transportHint = obj["transport_hint"]?.jsonPrimitive?.contentOrNull
+            val firstSeen = obj["first_seen"]?.jsonPrimitive?.longOrNull ?: now
+            val deviceName = obj["device_name"]?.jsonPrimitive?.contentOrNull
+                ?: relayDeviceName()
+
+            PairedSession(
+                token = token,
+                deviceName = deviceName,
+                expiresAt = expiresAt,
+                grants = grants,
+                transportHint = transportHint,
+                firstSeen = firstSeen,
+                hasHardwareStorage = s.hasHardwareBackedStorage,
+            )
+        } catch (_: Exception) {
+            defaults
+        }
+    }
+
+    private suspend fun persistPairedSession(session: PairedSession) {
+        val s = store()
+        val meta = buildJsonObject {
+            put("device_name", session.deviceName)
+            session.expiresAt?.let { put("expires_at", it) }
+            put("transport_hint", session.transportHint ?: "")
+            put("first_seen", session.firstSeen)
+            val grantsObj = buildJsonObject {
+                for ((k, v) in session.grants) {
+                    if (v != null) put(k, v)
+                }
+            }
+            put("grants", grantsObj)
+        }
+        s.putString(KEY_PAIRED_META, json.encodeToString(JsonObject.serializer(), meta))
+    }
+
+    private suspend fun getDeviceId(): String {
+        val s = store()
+        val existing = s.getString(KEY_DEVICE_ID)
+        if (existing != null) return existing
+        val newId = java.util.UUID.randomUUID().toString()
+        s.putString(KEY_DEVICE_ID, newId)
+        return newId
+    }
+
+    /**
+     * Public accessor for the stable device ID. Used by [TerminalViewModel]
+     * to compose deterministic per-tab `session_name` values
+     * (`hermes-<deviceId>-tabN`) so the relay's tmux-backed terminal channel
+     * can re-attach the same shell across reconnects.
+     */
+    suspend fun getOrCreateDeviceId(): String = getDeviceId()
+
+    /** Existing device ID without creating a new one. */
+    suspend fun getExistingDeviceId(): String? = store().getString(KEY_DEVICE_ID)
+
+    /**
+     * Set the TTL the user picked at [SessionTtlPickerDialog]. `0` → never,
+     * `null` → defer to server default. Persisted across [authenticate]
+     * calls and mirrored into [PairingPreferences] for the next pair's
+     * preselection default.
+     */
+    fun setPendingTtlSeconds(ttlSeconds: Long?) {
+        pendingTtlSeconds = ttlSeconds
+        if (ttlSeconds != null) {
+            scope.launch {
+                PairingPreferences.setPairTtlSeconds(context, ttlSeconds)
+            }
+        }
+    }
+
+    fun setPendingGrants(grants: Map<String, Long>?) {
+        pendingGrants = grants
+    }
+
+    /**
+     * Stage the endpoint-candidate list parsed from the pairing QR (ADR 24).
+     * Consumed in [handleAuthOk] — after the server confirms the pair we
+     * persist the list under the current device id via
+     * [PairingPreferences.setDeviceEndpoints].
+     *
+     * Safe to call with `null` or an empty list — either clears any staged
+     * value without persisting. Pair-code re-sends from an existing
+     * [AuthState.Paired] state never reach this setter, so session-token
+     * refreshes don't clobber the persisted list.
+     */
+    fun setPendingEndpoints(endpoints: List<EndpointCandidate>?) {
+        pendingEndpoints = endpoints?.takeIf { it.isNotEmpty() }
+    }
+
+    /**
+     * Capability negotiation advertised in the first system/auth envelope.
+     * Older relays ignore this object; newer relays use it to send versioned
+     * `chat:stream.event` payloads instead of flattening Hermes SSE into text.
+     */
+    private fun JsonObjectBuilder.putRelayClientSupports() {
+        put("supports", buildJsonObject {
+            put("typed_stream_events", true)
+            put("event_schema_version", 1)
+        })
+    }
+
+    private fun JsonObjectBuilder.putRelayDeviceIdentity() {
+        val model = android.os.Build.MODEL.orEmpty().ifBlank { "Android device" }
+        val deviceName = relayDeviceName()
+        put("device_name", deviceName)
+        put("device_hostname", deviceName)
+        put("device_model", model)
+        put("device_platform", "Android ${android.os.Build.VERSION.RELEASE}")
+        put("client_surface", "android")
+        put("device_form_factor", "phone")
+    }
+
+    private fun JsonObjectBuilder.putSupervisedMode() {
+        put("supervised_mode", relaySupervisedModePayload(supervisedMode))
+    }
+
+    private fun relayDeviceName(): String {
+        val configured = runCatching {
+            Settings.Global.getString(context.contentResolver, "device_name")
+        }.getOrNull()?.trim().orEmpty()
+        return configured.ifBlank {
+            android.os.Build.MODEL.orEmpty().ifBlank { "Android device" }
+        }
+    }
+
+    /**
+     * Send auth envelope when connection is established.
+     *
+     * Pairing-code precedence when unpaired:
+     *   1. [serverIssuedCode] if set — comes from a scanned QR. This is the
+     *      canonical path: operator runs `hermes pair` on the host, which
+     *      pre-registers the code with the running relay, then renders it
+     *      into the QR. The phone scans once and consumes it here.
+     *   2. [_pairingCode] (locally-generated). Fallback for manual setups
+     *      and Phase 3's bridge direction (phone-issues-code, host-approves).
+     *
+     * Pending TTL + grants are serialized into the auth payload when set,
+     * letting the [SessionTtlPickerDialog] selection flow through to the
+     * server.
+     */
+    fun authenticate(ttlSeconds: Long? = null) {
+        if (ttlSeconds != null) pendingTtlSeconds = ttlSeconds
+        scope.launch {
+            val currentState = _authState.value
+            val deviceId = getDeviceId()
+            val payload = when (currentState) {
+                is AuthState.Paired -> {
+                    val refreshToken = store().getString(KEY_REFRESH_TOKEN)?.let { raw ->
+                        runCatching {
+                            normalizeCredentialForHeader(raw, "Relay refresh credential")
+                        }.getOrElse {
+                            _authState.value = AuthState.Failed(
+                                "Saved Relay credential is malformed. Re-pair this connection.",
+                            )
+                            Log.w(TAG, "authenticate: rejected malformed refresh credential")
+                            return@launch
+                        }
+                    }
+                    Log.i(
+                        TAG,
+                        "authenticate: sending saved session credential (state=Paired, " +
+                            "refresh=${!refreshToken.isNullOrBlank()})"
+                    )
+                    buildJsonObject {
+                        put("session_token", currentState.token)
+                        if (!refreshToken.isNullOrBlank()) {
+                            put("refresh_token", refreshToken)
+                        }
+                        put("device_id", deviceId)
+                        putRelayDeviceIdentity()
+                        putRelayClientSupports()
+                        putSupervisedMode()
+                    }
+                }
+                else -> {
+                    _authState.value = AuthState.Pairing
+                    val codeToSend = serverIssuedCode ?: _pairingCode.value
+                    val serverSource = if (serverIssuedCode != null) "QR" else "local-fallback"
+                    Log.i(
+                        TAG,
+                        "authenticate: sending pairing credential source=$serverSource " +
+                            "ttl=$pendingTtlSeconds grants=${pendingGrants?.keys}"
+                    )
+                    buildJsonObject {
+                        put("pairing_code", codeToSend)
+                        put("device_id", deviceId)
+                        putRelayDeviceIdentity()
+                        putRelayClientSupports()
+                        putSupervisedMode()
+                        pendingTtlSeconds?.let { put("ttl_seconds", it) }
+                        pendingGrants?.let { grants ->
+                            val obj = buildJsonObject {
+                                for ((k, v) in grants) put(k, v)
+                            }
+                            put("grants", obj)
+                        }
+                    }
+                }
+            }
+
+            multiplexer.send(
+                Envelope(
+                    channel = "system",
+                    type = "auth",
+                    payload = payload
+                )
+            )
+        }
+    }
+
+    /**
+     * Store a server-issued pairing code (from a scanned QR) for use on the
+     * next [authenticate] call. Overrides the locally-generated code; cleared
+     * automatically on successful `auth.ok`.
+     *
+     * Also mirrors the code into [_pairingCode] so any UI that displays the
+     * code shows the one actually being used — avoids a confusing "QR said
+     * ABCD12 but the app shows XYZ123" gap during the pairing moment.
+     */
+    fun applyServerIssuedCode(code: String) {
+        val normalized = code.trim().uppercase()
+        if (normalized.isEmpty()) return
+        serverIssuedCode = normalized
+        _pairingCode.value = normalized
+    }
+
+    /**
+     * Apply a server-issued code AND wipe any existing session token in one
+     * atomic step. Used by the manual-code entry dialog and by the QR flow
+     * whenever the user re-pairs.
+     *
+     * Also wipes the TOFU cert pin for the target relay host (if provided)
+     * so the next wss handshake re-TOFUs against whatever cert is currently
+     * being presented. Without this step, a legit cert rotation looks
+     * identical to a MITM attack.
+     */
+    fun applyServerIssuedCodeAndReset(code: String, relayUrl: String? = null) {
+        val normalized = code.trim().uppercase()
+        if (normalized.isEmpty()) {
+            Log.w(TAG, "applyServerIssuedCodeAndReset: empty code, returning early — authState NOT reset")
+            return
+        }
+        val prevState = _authState.value
+        serverIssuedCode = normalized
+        _pairingCode.value = normalized
+        _authState.value = AuthState.Unpaired
+        _currentPairedSession.value = null
+        Log.i(
+            TAG,
+            "applyServerIssuedCodeAndReset: credential=present " +
+                "relayConfigured=${!relayUrl.isNullOrBlank()} " +
+                "prevState=${prevState::class.simpleName} → Unpaired"
+        )
+        scope.launch {
+            val s = store()
+            s.remove(KEY_SESSION_TOKEN)
+            s.remove(KEY_REFRESH_TOKEN)
+            s.remove(KEY_PAIRED_META)
+            if (relayUrl != null) {
+                certPinStore.removePinFor(relayUrl)
+            }
+        }
+    }
+
+    override fun onMessage(envelope: Envelope) {
+        Log.i(TAG, "onMessage channel=${envelope.channel} type=${envelope.type}")
+        when (envelope.type) {
+            "auth.ok" -> handleAuthOk(envelope)
+            "auth.fail" -> handleAuthFail(envelope)
+            "supervised.updated" -> settleSupervisedModeUpdate(envelope, unsupported = false)
+            "error" -> settleSupervisedModeUpdate(envelope, unsupported = true)
+            // `profiles.updated` push — sent by the v0.7.1+ relay on
+            // the "pairing" channel whenever its in-memory profile
+            // snapshot changes (file-watcher, SIGHUP, or a manual
+            // /api/profiles/refresh). The array shape mirrors the
+            // `profiles` field of auth.ok, so we parse with the exact
+            // same [parseAgentProfiles] helper.
+            "profiles.updated" -> handleProfilesUpdated(envelope)
+        }
+    }
+
+    /**
+     * Consumer for the pairing-channel `profiles.updated` envelope.
+     * Re-uses [parseAgentProfiles] because the wire shape of the
+     * `profiles` array exactly matches the auth.ok embedded form —
+     * the whole point of the push is that the app keeps a single
+     * parser regardless of which entry point the list arrives on.
+     *
+     * Emits a one-shot [profilesUpdatedEvents] event so the UI layer
+     * can show a brief "Profiles updated" snackbar. The event is only
+     * fired when the list actually changed (different names or count)
+     * — an idempotent push that matches the cached state is silent.
+     */
+    private fun handleProfilesUpdated(envelope: Envelope) {
+        val array = envelope.profiles ?: run {
+            Log.w(TAG, "handleProfilesUpdated: envelope has no `profiles` array")
+            return
+        }
+        val parsed = parseAgentProfiles(array)
+        val prev = _agentProfiles.value
+        _agentProfiles.value = parsed
+
+        // Did anything meaningful change? We treat "same names" as
+        // "nothing to announce" — the dashboard can emit these pushes
+        // liberally and we don't want to spam the user with toasts.
+        val prevNames = prev.map { it.name }.toSet()
+        val nextNames = parsed.map { it.name }.toSet()
+        if (prevNames != nextNames || prev.size != parsed.size) {
+            _profilesUpdatedEvents.tryEmit(Unit)
+        }
+    }
+
+    /**
+     * One-shot signal emitted every time a `profiles.updated` envelope
+     * materially changes the profile list. UI collects it via
+     * [com.hermesandroid.relay.viewmodel.ConnectionViewModel.profilesUpdatedEvents]
+     * to show a transient snackbar.
+     */
+    private val _profilesUpdatedEvents =
+        kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 4)
+    val profilesUpdatedEvents: kotlinx.coroutines.flow.SharedFlow<Unit> =
+        _profilesUpdatedEvents.asSharedFlow()
+
+    /**
+     * Emits once per successful `auth.ok` — i.e. on every (re)connect, not
+     * just the first pair. Lets connection-scoped consumers re-establish
+     * per-socket state. The proactive subscription is tracked per-WebSocket
+     * on the relay, so [com.hermesandroid.relay.viewmodel.ConnectionViewModel]
+     * collects this to re-send `proactive.subscribe` after each reconnect.
+     */
+    private val _authOkEvents =
+        kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 4)
+    val authOkEvents: kotlinx.coroutines.flow.SharedFlow<Unit> =
+        _authOkEvents.asSharedFlow()
+
+    fun regeneratePairingCode() {
+        _pairingCode.value = generatePairingCode()
+    }
+
+    fun clearSession() {
+        scope.launch {
+            val s = store()
+            s.remove(KEY_SESSION_TOKEN)
+            s.remove(KEY_REFRESH_TOKEN)
+            s.remove(KEY_PAIRED_META)
+            _authState.value = AuthState.Unpaired
+            _currentPairedSession.value = null
+            _pairingCode.value = generatePairingCode()
+        }
+    }
+
+    // --- API Key storage (for direct Hermes API Server auth) ---
+
+    suspend fun getApiKey(): String? {
+        val raw = store().getString(KEY_API_KEY) ?: return null
+        return runCatching {
+            normalizeCredentialForHeader(raw, "API credential")
+                .takeIf { it.isNotEmpty() }
+        }.onSuccess {
+            _apiKeyError.value = null
+        }.onFailure {
+            _apiKeyError.value = "Saved API credential is malformed. Replace or clear it."
+            Log.w(TAG, "getApiKey: rejected malformed saved API credential")
+        }.getOrNull()
+    }
+
+    suspend fun setApiKey(key: String) {
+        val trimmed = runCatching {
+            normalizeCredentialForHeader(key, "API credential")
+        }.getOrElse {
+            _apiKeyError.value = "API credentials must be a single line."
+            throw it
+        }
+        val s = store()
+        if (trimmed.isBlank()) {
+            s.remove(KEY_API_KEY)
+            recordApiKeyHint(false)
+        } else {
+            s.putString(KEY_API_KEY, trimmed)
+            recordApiKeyHint(true)
+        }
+        _apiKeyError.value = null
+    }
+
+    suspend fun clearApiKey() {
+        store().remove(KEY_API_KEY)
+        recordApiKeyHint(false)
+        _apiKeyError.value = null
+    }
+
+    suspend fun getProfileApiKey(profileName: String): String? =
+        decodeProfileApiKeys(store().getString(KEY_PROFILE_API_KEYS))[profileName.trim()]
+
+    suspend fun setProfileApiKey(profileName: String, key: String) {
+        val normalizedProfile = profileName.trim()
+        require(normalizedProfile.isNotBlank()) { "Profile name must not be blank" }
+        profileApiKeysMutex.withLock {
+            val tokenStore = store()
+            val keys = decodeProfileApiKeys(tokenStore.getString(KEY_PROFILE_API_KEYS)).toMutableMap()
+            val normalizedKey = normalizeCredentialForHeader(key, "Profile API credential")
+            if (normalizedKey.isBlank()) keys.remove(normalizedProfile)
+            else keys[normalizedProfile] = normalizedKey
+            if (keys.isEmpty()) tokenStore.remove(KEY_PROFILE_API_KEYS)
+            else tokenStore.putString(KEY_PROFILE_API_KEYS, encodeProfileApiKeys(keys))
+        }
+    }
+
+    suspend fun clearProfileApiKey(profileName: String) {
+        setProfileApiKey(profileName, "")
+    }
+
+    val isPaired: Boolean
+        get() = _authState.value is AuthState.Paired
+
+    private fun handleAuthOk(envelope: Envelope) {
+        // A successful auth always carries the latest client report, including
+        // after the compatibility reconnect used for older Relay versions.
+        pendingSupervisedUpdateId = null
+        supervisedUpdateFallbackJob?.cancel()
+        supervisedUpdateFallbackJob = null
+        scope.launch {
+            try {
+                val payload = envelope.payload
+                val token = payload["session_token"]?.jsonPrimitive?.contentOrNull?.let { raw ->
+                    normalizeCredentialForHeader(raw, "Relay session credential")
+                        .takeIf { it.isNotEmpty() }
+                }
+
+                if (token == null) {
+                    Log.w(
+                        TAG,
+                        "handleAuthOk: payload missing session_token — authState NOT transitioned to Paired. " +
+                            "Payload keys: ${payload.keys}"
+                    )
+                }
+
+                if (token != null) {
+                    applyBrokerRouteCredential(payload)
+                    val s = store()
+                    s.putString(KEY_SESSION_TOKEN, token)
+                    val refreshToken = payload["refresh_token"]
+                        ?.jsonPrimitive
+                        ?.contentOrNull
+                        ?.let { normalizeCredentialForHeader(it, "Relay refresh credential") }
+                        ?.takeIf { it.isNotEmpty() }
+                    if (refreshToken != null) {
+                        s.putString(KEY_REFRESH_TOKEN, refreshToken)
+                        Log.i(TAG, "handleAuthOk: stored rotated refresh token")
+                    }
+                    _authState.value = AuthState.Paired(token)
+                    Log.i(TAG, "handleAuthOk: paired with server-issued session credential")
+                    // Per-connection signal for socket-scoped consumers (e.g.
+                    // re-sending proactive.subscribe). Fires on every auth.ok.
+                    _authOkEvents.tryEmit(Unit)
+                    // Server-issued code is one-shot — drop it once the
+                    // upgrade to a long-lived session token has landed.
+                    serverIssuedCode = null
+
+                    // --- Parse new security fields -------------------------
+                    //
+                    // expires_at: epoch seconds or null (never expires).
+                    // Accepts both integer and float representations —
+                    // Python servers often return time.time() which is a
+                    // float. We go through jsonPrimitive so `null` literal
+                    // in the payload surfaces as a null Long here.
+                    val expiresAtElem = payload["expires_at"]
+                    val expiresAt: Long? = expiresAtElem?.jsonPrimitive?.let { prim ->
+                        prim.longOrNull ?: prim.doubleOrNull?.toLong()
+                    }
+
+                    // grants: map of channel name → epoch seconds | null
+                    val grantsObj = payload["grants"] as? JsonObject
+                    val grantsMap: Map<String, Long?> = grantsObj
+                        ?.mapValues { (_, v) ->
+                            val prim = v as? JsonPrimitive
+                            prim?.longOrNull ?: prim?.doubleOrNull?.toLong()
+                        }
+                        ?: emptyMap()
+
+                    val transportHint = payload["transport_hint"]
+                        ?.jsonPrimitive?.contentOrNull
+
+                    val paired = PairedSession(
+                        token = token,
+                        deviceName = relayDeviceName(),
+                        expiresAt = expiresAt,
+                        grants = grantsMap,
+                        transportHint = transportHint,
+                        firstSeen = System.currentTimeMillis() / 1000L,
+                        hasHardwareStorage = s.hasHardwareBackedStorage,
+                    )
+                    _currentPairedSession.value = paired
+                    persistPairedSession(paired)
+
+                    // ADR 24 — persist the pairing's endpoint-candidate list
+                    // so the reachability probe + network-aware switch
+                    // (Kt-Probe) can load it on subsequent connects without
+                    // re-scanning the original QR. Keyed by the stable
+                    // device id so multiple paired devices coexist cleanly.
+                    //
+                    // Leave the previously-persisted list untouched when
+                    // nothing was staged (session-token refresh path, or
+                    // a legacy caller that didn't set endpoints).
+                    pendingEndpoints?.let { endpoints ->
+                        try {
+                            val deviceId = getDeviceId()
+                            PairingPreferences.setDeviceEndpoints(
+                                context,
+                                deviceId,
+                                endpoints,
+                            )
+                            Log.i(
+                                TAG,
+                                "handleAuthOk: persisted ${endpoints.size} endpoint(s) for device=$deviceId " +
+                                    "roles=${endpoints.map { it.role }}"
+                            )
+                        } catch (e: Exception) {
+                            Log.w(
+                                TAG,
+                                "handleAuthOk: endpoint persistence failed — continuing without; " +
+                                    "reachability probe will fall back to the single active endpoint. " +
+                                    "reason=${e.message}"
+                            )
+                        }
+                    }
+
+                    // Pending TTL/grants/endpoints are consumed — the server
+                    // has either honored or overridden them and the next
+                    // auth round-trip should not resend stale values.
+                    pendingTtlSeconds = null
+                    pendingGrants = null
+                    pendingEndpoints = null
+                }
+
+                val profilesArray = payload["profiles"]?.jsonArray
+                if (profilesArray != null) {
+                    _agentProfiles.value = parseAgentProfiles(profilesArray)
+                }
+            } catch (e: Exception) {
+                // Replaces a silent `e.printStackTrace()` — that stack-trace-only
+                // handler is exactly why the broken `_sessionLabels` parser
+                // (stringifying object entries) sat undetected for so long.
+                Log.w(TAG, "auth.ok parse failed: ${e.message}", e)
+                if (e is InvalidCredentialException) {
+                    _authState.value = AuthState.Failed(
+                        "Relay returned a malformed credential. Re-pair this connection.",
+                    )
+                }
+            }
+        }
+    }
+
+    private suspend fun applyBrokerRouteCredential(payload: JsonObject) {
+        val active = activeEndpointProvider()?.takeIf { it.hasHermesReach() } ?: return
+        val current = active.broker ?: return
+        // Fresh pairing is scoped by pendingEndpoints; reconnect rotation is
+        // accepted only by this connection-scoped AuthManager's live session.
+        if (pendingEndpoints == null && _authState.value !is AuthState.Paired) return
+        val credential = payload["route_credential"] as? JsonObject ?: return
+        if (credential["kind"]?.jsonPrimitive?.contentOrNull != "broker_route") return
+        val brokerUrl = credential["broker_url"]?.jsonPrimitive?.contentOrNull ?: return
+        val hostId = credential["host_id"]?.jsonPrimitive?.contentOrNull ?: return
+        if (!sameBrokerAuthority(brokerUrl, current.url) || hostId != current.hostId) {
+            Log.w(TAG, "Ignoring broker route credential that does not match the active paired route")
+            return
+        }
+        val replacement = BrokerEndpoint(
+            url = current.url,
+            protocolVersion = current.protocolVersion,
+            hostId = current.hostId,
+            credentialKind = "route",
+            token = credential["token"]?.jsonPrimitive?.contentOrNull?.let {
+                runCatching {
+                    normalizeCredentialForHeader(it, "Hermes Reach credential")
+                }.getOrElse {
+                    Log.w(TAG, "Ignoring malformed Hermes Reach route credential")
+                    return
+                }
+            } ?: return,
+            expiresAt = credential["expires_at"]?.jsonPrimitive?.longOrNull,
+        )
+        val validated = active.copy(broker = replacement).takeIf { it.hasHermesReach() } ?: return
+        val deviceId = getDeviceId()
+        val source = pendingEndpoints
+            ?: PairingPreferences.getDeviceEndpoints(context, deviceId).first()
+        val updated = replaceHermesReachCredential(source, current, validated)
+        if (updated == source) return
+        if (pendingEndpoints != null) pendingEndpoints = updated
+        else PairingPreferences.setDeviceEndpoints(context, deviceId, updated)
+        Log.i(TAG, "Accepted a durable Hermes Reach route credential for the active paired route")
+    }
+
+
+    private fun handleAuthFail(envelope: Envelope) {
+        try {
+            val rawReason = envelope.payload["reason"]?.jsonPrimitive?.contentOrNull
+                ?: "Unknown error"
+            val humanized = humanizeAuthFailReason(rawReason)
+            Log.w(TAG, "handleAuthFail: raw=$rawReason humanized=$humanized")
+            if (shouldPreservePairedSessionOnAuthFail(_authState.value, rawReason)) {
+                Log.w(
+                    TAG,
+                    "handleAuthFail: preserving paired session after transient auth timeout"
+                )
+                return
+            }
+            clearPendingPairContextAfterAuthFailure(rawReason)
+            _authState.value = AuthState.Failed(humanized)
+        } catch (e: Exception) {
+            Log.w(TAG, "handleAuthFail: exception parsing payload", e)
+            clearPendingPairContextAfterAuthFailure("parse failure")
+            _authState.value = AuthState.Failed("Authentication failed")
+        }
+    }
+
+    private fun clearPendingPairContextAfterAuthFailure(reason: String) {
+        if (serverIssuedCode == null) return
+        serverIssuedCode = null
+        pendingTtlSeconds = null
+        pendingGrants = null
+        pendingEndpoints = null
+        _pairingCode.value = generatePairingCode()
+        Log.i(
+            TAG,
+            "auth.fail consumed server-issued pairing code; " +
+                "cleared pending pair context so reconnects stop (reason=$reason)"
+        )
+    }
+
+    /**
+     * Map common relay `auth.fail` reasons to user-friendly short strings.
+     * The wizard VerifyStep surfaces the returned text directly, so this is
+     * what the user reads when a pair fails.
+     *
+     * Pass-through for anything we don't recognize so server-side debug
+     * output isn't clobbered.
+     */
+    private fun humanizeAuthFailReason(raw: String): String {
+        val lower = raw.lowercase()
+        return when {
+            // "pairing code not recognized", "invalid pairing code",
+            // "unknown pairing code", etc. — the code is no longer on the
+            // relay, which almost always means the QR was already used.
+            "pairing" in lower && ("not recogniz" in lower ||
+                "invalid" in lower ||
+                "unknown" in lower ||
+                "consumed" in lower ||
+                "already used" in lower) ->
+                "That pairing code was already used. Generate a fresh QR " +
+                    "from `hermes-pair` and scan again."
+            "rate" in lower && "limit" in lower ->
+                "Too many pair attempts — the relay temporarily blocked your " +
+                    "IP. Wait ~5 minutes and try again."
+            "expired" in lower ->
+                "The pairing code expired. Generate a fresh QR and scan again."
+            "session" in lower && "expired" in lower ->
+                "Your session expired. Re-pair to get a new one."
+            "session_token" in lower || "token" in lower ->
+                "The server rejected your saved session. Re-pair to get a new one."
+            else -> raw
+        }
+    }
+
+    private fun generatePairingCode(): String {
+        return (1..PAIRING_CODE_LENGTH)
+            .map { PAIRING_CODE_CHARS.random() }
+            .joinToString("")
+    }
+}

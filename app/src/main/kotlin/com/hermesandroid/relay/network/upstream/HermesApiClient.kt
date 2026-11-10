@@ -1,0 +1,2132 @@
+package com.hermesandroid.relay.network.upstream
+
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import com.hermesandroid.relay.data.AgentDisplay
+import com.hermesandroid.relay.data.AppAnalytics
+import com.hermesandroid.relay.network.shutdownOffMainThread
+import com.hermesandroid.relay.network.shared.InvalidCredentialException
+import com.hermesandroid.relay.network.shared.bearerAuthorization
+import com.hermesandroid.relay.network.shared.normalizeCredentialForHeader
+import com.hermesandroid.relay.network.upstream.models.CreateSessionRequest
+import com.hermesandroid.relay.network.upstream.models.HermesSseEvent
+import com.hermesandroid.relay.network.upstream.models.MessageItem
+import com.hermesandroid.relay.network.upstream.models.MessageListResponse
+import com.hermesandroid.relay.network.upstream.models.RenameSessionRequest
+import com.hermesandroid.relay.network.upstream.models.SessionItem
+import com.hermesandroid.relay.network.upstream.models.SessionListResponse
+import com.hermesandroid.relay.network.upstream.models.SessionResponse
+import com.hermesandroid.relay.network.upstream.models.SkillInfo
+import com.hermesandroid.relay.network.upstream.models.SkillListResponse
+import com.hermesandroid.relay.network.upstream.models.UsageInfo
+import com.hermesandroid.relay.util.TurnLatencyTracer
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.put
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import okhttp3.sse.EventSource
+import okhttp3.sse.EventSourceListener
+import okhttp3.sse.EventSources
+import java.io.IOException
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+
+sealed interface HealthCheckResult {
+    data object Healthy : HealthCheckResult
+    data class Unhealthy(val message: String) : HealthCheckResult
+}
+
+enum class ChatMode {
+    /** Full Hermes Sessions API — /api/sessions/{id}/chat/stream */
+    ENHANCED_HERMES,
+    /** Only OpenAI-compatible /v1/chat/completions */
+    PORTABLE,
+    /** Cannot connect to the server */
+    DISCONNECTED
+}
+
+/**
+ * Per-endpoint capability snapshot. Populated by [HermesApiClient.probeCapabilities].
+ *
+ * The Android client uses this to pick the best chat path automatically when
+ * `streamingEndpoint = "auto"`. The bootstrap-injected vanilla-upstream case
+ * is the interesting one: `sessionsApi=true` (we injected it) but
+ * `sessionsChatStream=false` (the chat handler is absent). The auto-resolver
+ * now picks OpenAI-compatible chat completions for that case because the route
+ * returns an SSE stream, while `/v1/runs` may be an async JSON run-start API.
+ */
+data class ServerCapabilities(
+    /** `/api/sessions` (CRUD) — true on native upstream, fork, OR bootstrap-injected older builds. */
+    val sessionsApi: Boolean,
+    /** `/api/sessions/{id}/chat/stream` (SSE) — true on native upstream or legacy fork builds. */
+    val sessionsChatStream: Boolean,
+    /** `/v1/runs` (structured-event SSE) — true only when explicitly advertised as SSE-compatible. */
+    val runs: Boolean,
+    /** `/v1/chat/completions` — OpenAI-compatible fallback. */
+    val portable: Boolean,
+    /** `/health` — basic reachability. */
+    val healthy: Boolean,
+    /** Authenticated provider/model inventory at `/api/model/options`. */
+    val modelOptions: Boolean = false,
+    /** Backend-acknowledged per-session model lock. */
+    val sessionModelLock: Boolean = false,
+) {
+    /** Resolve `streamingEndpoint = "auto"` to the best concrete choice. */
+    fun preferredChatEndpoint(): String = when {
+        sessionsChatStream -> "sessions"
+        portable -> "completions"
+        runs -> "runs"
+        else -> "sessions"  // last-resort: try sessions, will surface a clear error
+    }
+
+    fun toChatMode(): ChatMode = when {
+        !healthy -> ChatMode.DISCONNECTED
+        sessionsApi -> ChatMode.ENHANCED_HERMES
+        portable || runs -> ChatMode.PORTABLE
+        else -> ChatMode.DISCONNECTED
+    }
+
+    companion object {
+        val DISCONNECTED = ServerCapabilities(
+            sessionsApi = false,
+            sessionsChatStream = false,
+            runs = false,
+            portable = false,
+            healthy = false,
+            modelOptions = false,
+            sessionModelLock = false,
+        )
+    }
+}
+
+private fun JsonObject.childObject(key: String): JsonObject? = this[key] as? JsonObject
+
+private fun JsonObject.booleanFlag(key: String): Boolean =
+    (this[key] as? JsonPrimitive)?.booleanOrNull == true
+
+private fun JsonObject.hasEndpoint(key: String): Boolean {
+    val path = ((this[key] as? JsonObject)?.get("path") as? JsonPrimitive)?.contentOrNull
+    return !path.isNullOrBlank()
+}
+
+internal fun parseCapabilitiesBody(json: Json, body: String): ServerCapabilities? {
+    val root = try {
+        json.decodeFromString<JsonObject>(body)
+    } catch (_: Exception) {
+        return null
+    }
+
+    val features = root.childObject("features")
+    val endpoints = root.childObject("endpoints")
+    if (features == null && endpoints == null) return null
+
+    fun feature(name: String): Boolean = features?.booleanFlag(name) == true
+    fun endpoint(name: String): Boolean = endpoints?.hasEndpoint(name) == true
+
+    return ServerCapabilities(
+        sessionsApi = feature("session_resources") ||
+            endpoint("sessions") ||
+            endpoint("session_create"),
+        sessionsChatStream = feature("session_chat_streaming") ||
+            endpoint("session_chat_stream"),
+        runs = feature("run_events_sse") || endpoint("run_events"),
+        portable = feature("chat_completions_streaming") ||
+            feature("chat_completions") ||
+            endpoint("chat_completions"),
+        healthy = true,
+        modelOptions = feature("model_options") || endpoint("model_options"),
+        sessionModelLock = feature("session_model_lock") || endpoint("session_model_lock"),
+    )
+}
+
+internal val HERMES_SKILL_ENDPOINTS = listOf("/v1/skills", "/api/skills")
+
+internal fun parseSkillListBody(json: Json, body: String): List<SkillInfo>? {
+    try {
+        val parsed = json.decodeFromString<SkillListResponse>(body)
+        val skills = parsed.skills ?: parsed.items ?: parsed.data
+        if (skills != null) return skills
+    } catch (_: Exception) {
+        // Fall through to direct-array compatibility below.
+    }
+
+    try {
+        return json.decodeFromString<List<SkillInfo>>(body)
+    } catch (_: Exception) {
+        return null
+    }
+}
+
+@Serializable
+data class ToolsetInfo(
+    val name: String,
+    val label: String = "",
+    val description: String = "",
+    val enabled: Boolean = false,
+    val configured: Boolean = false,
+    val tools: List<String> = emptyList(),
+)
+
+@Serializable
+private data class ToolsetListResponse(val data: List<ToolsetInfo> = emptyList())
+
+internal fun parseToolsetListBody(json: Json, body: String): List<ToolsetInfo>? = try {
+    json.decodeFromString<ToolsetListResponse>(body).data
+} catch (_: Exception) {
+    null
+}
+
+/** One OpenAI-compatible `/v1/models` row. [id] is always the request value. */
+data class ApiModelOption(
+    val id: String,
+    val root: String? = null,
+    val parent: String? = null,
+) {
+    /** Secondary picker copy for a configured route alias. */
+    val routeDetail: String?
+        get() = root?.takeIf { it.isNotBlank() && it != id }?.let { "Routes to $it" }
+}
+
+/** Authenticated provider/model inventory advertised by `/api/model/options`. */
+data class ApiProviderModelOptions(
+    val providers: List<GatewayModelProvider>,
+    val currentModel: String,
+    val currentProvider: String,
+)
+
+internal fun parseApiProviderModelOptionsBody(
+    json: Json,
+    body: String,
+): ApiProviderModelOptions? {
+    val root = runCatching { json.parseToJsonElement(body) as? JsonObject }.getOrNull()
+        ?: return null
+    val rows = root["providers"] as? JsonArray ?: return null
+    val providers = normalizeGatewayModelProviders(
+        rows.mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            parseGatewayModelProvider(obj)
+        },
+    )
+    return ApiProviderModelOptions(
+        providers = providers,
+        currentModel = (root["model"] as? JsonPrimitive)?.contentOrNull.orEmpty(),
+        currentProvider = (root["provider"] as? JsonPrimitive)?.contentOrNull.orEmpty(),
+    )
+}
+
+enum class ApiModelRoutingErrorCode {
+    INVENTORY_UNSUPPORTED,
+    INVENTORY_UNAVAILABLE,
+    PROVIDER_NOT_AUTHENTICATED,
+    MODEL_NOT_AVAILABLE,
+    MODEL_NOT_AVAILABLE_ON_PLAN,
+    LOCK_CAPABILITY_INCOMPLETE,
+    LOCK_REJECTED,
+    LOCK_ACK_MISMATCH,
+    LEGACY_PROVIDER_UNSUPPORTED,
+}
+
+class ApiModelRoutingException(
+    val code: ApiModelRoutingErrorCode,
+    message: String,
+    cause: Throwable? = null,
+) : IOException(message, cause)
+
+sealed interface ApiModelSelectionAck {
+    data object ServerDefault : ApiModelSelectionAck
+    data class Locked(
+        val sessionId: String,
+        val model: String,
+        val provider: String?,
+        val effectiveModel: String = model,
+        val effectiveProvider: String? = provider,
+    ) : ApiModelSelectionAck
+    data class LegacyModelHint(val model: String) : ApiModelSelectionAck
+}
+
+internal enum class ApiModelRoutingStrategy { LOCKED, LEGACY_HINT, INCOMPLETE }
+
+internal fun apiModelRoutingStrategy(capabilities: ServerCapabilities): ApiModelRoutingStrategy =
+    when {
+        capabilities.sessionModelLock && capabilities.modelOptions ->
+            ApiModelRoutingStrategy.LOCKED
+        capabilities.sessionModelLock ->
+            ApiModelRoutingStrategy.INCOMPLETE
+        else ->
+            ApiModelRoutingStrategy.LEGACY_HINT
+    }
+
+internal fun sessionTurnModelHint(
+    acknowledgement: ApiModelSelectionAck,
+    requestedModel: String?,
+): String? =
+    if (acknowledgement is ApiModelSelectionAck.Locked) null else requestedModel
+
+internal data class ParsedApiModelLockAck(
+    val sessionId: String?,
+    val model: String?,
+    val provider: String?,
+    val state: String?,
+    val effectiveModel: String?,
+    val effectiveProvider: String?,
+)
+
+internal fun parseApiModelLockAck(json: Json, body: String): ParsedApiModelLockAck? {
+    val root = runCatching { json.parseToJsonElement(body) as? JsonObject }.getOrNull()
+        ?: return null
+    val runtime = root["runtime"] as? JsonObject ?: return null
+    val requested = runtime["requested"] as? JsonObject
+    val effective = runtime["effective"] as? JsonObject
+    return ParsedApiModelLockAck(
+        sessionId = (root["session_id"] as? JsonPrimitive)?.contentOrNull,
+        model = (requested?.get("model") as? JsonPrimitive)?.contentOrNull,
+        provider = (requested?.get("provider") as? JsonPrimitive)?.contentOrNull,
+        state = (runtime["model_lock"] as? JsonPrimitive)?.contentOrNull,
+        effectiveModel = (effective?.get("model") as? JsonPrimitive)?.contentOrNull,
+        effectiveProvider = (effective?.get("provider") as? JsonPrimitive)?.contentOrNull,
+    )
+}
+
+internal fun confirmedRuntimeMatches(
+    runtime: JsonObject?,
+    expected: ApiModelSelectionAck.Locked,
+): Boolean {
+    runtime ?: return false
+    val effective = runtime["effective"] as? JsonObject ?: return false
+    return (runtime["model_lock"] as? JsonPrimitive)?.contentOrNull == "confirmed" &&
+        (effective["model"] as? JsonPrimitive)?.contentOrNull == expected.effectiveModel &&
+        (effective["provider"] as? JsonPrimitive)?.contentOrNull == expected.effectiveProvider
+}
+
+internal fun parseModelOptionsBody(json: Json, body: String): List<ApiModelOption>? {
+    val data = try {
+        (json.parseToJsonElement(body) as? JsonObject)?.get("data") as? JsonArray
+    } catch (_: Exception) {
+        null
+    } ?: return null
+    return data.mapNotNull { row ->
+        val obj = row as? JsonObject ?: return@mapNotNull null
+        val id = (obj["id"] as? JsonPrimitive)?.contentOrNull
+            ?.trim()?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+        ApiModelOption(
+            id = id,
+            root = (obj["root"] as? JsonPrimitive)?.contentOrNull,
+            parent = (obj["parent"] as? JsonPrimitive)?.contentOrNull,
+        )
+    }.distinctBy { it.id }
+}
+
+private const val STREAM_ERROR_BODY_LIMIT = 16L * 1024L
+
+/** Preserve the upstream drain code and bounded retry hint without leaking large bodies. */
+internal fun streamHttpFailureMessage(
+    code: Int,
+    reason: String,
+    retryAfter: String?,
+    body: String?,
+    json: Json,
+): String {
+    val error = body?.takeIf { it.length <= STREAM_ERROR_BODY_LIMIT }?.let { raw ->
+        runCatching { json.parseToJsonElement(raw) as? JsonObject }.getOrNull()?.get("error")
+    }
+    val errorObj = error as? JsonObject
+    val errorCode = (errorObj?.get("code") as? JsonPrimitive)?.contentOrNull
+    val detail = (errorObj?.get("message") as? JsonPrimitive)?.contentOrNull
+        ?: (error as? JsonPrimitive)?.contentOrNull
+    return buildString {
+        append("API error ").append(code).append(": ")
+        if (!errorCode.isNullOrBlank()) append(errorCode).append(": ")
+        append(detail?.takeIf { it.isNotBlank() } ?: reason)
+        retryAfter?.trim()?.toIntOrNull()?.takeIf { it in 0..60 }?.let {
+            append(" (Retry-After: ").append(it).append("s)")
+        }
+    }
+}
+
+internal fun gatewayDrainRetryDelayMillis(
+    httpCode: Int?,
+    retryAfter: String?,
+    errorMessage: String,
+    receivedEvent: Boolean,
+    retryAlreadyScheduled: Boolean,
+): Long? {
+    if (httpCode != 503 || receivedEvent || retryAlreadyScheduled ||
+        !errorMessage.startsWith("API error 503: gateway_draining:")
+    ) return null
+    val seconds = retryAfter?.trim()?.toIntOrNull()?.coerceIn(0, 5) ?: 1
+    return seconds * 1_000L
+}
+
+/** Owns the initial SSE, its one delayed drain retry, and the replacement SSE. */
+private class RetryingEventSource(
+    private val originalRequest: Request,
+    private val handler: Handler,
+) : EventSource {
+    private val lock = Any()
+    private var active: EventSource? = null
+    private var retryRunnable: Runnable? = null
+    private var cancelled = false
+
+    override fun request(): Request = originalRequest
+
+    fun attach(source: EventSource) {
+        synchronized(lock) {
+            if (cancelled) source.cancel() else active = source
+        }
+    }
+
+    fun retryAfter(delayMillis: Long, create: () -> EventSource) {
+        val task = Runnable {
+            synchronized(lock) {
+                retryRunnable = null
+                if (cancelled) return@Runnable
+                // Keep creation under the same lock as cancel(): once Stop or
+                // a session switch wins, no delayed POST can start afterward.
+                active = create()
+            }
+        }
+        synchronized(lock) {
+            if (cancelled) return
+            retryRunnable = task
+            handler.postDelayed(task, delayMillis)
+        }
+    }
+
+    override fun cancel() {
+        val source: EventSource?
+        val task: Runnable?
+        synchronized(lock) {
+            if (cancelled) return
+            cancelled = true
+            source = active
+            active = null
+            task = retryRunnable
+            retryRunnable = null
+        }
+        task?.let(handler::removeCallbacks)
+        source?.cancel()
+    }
+}
+
+/**
+ * Direct HTTP/SSE client for the Hermes API Server.
+ *
+ * Session CRUD via /api/sessions REST endpoints.
+ * Chat streaming via /api/sessions/{id}/chat/stream SSE.
+ * All event callbacks dispatched to the main thread for safe StateFlow updates.
+ */
+class HermesApiClient(
+    baseUrl: String,
+    apiKey: String,
+    httpClient: OkHttpClient? = null,
+    private val json: Json = Json {
+        ignoreUnknownKeys = true
+        isLenient = true
+    },
+    okHttpClient: OkHttpClient? = null,
+) {
+    @Volatile
+    private var lastCapabilities: ServerCapabilities? = null
+    private val baseUrl: String = baseUrl.trimEnd('/')
+    private val apiCredential = runCatching {
+        normalizeCredentialForHeader(apiKey, "API credential")
+    }
+
+    companion object {
+        private const val TAG = "HermesApiClient"
+        private val JSON_MEDIA = "application/json".toMediaType()
+
+        /**
+         * Prefix stamped by [streamFailureMessage] on stream failures raised
+         * by the transport layer (the IOException family: socket reset/close,
+         * DNS, TLS, timeouts) as opposed to a server-reported error. The
+         * dropped-stream answer recovery (issue #166) keys on it via
+         * [isTransportStreamError].
+         */
+        const val TRANSPORT_ERROR_PREFIX = "Connection failed"
+
+        /**
+         * True when a stream `onError` message came from a transport-layer
+         * failure (see [TRANSPORT_ERROR_PREFIX]) — the class of error where
+         * the server may still be running (and persisting) the turn.
+         */
+        fun isTransportStreamError(errorMsg: String): Boolean =
+            errorMsg.startsWith(TRANSPORT_ERROR_PREFIX)
+
+        /** Shared human-readable message for an SSE [EventSourceListener.onFailure]. */
+        private fun streamFailureMessage(t: Throwable?, response: Response?): String = when {
+            response != null && !response.isSuccessful -> streamHttpFailureMessage(
+                code = response.code,
+                reason = response.message,
+                retryAfter = response.header("Retry-After"),
+                body = runCatching { response.peekBody(STREAM_ERROR_BODY_LIMIT).string() }.getOrNull(),
+                json = Json { ignoreUnknownKeys = true },
+            )
+            t is IOException -> "$TRANSPORT_ERROR_PREFIX: ${t.message}"
+            t != null -> "Stream error: ${t.message}"
+            else -> "Unknown stream error"
+        }
+    }
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private val client: OkHttpClient = httpClient ?: okHttpClient ?: OkHttpClient.Builder()
+        .readTimeout(5, TimeUnit.MINUTES)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .build()
+
+    private val sseFactory = EventSources.createFactory(client)
+
+    // --- Health check ---
+
+    suspend fun checkHealth(): Boolean = withContext(Dispatchers.IO) {
+        val startMs = System.currentTimeMillis()
+        try {
+            val request = authRequest("$baseUrl/health").get().build()
+            client.newCall(request).execute().use { response ->
+                val latencyMs = System.currentTimeMillis() - startMs
+                val success = if (!response.isSuccessful) {
+                    false
+                } else {
+                    // Validate it's actually a JSON API, not an HTML error page
+                    val contentType = response.header("Content-Type") ?: ""
+                    contentType.contains("json", ignoreCase = true) ||
+                        contentType.contains("text/plain", ignoreCase = true) ||
+                        (response.body?.string()?.trimStart()?.startsWith("{") == true)
+                }
+                AppAnalytics.onHealthCheck(success, latencyMs)
+                success
+            }
+        } catch (_: Exception) {
+            val latencyMs = System.currentTimeMillis() - startMs
+            AppAnalytics.onHealthCheck(false, latencyMs)
+            false
+        }
+    }
+
+    suspend fun checkHealthDetailed(): HealthCheckResult = withContext(Dispatchers.IO) {
+        try {
+            val request = authRequest("$baseUrl/health").get().build()
+
+            client.newCall(request).execute().use { response ->
+                when {
+                    response.isSuccessful -> HealthCheckResult.Healthy
+                    response.code == 401 || response.code == 403 ->
+                        HealthCheckResult.Unhealthy("Unauthorized — check your API key")
+                    else ->
+                        HealthCheckResult.Unhealthy("Server returned HTTP ${response.code}")
+                }
+            }
+        } catch (e: javax.net.ssl.SSLException) {
+            if (baseUrl.startsWith("https://", ignoreCase = true)) {
+                HealthCheckResult.Unhealthy("TLS handshake failed — try http:// if your server doesn't use HTTPS")
+            } else {
+                HealthCheckResult.Unhealthy("SSL error: ${e.message}")
+            }
+        } catch (e: java.net.ConnectException) {
+            HealthCheckResult.Unhealthy("Connection refused — check the URL and port")
+        } catch (e: java.net.UnknownHostException) {
+            HealthCheckResult.Unhealthy("Server not found — check the hostname")
+        } catch (e: java.net.SocketTimeoutException) {
+            HealthCheckResult.Unhealthy("Connection timed out — is the server running?")
+        } catch (e: InvalidCredentialException) {
+            HealthCheckResult.Unhealthy(e.message ?: "Invalid API credential")
+        } catch (e: IOException) {
+            val msg = e.message ?: ""
+            when {
+                msg.contains("tls", ignoreCase = true) || msg.contains("ssl", ignoreCase = true) ->
+                    HealthCheckResult.Unhealthy("TLS error — try http:// if your server doesn't use HTTPS")
+                else -> HealthCheckResult.Unhealthy("Connection failed: $msg")
+            }
+        } catch (e: Exception) {
+            HealthCheckResult.Unhealthy("Unexpected error: ${e.message}")
+        }
+    }
+
+    suspend fun checkSessionsAuthDetailed(): HealthCheckResult = withContext(Dispatchers.IO) {
+        try {
+            val request = authRequest("$baseUrl/api/sessions?limit=1").get().build()
+
+            client.newCall(request).execute().use { response ->
+                when {
+                    response.isSuccessful -> HealthCheckResult.Healthy
+                    response.code == 401 || response.code == 403 ->
+                        HealthCheckResult.Unhealthy("API reachable, but sessions auth failed - check your API key")
+                    response.code == 404 ->
+                        HealthCheckResult.Unhealthy("API reachable, but /api/sessions is unavailable")
+                    else ->
+                        HealthCheckResult.Unhealthy("Sessions check returned HTTP ${response.code}")
+                }
+            }
+        } catch (e: javax.net.ssl.SSLException) {
+            if (baseUrl.startsWith("https://", ignoreCase = true)) {
+                HealthCheckResult.Unhealthy("TLS handshake failed - try http:// if your server doesn't use HTTPS")
+            } else {
+                HealthCheckResult.Unhealthy("SSL error: ${e.message}")
+            }
+        } catch (e: java.net.ConnectException) {
+            HealthCheckResult.Unhealthy("Connection refused - check the URL and port")
+        } catch (e: java.net.UnknownHostException) {
+            HealthCheckResult.Unhealthy("Server not found - check the hostname")
+        } catch (e: java.net.SocketTimeoutException) {
+            HealthCheckResult.Unhealthy("Connection timed out - is the server running?")
+        } catch (e: IOException) {
+            HealthCheckResult.Unhealthy("Connection failed: ${e.message ?: "I/O error"}")
+        } catch (e: Exception) {
+            HealthCheckResult.Unhealthy("Unexpected error: ${e.message}")
+        }
+    }
+
+    // --- Session CRUD ---
+
+    suspend fun listSessionsResult(limit: Int = SESSION_LIST_WINDOW_LIMIT): Result<List<SessionItem>> = withContext(Dispatchers.IO) {
+        try {
+            val sessions = linkedMapOf<String, SessionItem>()
+            for (page in sessionListPages(limit)) {
+                val request = authRequest(
+                    "$baseUrl/api/sessions?limit=${page.limit}&offset=${page.offset}",
+                ).get().build()
+                val pageSessions = client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        return@withContext Result.failure(apiFailure(response, "List sessions"))
+                    }
+                    val body = response.body.string()
+                    if (body.isBlank()) {
+                        return@withContext Result.failure(IOException("List sessions returned an empty response"))
+                    }
+                    val parsed = json.decodeFromString<SessionListResponse>(body)
+                    parsed.data ?: parsed.items ?: parsed.sessions ?: emptyList()
+                }
+                pageSessions.forEach { sessions.putIfAbsent(it.id, it) }
+                if (pageSessions.size < page.limit) break
+            }
+            Result.success(sessions.values.take(limit.coerceIn(1, SESSION_LIST_WINDOW_LIMIT)))
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to list sessions: ${e.message}")
+            Result.failure(e)
+        }
+    }
+
+    suspend fun listSessions(limit: Int = SESSION_LIST_WINDOW_LIMIT): List<SessionItem> =
+        listSessionsResult(limit).getOrElse { emptyList() }
+
+    suspend fun createSessionResult(
+        title: String? = null,
+        profileName: String? = null,
+        model: String? = null,
+    ): Result<SessionItem> = withContext(Dispatchers.IO) {
+        try {
+            val reqBody = json.encodeToString(
+                CreateSessionRequest(
+                    title = title,
+                    model = model,
+                    profile = AgentDisplay.profileRequestName(profileName),
+                ),
+            )
+            val request = authRequest("$baseUrl/api/sessions")
+                .post(reqBody.toRequestBody(JSON_MEDIA))
+                .build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(apiFailure(response, "Create session"))
+                }
+                val body = response.body.string()
+                if (body.isBlank()) {
+                    return@withContext Result.failure(IOException("Create session returned an empty response"))
+                }
+                val parsed = json.decodeFromString<SessionResponse>(body)
+                val session = parsed.session ?: parsed.id?.let {
+                    SessionItem(id = it, title = parsed.title, model = parsed.model)
+                }
+                session?.let { Result.success(it) }
+                    ?: Result.failure(IOException("Create session response missing session id"))
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to create session: ${e.message}")
+            Result.failure(e)
+        }
+    }
+
+    suspend fun createSession(
+        title: String? = null,
+        profileName: String? = null,
+        model: String? = null,
+    ): SessionItem? =
+        createSessionResult(title, profileName, model).getOrNull()
+
+    suspend fun deleteSession(sessionId: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val request = authRequest("$baseUrl/api/sessions/$sessionId")
+                .delete()
+                .build()
+            client.newCall(request).execute().use { it.isSuccessful }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to delete session: ${e.message}")
+            false
+        }
+    }
+
+    suspend fun renameSession(sessionId: String, title: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val reqBody = json.encodeToString(RenameSessionRequest(title = title))
+            val request = authRequest("$baseUrl/api/sessions/$sessionId")
+                .patch(reqBody.toRequestBody(JSON_MEDIA))
+                .build()
+            client.newCall(request).execute().use { it.isSuccessful }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to rename session: ${e.message}")
+            false
+        }
+    }
+
+    suspend fun setSessionPinned(sessionId: String, pinned: Boolean): Boolean =
+        patchSessionFlag(sessionId, "pinned", pinned)
+
+    suspend fun setSessionArchived(sessionId: String, archived: Boolean): Boolean =
+        patchSessionFlag(sessionId, "archived", archived)
+
+    private suspend fun patchSessionFlag(
+        sessionId: String,
+        field: String,
+        value: Boolean,
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val reqBody = buildJsonObject { put(field, value) }.toString()
+            val request = authRequest("$baseUrl/api/sessions/$sessionId")
+                .patch(reqBody.toRequestBody(JSON_MEDIA))
+                .build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "Set session $field failed: HTTP ${response.code}")
+                }
+                response.isSuccessful
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to set session $field: ${e.message}")
+            false
+        }
+    }
+
+    suspend fun getMessages(
+        sessionId: String,
+        mode: SessionMessageLoadMode = SessionMessageLoadMode.LATEST,
+    ): List<MessageItem> = withContext(Dispatchers.IO) {
+        loadSessionMessages(mode) { page ->
+            try {
+                val url = "$baseUrl/api/sessions/$sessionId/messages".toHttpUrlOrNull()
+                    ?.newBuilder()
+                    ?.addQueryParameter("limit", page.limit.toString())
+                    ?.addQueryParameter("offset", page.offset.toString())
+                    ?.addQueryParameter("order", page.order)
+                    ?.build()
+                    ?: error("invalid session messages URL")
+                val request = authRequest(url.toString()).get().build()
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) error("HTTP ${response.code}")
+                    val body = response.body.readUtf8Bounded(
+                        DashboardApiClient.MAX_JSON_RESPONSE_BYTES,
+                    )
+                    val parsed = json.decodeFromString<MessageListResponse>(body)
+                    SessionMessagePage(
+                        messages = parsed.data ?: parsed.items ?: parsed.messages ?: emptyList(),
+                        pagination = parsed.pagination,
+                        payloadChars = body.length,
+                    )
+                }.let { Result.success(it) }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                Result.failure(error)
+            }
+        }.getOrElse { error ->
+            if (error is CancellationException) throw error
+            Log.w(TAG, "Failed to get messages: ${error.message}")
+            emptyList()
+        }
+    }
+
+    // --- Skills ---
+
+    suspend fun getSkills(): List<SkillInfo> = withContext(Dispatchers.IO) {
+        for (endpoint in HERMES_SKILL_ENDPOINTS) {
+            try {
+                val request = authRequest("$baseUrl$endpoint").get().build()
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) return@use
+                    val body = response.body?.string() ?: return@use
+                    val skills = parseSkillListBody(json, body)
+                    if (skills != null) return@withContext skills
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to fetch skills from $endpoint: ${e.message}")
+            }
+        }
+
+        emptyList()
+    }
+
+    /** Authenticated read-only inventory from upstream `GET /v1/toolsets`. */
+    suspend fun getToolsets(): Result<List<ToolsetInfo>> = withContext(Dispatchers.IO) {
+        try {
+            val request = authRequest("$baseUrl/v1/toolsets").get().build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(IOException("HTTP ${response.code}"))
+                }
+                val body = response.body?.string().orEmpty()
+                val parsed = parseToolsetListBody(json, body)
+                    ?: return@withContext Result.failure(IOException("Malformed toolset inventory"))
+                Result.success(parsed)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    // --- Available models ---
+
+    /**
+     * Available model ids from `GET /v1/models` (OpenAI-compatible:
+     * `{"object":"list","data":[{"id":"…"}]}`). Backs the in-chat model
+     * picker. Returns ids in server order; empty on any failure (the picker
+     * then offers only "Server default").
+     */
+    suspend fun getModelOptions(): List<ApiModelOption> = withContext(Dispatchers.IO) {
+        try {
+            val request = authRequest("$baseUrl/v1/models").get().build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext emptyList()
+                val body = response.body?.string() ?: return@withContext emptyList()
+                parseModelOptionsBody(json, body).orEmpty()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to fetch models: ${e.message}")
+            emptyList()
+        }
+    }
+
+    /** Compatibility view for callers that only need request ids. */
+    suspend fun getModels(): List<String> = getModelOptions().map { it.id }
+
+    /** Provider-aware picker inventory; never falls back to unauthenticated local guesses. */
+    suspend fun getProviderModelOptions(
+        refresh: Boolean = false,
+    ): Result<ApiProviderModelOptions> = withContext(Dispatchers.IO) {
+        try {
+            val suffix = if (refresh) "?refresh=true" else ""
+            val request = authRequest("$baseUrl/api/model/options$suffix").get().build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(
+                        ApiModelRoutingException(
+                            if (response.code == 404) {
+                                ApiModelRoutingErrorCode.INVENTORY_UNSUPPORTED
+                            } else {
+                                ApiModelRoutingErrorCode.INVENTORY_UNAVAILABLE
+                            },
+                            if (response.code == 401 || response.code == 403) {
+                                "Model inventory authorization failed (HTTP ${response.code})."
+                            } else {
+                                "Model inventory unavailable (HTTP ${response.code})."
+                            },
+                        ),
+                    )
+                }
+                val parsed = parseApiProviderModelOptionsBody(json, response.body.string())
+                    ?: return@withContext Result.failure(
+                        ApiModelRoutingException(
+                            ApiModelRoutingErrorCode.INVENTORY_UNAVAILABLE,
+                            "Model inventory returned an invalid response.",
+                        ),
+                    )
+                Result.success(parsed)
+            }
+        } catch (e: Exception) {
+            Result.failure(
+                if (e is ApiModelRoutingException) e else {
+                    ApiModelRoutingException(
+                        ApiModelRoutingErrorCode.INVENTORY_UNAVAILABLE,
+                        "Model inventory could not be loaded.",
+                        e,
+                    )
+                },
+            )
+        }
+    }
+
+    /**
+     * Validate and, on capable servers, persist a model/provider lock before a
+     * session turn is submitted. This never writes global config.
+     */
+    suspend fun acknowledgeSessionModelSelection(
+        sessionId: String,
+        model: String?,
+        provider: String?,
+    ): Result<ApiModelSelectionAck> = withContext(Dispatchers.IO) {
+        val selectedModel = AgentDisplay.requestModelName(model)
+            ?: return@withContext Result.success(ApiModelSelectionAck.ServerDefault)
+        val selectedProvider = provider?.trim()?.takeIf { it.isNotEmpty() }
+        // Capability snapshots can be populated by a disconnected startup
+        // probe. Re-probe at the lock boundary instead of trusting a stale
+        // false forever after the connection recovers.
+        val capabilities = probeCapabilities()
+
+        if (apiModelRoutingStrategy(capabilities) == ApiModelRoutingStrategy.LOCKED) {
+            val inventory = getProviderModelOptions().getOrElse {
+                return@withContext Result.failure(it)
+            }
+            val aliases = getModelOptions()
+            val selectedRoot = aliases.firstOrNull { it.id == selectedModel }?.root
+                ?.takeIf { it.isNotBlank() }
+            val providerModel = selectedRoot ?: selectedModel
+            val providerRow = when {
+                selectedProvider != null ->
+                    inventory.providers.firstOrNull { it.slug == selectedProvider }
+                else -> inventory.providers.singleOrNull { providerModel in it.models }
+                        ?: inventory.providers.firstOrNull {
+                            it.isCurrent && providerModel in it.models
+                        }
+            } ?: return@withContext Result.failure(
+                ApiModelRoutingException(
+                    ApiModelRoutingErrorCode.MODEL_NOT_AVAILABLE,
+                    "The selected model is not in the API server's authenticated inventory.",
+                ),
+            )
+            if (!providerRow.authenticated) {
+                return@withContext Result.failure(
+                    ApiModelRoutingException(
+                        ApiModelRoutingErrorCode.PROVIDER_NOT_AUTHENTICATED,
+                        "The selected provider is not authenticated on this profile.",
+                    ),
+                )
+            }
+            if (providerModel !in providerRow.models) {
+                return@withContext Result.failure(
+                    ApiModelRoutingException(
+                        ApiModelRoutingErrorCode.MODEL_NOT_AVAILABLE,
+                        "The selected model is not available from ${providerRow.name}.",
+                    ),
+                )
+            }
+            if (providerModel in providerRow.unavailableModels) {
+                return@withContext Result.failure(
+                    ApiModelRoutingException(
+                        ApiModelRoutingErrorCode.MODEL_NOT_AVAILABLE_ON_PLAN,
+                        "The selected model is not available on the authenticated account.",
+                    ),
+                )
+            }
+
+            val body = kotlinx.serialization.json.buildJsonObject {
+                put("model", selectedModel)
+                put("provider", providerRow.slug)
+            }
+            try {
+                val request = authRequest("$baseUrl/api/sessions/$sessionId/model")
+                    .post(json.encodeToString(JsonObject.serializer(), body).toRequestBody(JSON_MEDIA))
+                    .build()
+                client.newCall(request).execute().use { response ->
+                    val responseBody = response.body.string()
+                    if (!response.isSuccessful) {
+                        return@withContext Result.failure(
+                            ApiModelRoutingException(
+                                ApiModelRoutingErrorCode.LOCK_REJECTED,
+                                streamHttpFailureMessage(
+                                    response.code,
+                                    response.message,
+                                    response.header("Retry-After"),
+                                    responseBody,
+                                    json,
+                                ),
+                            ),
+                        )
+                    }
+                    val ack = parseApiModelLockAck(json, responseBody)
+                    if (
+                        ack?.sessionId != sessionId ||
+                        ack?.model != selectedModel ||
+                        ack?.provider != providerRow.slug ||
+                        ack?.state != "accepted" ||
+                        ack?.effectiveModel.isNullOrBlank() ||
+                        ack?.effectiveProvider.isNullOrBlank()
+                    ) {
+                        return@withContext Result.failure(
+                            ApiModelRoutingException(
+                                ApiModelRoutingErrorCode.LOCK_ACK_MISMATCH,
+                                "Server did not acknowledge the requested model lock.",
+                            ),
+                        )
+                    }
+                    val confirmedAck = requireNotNull(ack)
+                    Result.success(
+                        ApiModelSelectionAck.Locked(
+                            sessionId = sessionId,
+                            model = selectedModel,
+                            provider = providerRow.slug,
+                            effectiveModel = requireNotNull(confirmedAck.effectiveModel),
+                            effectiveProvider = confirmedAck.effectiveProvider,
+                        ),
+                    )
+                }
+            } catch (e: Exception) {
+                Result.failure(
+                    if (e is ApiModelRoutingException) e else {
+                        ApiModelRoutingException(
+                            ApiModelRoutingErrorCode.LOCK_REJECTED,
+                            "Model lock request failed before the message was sent.",
+                        )
+                    },
+                )
+            }
+        } else {
+            if (apiModelRoutingStrategy(capabilities) == ApiModelRoutingStrategy.INCOMPLETE) {
+                return@withContext Result.failure(
+                    ApiModelRoutingException(
+                        ApiModelRoutingErrorCode.LOCK_CAPABILITY_INCOMPLETE,
+                        "Server advertises an incomplete model-routing contract.",
+                    ),
+                )
+            }
+            if (selectedProvider != null) {
+                return@withContext Result.failure(
+                    ApiModelRoutingException(
+                        ApiModelRoutingErrorCode.LEGACY_PROVIDER_UNSUPPORTED,
+                        "This Hermes version cannot safely preserve a provider selection on API fallback.",
+                    ),
+                )
+            }
+            val advertised = getModelOptions().map { it.id }
+            if (selectedModel !in advertised) {
+                return@withContext Result.failure(
+                    ApiModelRoutingException(
+                        ApiModelRoutingErrorCode.MODEL_NOT_AVAILABLE,
+                        "This Hermes version did not advertise the selected model for API fallback.",
+                    ),
+                )
+            }
+            Result.success(ApiModelSelectionAck.LegacyModelHint(selectedModel))
+        }
+    }
+
+    // --- Server personalities ---
+
+    /**
+     * Personality config fetched from GET /api/config.
+     * Names are the keys from config.agent.personalities.
+     * Prompts map personality name → system prompt text.
+     * Default is from config.display.personality (the server's active personality).
+     */
+    data class PersonalityConfig(
+        val names: List<String> = emptyList(),
+        val prompts: Map<String, String> = emptyMap(),
+        val defaultName: String = "",
+        val modelName: String = ""
+    )
+
+    suspend fun getPersonalities(): PersonalityConfig = withContext(Dispatchers.IO) {
+        try {
+            val request = authRequest("$baseUrl/api/config").get().build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext PersonalityConfig()
+                val body = response.body?.string() ?: return@withContext PersonalityConfig()
+                val root = json.parseToJsonElement(body) as? JsonObject
+                    ?: return@withContext PersonalityConfig()
+
+                // Model name from top-level: { "model": "claude-opus-4-6", ... }
+                val modelName = (root["model"] as? kotlinx.serialization.json.JsonPrimitive)?.content ?: ""
+
+                val config = root["config"] as? JsonObject
+                    ?: return@withContext PersonalityConfig(modelName = modelName)
+
+                // Personalities: config.agent.personalities { name: "system prompt", ... }
+                val agent = config["agent"] as? JsonObject
+                val personalitiesObj = agent?.get("personalities") as? JsonObject
+                val prompts = parsePersonalityPrompts(personalitiesObj)
+
+                // Default display identity. Upstream Hermes currently uses
+                // config.display.personality for the active persona and often
+                // mirrors the same identity through skin. Accept name-style
+                // aliases too so older or profile-specific configs don't make
+                // Android fall back to the literal "Hermes" label.
+                val display = config["display"] as? JsonObject
+                val defaultPersonality = display.stringField("personality")
+                val defaultName = firstNonBlank(
+                    defaultPersonality.takeUnless { it.equals("default", ignoreCase = true) },
+                    display.stringField("agent_name"),
+                    display.stringField("assistant_name"),
+                    display.stringField("display_name"),
+                    display.stringField("name"),
+                    display.stringField("skin"),
+                    defaultPersonality,
+                )
+
+                PersonalityConfig(
+                    names = prompts.keys.toList(),
+                    prompts = prompts,
+                    defaultName = defaultName,
+                    modelName = modelName
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to fetch personalities: ${e.message}")
+            PersonalityConfig()
+        }
+    }
+
+    // --- Chat streaming via /api/sessions/{id}/chat/stream ---
+
+    /**
+     * Stream chat via the sessions endpoint.
+     *
+     * @param modelOverride When non-null and non-blank, injects `"model":
+     *   "<value>"` at the top level of the session-chat request body,
+     *   asking the server to use that model for this turn. When null or
+     *   blank the `model` field is omitted entirely and the server falls
+     *   back to its session default. Used by the agent-profile picker so
+     *   an explicit user choice wins over implicit session/server defaults.
+     *   Best-effort hint: current native upstream does not parse `model`
+     *   on this route (legacy fork builds honor it) — see the contract
+     *   notes in `HermesChatPayloads.kt`.
+     */
+    fun sendChatStream(
+        sessionId: String,
+        message: String,
+        systemMessage: String? = null,
+        attachments: List<com.hermesandroid.relay.data.Attachment>? = null,
+        /**
+         * Pre-built OpenAI-format synthetic messages carrying phone-local
+         * context (voice intents, card dispatches, realtime voice turns).
+         * Produced by
+         * [com.hermesandroid.relay.voice.VoiceIntentSyncBuilder.buildSyntheticMessages]
+         * and its twin builders; the param name is historical — it accepts
+         * any synthetic-message array.
+         *
+         * Upstream's session-chat handler consumes only `message` and
+         * `system_message` — a top-level `messages` array is NOT parsed
+         * (verified in `gateway/platforms/api_server.py`,
+         * `_handle_session_chat_stream`), so these can't ride the request
+         * as real history entries. Instead [buildSessionChatStreamPayload]
+         * renders them as a plain-text digest folded into this turn's
+         * ephemeral `system_message`. The model sees the context for THIS
+         * turn only; it is not persisted server-side. See the mapping notes
+         * in `HermesChatPayloads.kt`.
+         *
+         * Null / empty on every send that has no unsynced traces to
+         * communicate, which is the common case after the first sync.
+         */
+        voiceIntentMessages: JsonArray? = null,
+        onSessionId: (String) -> Unit,
+        onMessageStarted: (String) -> Unit,
+        onTextDelta: (String) -> Unit,
+        onThinkingDelta: (String) -> Unit,
+        onToolCallStart: (String, String) -> Unit,
+        onToolCallDone: (String, String?) -> Unit,
+        onToolCallFailed: (String, String?) -> Unit,
+        onTurnComplete: () -> Unit,
+        onComplete: () -> Unit,
+        onUsage: (UsageInfo?) -> Unit,
+        onError: (String) -> Unit,
+        modelOverride: String? = null,
+        profileName: String? = null,
+        expectedModelLock: ApiModelSelectionAck.Locked? = null,
+    ): EventSource {
+        if (!modelOverride.isNullOrBlank()) {
+            Log.d(TAG, "sendChatStream: modelOverride=$modelOverride (profile pick)")
+        }
+        AgentDisplay.profileRequestName(profileName)?.let {
+            Log.d(TAG, "sendChatStream: profile=$it")
+        }
+        val built = buildSessionChatStreamPayload(
+            message = message,
+            systemMessage = systemMessage,
+            attachments = attachments,
+            voiceIntentMessages = voiceIntentMessages,
+            modelOverride = modelOverride,
+            profileName = profileName,
+        )
+        logDroppedAttachments("sessions chat/stream", built.droppedAttachments)
+        val requestBody = json.encodeToString(JsonObject.serializer(), built.payload)
+
+        val request = authRequestOrNull("$baseUrl/api/sessions/$sessionId/chat/stream")
+            ?.header("Accept", "text/event-stream")
+            ?.post(requestBody.toRequestBody(JSON_MEDIA))
+            ?.build()
+            ?: run {
+                // #131: malformed base URL — fail the turn through the normal
+                // error channel instead of throwing out of the ViewModel.
+                mainHandler.post { onError(invalidBaseUrlMessage()) }
+                return failedEventSource()
+            }
+
+        val completeCalled = AtomicBoolean(false)
+        val runtimeConfirmed = AtomicBoolean(expectedModelLock == null)
+        val receivedEvent = AtomicBoolean(false)
+        val drainRetryScheduled = AtomicBoolean(false)
+        val turnSource = RetryingEventSource(request, mainHandler)
+        // Comparable to the gateway's turn[gateway] line — see TurnLatencyTracer.
+        val tracer = TurnLatencyTracer("sessions")
+
+        // Notify caller of the session ID being used
+        mainHandler.post { onSessionId(sessionId) }
+
+        val listener = object : EventSourceListener() {
+            override fun onEvent(
+                eventSource: EventSource,
+                id: String?,
+                type: String?,
+                data: String
+            ) {
+                receivedEvent.set(true)
+                tracer.mark("ttfe")
+                if (data == "[DONE]") {
+                    if (completeCalled.compareAndSet(false, true)) {
+                        mainHandler.post {
+                            if (runtimeConfirmed.get()) {
+                                onComplete()
+                            } else {
+                                onError("Server ended the turn without confirming the selected model route.")
+                            }
+                        }
+                    }
+                    return
+                }
+
+                try {
+                    val event = json.decodeFromString<HermesSseEvent>(data)
+
+                    // First visible streamed token (reasoning OR text) — the
+                    // metric that exposes SSE's reasoning dead-air vs gateway.
+                    if (!event.delta.isNullOrEmpty() || !event.thinkingDelta.isNullOrEmpty() ||
+                        !event.thinking.isNullOrEmpty()
+                    ) {
+                        tracer.mark("ttft")
+                    }
+
+                    // Check for usage data on ANY event before type resolution
+                    // (OpenAI-format chunks have no type/event field but may carry usage)
+                    if (event.usage != null && (event.usage.resolvedInputTokens != null || event.usage.resolvedOutputTokens != null)) {
+                        mainHandler.post { onUsage(event.usage) }
+                    }
+
+                    val eventType = type ?: event.resolvedType ?: return
+
+                    // Debug: log every SSE event type (content truncated for deltas)
+                    if (eventType.startsWith("assistant.delta") || eventType == "tool.progress") {
+                        Log.d(TAG, "SSE ← $eventType (${data.length} chars)")
+                    } else {
+                        Log.d(TAG, "SSE ← $eventType | ${data.take(300)}")
+                    }
+
+                    when (eventType) {
+                        // --- Hermes-native events ---
+                        "assistant.delta" -> {
+                            val delta = event.delta
+                            if (!delta.isNullOrEmpty()) {
+                                mainHandler.post { onTextDelta(delta) }
+                            }
+                        }
+                        "tool.progress" -> {
+                            val delta = event.delta
+                            if (!delta.isNullOrEmpty()) {
+                                mainHandler.post { onThinkingDelta(delta) }
+                            }
+                        }
+                        "tool.pending", "tool.started" -> {
+                            val toolName = event.resolvedToolName ?: "unknown"
+                            val callId = event.callId ?: event.toolCallId ?: toolName
+                            Log.d(TAG, "SSE tool start: name=$toolName callId=$callId")
+                            mainHandler.post { onToolCallStart(callId, toolName) }
+                        }
+                        "tool.completed" -> {
+                            val callId = event.callId ?: event.toolCallId ?: event.resolvedToolName ?: ""
+                            mainHandler.post { onToolCallDone(callId, event.resultPreview) }
+                        }
+                        "tool.failed" -> {
+                            val callId = event.callId ?: event.toolCallId ?: event.resolvedToolName ?: ""
+                            val errorMsg = event.error ?: event.messageText ?: "Tool failed"
+                            mainHandler.post { onToolCallFailed(callId, errorMsg) }
+                        }
+                        // message.started — server assigns a new message ID for each turn
+                        "message.started" -> {
+                            val msgObj = event.message as? JsonObject
+                            val serverMsgId = (msgObj?.get("id") as? kotlinx.serialization.json.JsonPrimitive)?.content
+                            if (serverMsgId != null) {
+                                mainHandler.post { onMessageStarted(serverMsgId) }
+                            }
+                            Log.d(TAG, "SSE message.started: id=$serverMsgId")
+                        }
+                        // Informational events — acknowledged but not surfaced to UI yet
+                        "session.created", "run.started",
+                        "memory.updated", "skill.loaded", "artifact.created" -> {
+                            Log.d(TAG, "SSE info event: $eventType")
+                        }
+                        // assistant.completed — one turn finished, but run may continue with tool calls
+                        "assistant.completed" -> {
+                            val runtimeMatches = expectedModelLock?.let {
+                                confirmedRuntimeMatches(event.runtime, it)
+                            } ?: true
+                            if (runtimeMatches) runtimeConfirmed.set(true)
+                            mainHandler.post {
+                                onUsage(event.usage)
+                                if (!runtimeMatches) {
+                                    if (completeCalled.compareAndSet(false, true)) {
+                                        onError("Server response did not confirm the selected model route.")
+                                    }
+                                } else if (event.interrupted == true) {
+                                    if (completeCalled.compareAndSet(false, true)) {
+                                        onError("Response interrupted")
+                                    }
+                                } else {
+                                    onTurnComplete()
+                                }
+                            }
+                        }
+                        // run.completed — the entire agent loop is done (all turns + tool calls)
+                        "run.completed" -> {
+                            if (completeCalled.compareAndSet(false, true)) {
+                                val runtimeMatches = expectedModelLock?.let {
+                                    confirmedRuntimeMatches(event.runtime, it)
+                                } ?: true
+                                if (runtimeMatches) runtimeConfirmed.set(true)
+                                mainHandler.post {
+                                    onUsage(event.usage)
+                                    if (!runtimeMatches) {
+                                        onError("Server response did not confirm the selected model route.")
+                                    } else if (event.interrupted == true) {
+                                        onError("Run interrupted")
+                                    } else {
+                                        onComplete()
+                                    }
+                                }
+                            }
+                        }
+                        "done" -> {
+                            if (completeCalled.compareAndSet(false, true)) {
+                                mainHandler.post {
+                                    if (runtimeConfirmed.get()) {
+                                        onComplete()
+                                    } else {
+                                        onError("Server ended the turn without confirming the selected model route.")
+                                    }
+                                }
+                            }
+                        }
+                        "error" -> {
+                            if (completeCalled.compareAndSet(false, true)) {
+                                val msg = event.messageText ?: event.error ?: "Unknown error"
+                                mainHandler.post { onError(msg) }
+                            }
+                        }
+
+                        // --- Legacy/backward-compat event names ---
+                        "thinking_delta", "reasoning_delta", "thinking" -> {
+                            val thinkingText = event.thinkingDelta ?: event.thinking ?: event.delta
+                            if (!thinkingText.isNullOrEmpty()) {
+                                mainHandler.post { onThinkingDelta(thinkingText) }
+                            }
+                        }
+                        "content_delta", "delta" -> {
+                            val thinking = event.thinking ?: event.thinkingDelta
+                            if (!thinking.isNullOrEmpty()) {
+                                mainHandler.post { onThinkingDelta(thinking) }
+                            }
+                            val delta = event.delta
+                            if (!delta.isNullOrEmpty()) {
+                                mainHandler.post { onTextDelta(delta) }
+                            }
+                        }
+                        "tool_start", "tool_started" -> {
+                            val toolName = event.toolName ?: event.name ?: "unknown"
+                            val callId = event.callId ?: event.toolCallId ?: toolName
+                            mainHandler.post { onToolCallStart(callId, toolName) }
+                        }
+                        "tool_result", "tool_completed" -> {
+                            val callId = event.callId ?: event.toolCallId ?: event.toolName ?: event.name ?: ""
+                            mainHandler.post { onToolCallDone(callId, event.resultPreview) }
+                        }
+                        "content_complete", "complete", "completed" -> {
+                            if (completeCalled.compareAndSet(false, true)) {
+                                mainHandler.post {
+                                    onUsage(event.usage)
+                                    onComplete()
+                                }
+                            }
+                        }
+                        else -> {
+                            Log.d(TAG, "Unhandled SSE event type: $eventType | data: ${data.take(200)}")
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Unparseable SSE event ($type): ${e.message}\nRaw: $data")
+                }
+            }
+
+            override fun onFailure(
+                eventSource: EventSource,
+                t: Throwable?,
+                response: Response?
+            ) {
+                val msg = streamFailureMessage(t, response)
+                val retryDelay = gatewayDrainRetryDelayMillis(
+                    response?.code,
+                    response?.header("Retry-After"),
+                    msg,
+                    receivedEvent.get(),
+                    drainRetryScheduled.get(),
+                )
+                if (retryDelay != null && drainRetryScheduled.compareAndSet(false, true)) {
+                    turnSource.retryAfter(retryDelay) { sseFactory.newEventSource(request, this) }
+                    return
+                }
+                tracer.done("error")
+                if (completeCalled.compareAndSet(false, true)) {
+                    mainHandler.post { onError(msg) }
+                }
+            }
+
+            override fun onClosed(eventSource: EventSource) {
+                tracer.done()
+                if (completeCalled.compareAndSet(false, true)) {
+                    mainHandler.post {
+                        if (runtimeConfirmed.get()) {
+                            onComplete()
+                        } else {
+                            onError("Server closed the turn without confirming the selected model route.")
+                        }
+                    }
+                }
+            }
+        }
+
+        turnSource.attach(sseFactory.newEventSource(request, listener))
+        return turnSource
+    }
+
+    // --- OpenAI-compatible chat streaming via /v1/chat/completions ---
+
+    /**
+     * Stream chat through the OpenAI-compatible chat completions endpoint.
+     *
+     * This is the portable SSE fallback for servers that expose
+     * `/v1/chat/completions` but where `/v1/runs` is an async JSON run-start
+     * API rather than an EventSource-compatible stream.
+     */
+    fun sendChatCompletionsStream(
+        message: String,
+        model: String? = null,
+        systemMessage: String? = null,
+        attachments: List<com.hermesandroid.relay.data.Attachment>? = null,
+        voiceIntentMessages: JsonArray? = null,
+        onSessionId: (String) -> Unit,
+        onMessageStarted: (String) -> Unit,
+        onTextDelta: (String) -> Unit,
+        onThinkingDelta: (String) -> Unit,
+        onToolCallStart: (String, String) -> Unit,
+        onToolCallDone: (String, String?) -> Unit,
+        onToolCallFailed: (String, String?) -> Unit,
+        onTurnComplete: () -> Unit,
+        onComplete: () -> Unit,
+        onUsage: (UsageInfo?) -> Unit,
+        onError: (String) -> Unit,
+        modelOverride: String? = null,
+        profileName: String? = null,
+    ): EventSource {
+        if (!modelOverride.isNullOrBlank()) {
+            Log.d(TAG, "sendChatCompletionsStream: modelOverride=$modelOverride (profile pick, was model=$model)")
+        }
+        AgentDisplay.profileRequestName(profileName)?.let {
+            Log.d(TAG, "sendChatCompletionsStream: profile=$it")
+        }
+        val built = buildChatCompletionsStreamPayload(
+            message = message,
+            model = model,
+            systemMessage = systemMessage,
+            attachments = attachments,
+            voiceIntentMessages = voiceIntentMessages,
+            modelOverride = modelOverride,
+            profileName = profileName,
+        )
+        logDroppedAttachments("chat completions", built.droppedAttachments)
+        val requestBody = json.encodeToString(JsonObject.serializer(), built.payload)
+
+        val request = authRequestOrNull("$baseUrl/v1/chat/completions")
+            ?.header("Accept", "text/event-stream")
+            ?.post(requestBody.toRequestBody(JSON_MEDIA))
+            ?.build()
+            ?: run {
+                // #131: malformed base URL — see sendChatStream.
+                mainHandler.post { onError(invalidBaseUrlMessage()) }
+                return failedEventSource()
+            }
+
+        val completeCalled = AtomicBoolean(false)
+        val messageStarted = AtomicBoolean(false)
+        val receivedEvent = AtomicBoolean(false)
+        val drainRetryScheduled = AtomicBoolean(false)
+        val turnSource = RetryingEventSource(request, mainHandler)
+        // Comparable to the gateway's turn[gateway] line — see TurnLatencyTracer.
+        val tracer = TurnLatencyTracer("completions")
+
+        val listener = object : EventSourceListener() {
+            override fun onEvent(
+                eventSource: EventSource,
+                id: String?,
+                type: String?,
+                data: String
+            ) {
+                receivedEvent.set(true)
+                tracer.mark("ttfe")
+                if (data == "[DONE]") {
+                    if (completeCalled.compareAndSet(false, true)) {
+                        mainHandler.post { onComplete() }
+                    }
+                    return
+                }
+
+                try {
+                    val event = json.decodeFromString<JsonObject>(data)
+                    openAiErrorMessage(event)?.let { msg ->
+                        if (completeCalled.compareAndSet(false, true)) {
+                            mainHandler.post { onError(msg) }
+                        }
+                        return
+                    }
+
+                    openAiUsage(event)?.let { usage ->
+                        mainHandler.post { onUsage(usage) }
+                    }
+
+                    if (messageStarted.compareAndSet(false, true)) {
+                        openAiMessageId(event)?.let { messageId ->
+                            mainHandler.post { onMessageStarted(messageId) }
+                        }
+                    }
+
+                    openAiReasoningDelta(event)?.let { reasoning ->
+                        if (reasoning.isNotEmpty()) {
+                            tracer.mark("ttft")
+                            mainHandler.post { onThinkingDelta(reasoning) }
+                        }
+                    }
+
+                    openAiTextDelta(event)?.let { delta ->
+                        if (delta.isNotEmpty()) {
+                            tracer.mark("ttft")
+                            mainHandler.post { onTextDelta(delta) }
+                        }
+                    }
+
+                    val finishReason = openAiFinishReason(event)
+                    if (!finishReason.isNullOrBlank() && completeCalled.compareAndSet(false, true)) {
+                        mainHandler.post { onComplete() }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Unparseable chat completion SSE event ($type): ${e.message}\nRaw: $data")
+                }
+            }
+
+            override fun onFailure(
+                eventSource: EventSource,
+                t: Throwable?,
+                response: Response?
+            ) {
+                val msg = streamFailureMessage(t, response)
+                val retryDelay = gatewayDrainRetryDelayMillis(
+                    response?.code,
+                    response?.header("Retry-After"),
+                    msg,
+                    receivedEvent.get(),
+                    drainRetryScheduled.get(),
+                )
+                if (retryDelay != null && drainRetryScheduled.compareAndSet(false, true)) {
+                    turnSource.retryAfter(retryDelay) { sseFactory.newEventSource(request, this) }
+                    return
+                }
+                tracer.done("error")
+                if (completeCalled.compareAndSet(false, true)) {
+                    mainHandler.post { onError(msg) }
+                }
+            }
+
+            override fun onClosed(eventSource: EventSource) {
+                tracer.done()
+                if (completeCalled.compareAndSet(false, true)) {
+                    mainHandler.post { onComplete() }
+                }
+            }
+        }
+
+        turnSource.attach(sseFactory.newEventSource(request, listener))
+        return turnSource
+    }
+
+    private fun openAiChoice(event: JsonObject): JsonObject? =
+        (event["choices"] as? JsonArray)
+            ?.firstOrNull()
+            ?.let { it as? JsonObject }
+
+    private fun openAiDelta(event: JsonObject): JsonObject? =
+        openAiChoice(event)?.get("delta") as? JsonObject
+
+    private fun openAiTextDelta(event: JsonObject): String? =
+        (openAiDelta(event)?.get("content") as? JsonPrimitive)?.contentOrNull
+
+    private fun openAiReasoningDelta(event: JsonObject): String? {
+        val delta = openAiDelta(event) ?: return null
+        return (delta["reasoning_content"] as? JsonPrimitive)?.contentOrNull
+            ?: (delta["reasoning"] as? JsonPrimitive)?.contentOrNull
+            ?: (delta["thinking"] as? JsonPrimitive)?.contentOrNull
+    }
+
+    private fun openAiFinishReason(event: JsonObject): String? =
+        (openAiChoice(event)?.get("finish_reason") as? JsonPrimitive)?.contentOrNull
+
+    private fun openAiMessageId(event: JsonObject): String? =
+        (event["id"] as? JsonPrimitive)?.contentOrNull
+
+    private fun openAiErrorMessage(event: JsonObject): String? {
+        val error = event["error"] ?: return null
+        return when (error) {
+            is JsonPrimitive -> error.contentOrNull
+            is JsonObject -> (error["message"] as? JsonPrimitive)?.contentOrNull
+                ?: (error["error"] as? JsonPrimitive)?.contentOrNull
+            else -> null
+        }
+    }
+
+    private fun openAiUsage(event: JsonObject): UsageInfo? =
+        (event["usage"] as? JsonObject)?.let { usage ->
+            runCatching { json.decodeFromJsonElement<UsageInfo>(usage) }.getOrNull()
+        }
+
+    // --- Run streaming via /v1/runs ---
+
+    /**
+     * Stream a run via `/v1/runs`.
+     *
+     * @param model Caller's default model selection (nullable). When
+     *   [modelOverride] is null/blank this is used as the `model` field,
+     *   or `"default"` if both are null — preserving the pre-profile
+     *   behaviour exactly.
+     * @param modelOverride When non-null and non-blank, wins over [model]
+     *   and is injected as the top-level `"model"` field in the run
+     *   request body. Used by the agent-profile picker so an explicit
+     *   user-selected profile model takes precedence over any implicit
+     *   caller default. When null/blank this parameter is ignored and
+     *   [model] drives selection as before.
+     */
+    fun sendRunStream(
+        message: String,
+        model: String? = null,
+        systemMessage: String? = null,
+        attachments: List<com.hermesandroid.relay.data.Attachment>? = null,
+        /**
+         * See [sendChatStream]'s `voiceIntentMessages` doc. On the runs
+         * path the mapping differs slightly: plain user/assistant text
+         * turns ride the upstream-parsed `conversation_history` field,
+         * while tool-call pairs fold into the `instructions` digest —
+         * see [buildRunStreamPayload].
+         */
+        voiceIntentMessages: JsonArray? = null,
+        onSessionId: (String) -> Unit,
+        onMessageStarted: (String) -> Unit,
+        onTextDelta: (String) -> Unit,
+        onThinkingDelta: (String) -> Unit,
+        onToolCallStart: (String, String) -> Unit,
+        onToolCallDone: (String, String?) -> Unit,
+        onToolCallFailed: (String, String?) -> Unit,
+        onTurnComplete: () -> Unit,
+        onComplete: () -> Unit,
+        onUsage: (UsageInfo?) -> Unit,
+        onError: (String) -> Unit,
+        modelOverride: String? = null,
+        profileName: String? = null,
+    ): EventSource {
+        if (!modelOverride.isNullOrBlank()) {
+            Log.d(TAG, "sendRunStream: modelOverride=$modelOverride (profile pick, was model=$model)")
+        }
+        AgentDisplay.profileRequestName(profileName)?.let {
+            Log.d(TAG, "sendRunStream: profile=$it")
+        }
+        val built = buildRunStreamPayload(
+            message = message,
+            model = model,
+            systemMessage = systemMessage,
+            attachments = attachments,
+            voiceIntentMessages = voiceIntentMessages,
+            modelOverride = modelOverride,
+            profileName = profileName,
+        )
+        logDroppedAttachments("runs", built.droppedAttachments)
+        val requestBody = json.encodeToString(JsonObject.serializer(), built.payload)
+
+        val request = authRequestOrNull("$baseUrl/v1/runs")
+            ?.header("Accept", "text/event-stream")
+            ?.post(requestBody.toRequestBody(JSON_MEDIA))
+            ?.build()
+            ?: run {
+                // #131: malformed base URL — see sendChatStream.
+                mainHandler.post { onError(invalidBaseUrlMessage()) }
+                return failedEventSource()
+            }
+
+        val completeCalled = AtomicBoolean(false)
+        val receivedEvent = AtomicBoolean(false)
+        val drainRetryScheduled = AtomicBoolean(false)
+        val turnSource = RetryingEventSource(request, mainHandler)
+        // Comparable to the gateway's turn[gateway] line — see TurnLatencyTracer.
+        val tracer = TurnLatencyTracer("runs")
+
+        val listener = object : EventSourceListener() {
+            override fun onEvent(
+                eventSource: EventSource,
+                id: String?,
+                type: String?,
+                data: String
+            ) {
+                receivedEvent.set(true)
+                tracer.mark("ttfe")
+                if (data == "[DONE]") {
+                    if (completeCalled.compareAndSet(false, true)) {
+                        mainHandler.post { onComplete() }
+                    }
+                    return
+                }
+
+                try {
+                    val event = json.decodeFromString<HermesSseEvent>(data)
+
+                    // First visible streamed token (reasoning OR text) — the
+                    // metric that exposes SSE's reasoning dead-air vs gateway.
+                    if (!event.delta.isNullOrEmpty() || !event.thinkingDelta.isNullOrEmpty() ||
+                        !event.thinking.isNullOrEmpty()
+                    ) {
+                        tracer.mark("ttft")
+                    }
+
+                    // Check for usage data before type resolution (catches OpenAI-format chunks)
+                    if (event.usage != null && (event.usage.resolvedInputTokens != null || event.usage.resolvedOutputTokens != null)) {
+                        mainHandler.post { onUsage(event.usage) }
+                    }
+
+                    val eventType = type ?: event.resolvedType ?: return
+
+                    when (eventType) {
+                        "response.created" -> {
+                            // Extract session/run ID if available
+                            val sid = event.sessionId ?: event.runId
+                            if (sid != null) {
+                                mainHandler.post { onSessionId(sid) }
+                            }
+                            Log.d(TAG, "Run response created")
+                        }
+                        "response.in_progress" -> {
+                            Log.d(TAG, "Run response in progress")
+                        }
+                        "response.output_item.added",
+                        "response.content_part.added" -> {
+                            Log.d(TAG, "Run SSE info: $eventType")
+                        }
+                        "response.output_text.delta" -> {
+                            val delta = event.delta
+                            if (!delta.isNullOrEmpty()) {
+                                mainHandler.post { onTextDelta(delta) }
+                            }
+                        }
+                        "response.output_text.done" -> {
+                            Log.d(TAG, "Run output text done")
+                        }
+                        // Tool events — Hermes /v1/runs uses "tool" field, sessions uses "tool_name"
+                        "tool.started", "tool.pending" -> {
+                            val toolName = event.resolvedToolName ?: "unknown"
+                            val callId = event.callId ?: event.toolCallId ?: toolName
+                            Log.d(TAG, "Run SSE tool start: name=$toolName callId=$callId")
+                            mainHandler.post { onToolCallStart(callId, toolName) }
+                        }
+                        "tool.completed" -> {
+                            val callId = event.callId ?: event.toolCallId ?: event.resolvedToolName ?: ""
+                            val durationStr = event.duration?.let { String.format("%.1fs", it) }
+                            val preview = event.resultPreview ?: durationStr
+                            mainHandler.post { onToolCallDone(callId, preview) }
+                        }
+                        "tool.failed" -> {
+                            val callId = event.callId ?: event.toolCallId ?: event.resolvedToolName ?: ""
+                            val errorMsg = event.error ?: event.messageText ?: "Tool failed"
+                            mainHandler.post { onToolCallFailed(callId, errorMsg) }
+                        }
+                        "tool.progress" -> {
+                            val delta = event.delta
+                            if (!delta.isNullOrEmpty()) {
+                                mainHandler.post { onThinkingDelta(delta) }
+                            }
+                        }
+                        // Reasoning — /v1/runs uses "reasoning.available" with "text" field
+                        "reasoning.available" -> {
+                            val reasoningText = event.text
+                            if (!reasoningText.isNullOrEmpty()) {
+                                tracer.mark("ttft")
+                                mainHandler.post { onThinkingDelta(reasoningText) }
+                            }
+                        }
+                        // Text deltas — /v1/runs uses "message.delta", sessions uses "assistant.delta"
+                        "message.delta", "assistant.delta" -> {
+                            val delta = event.delta
+                            if (!delta.isNullOrEmpty()) {
+                                mainHandler.post { onTextDelta(delta) }
+                            }
+                        }
+                        "response.completed" -> {
+                            if (completeCalled.compareAndSet(false, true)) {
+                                mainHandler.post {
+                                    onUsage(event.usage)
+                                    if (event.interrupted == true) {
+                                        onError("Run interrupted")
+                                    } else {
+                                        onComplete()
+                                    }
+                                }
+                            }
+                        }
+                        // assistant.completed — one turn done, run may continue
+                        "assistant.completed" -> {
+                            mainHandler.post {
+                                onUsage(event.usage)
+                                if (event.interrupted == true) {
+                                    if (completeCalled.compareAndSet(false, true)) {
+                                        onError("Response interrupted")
+                                    }
+                                } else {
+                                    onTurnComplete()
+                                }
+                            }
+                        }
+                        "run.completed" -> {
+                            if (completeCalled.compareAndSet(false, true)) {
+                                mainHandler.post {
+                                    onUsage(event.usage)
+                                    if (event.interrupted == true) {
+                                        onError("Run interrupted")
+                                    } else {
+                                        onComplete()
+                                    }
+                                }
+                            }
+                        }
+                        "done" -> {
+                            if (completeCalled.compareAndSet(false, true)) {
+                                mainHandler.post { onComplete() }
+                            }
+                        }
+                        "error", "run.failed" -> {
+                            if (completeCalled.compareAndSet(false, true)) {
+                                val msg = event.error ?: event.messageText ?: "Unknown error"
+                                mainHandler.post { onError(msg) }
+                            }
+                        }
+                        // message.started — server assigns a new message ID for each turn
+                        "message.started" -> {
+                            val msgObj = event.message as? JsonObject
+                            val serverMsgId = (msgObj?.get("id") as? kotlinx.serialization.json.JsonPrimitive)?.content
+                            if (serverMsgId != null) {
+                                mainHandler.post { onMessageStarted(serverMsgId) }
+                            }
+                            Log.d(TAG, "Run SSE message.started: id=$serverMsgId")
+                        }
+                        // Informational events
+                        "session.created", "run.started",
+                        "memory.updated", "skill.loaded", "artifact.created" -> {
+                            Log.d(TAG, "Run SSE info event: $eventType")
+                        }
+                        else -> {
+                            Log.d(TAG, "Unhandled run SSE event: $eventType | data: ${data.take(200)}")
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Unparseable run SSE event ($type): ${e.message}\nRaw: $data")
+                }
+            }
+
+            override fun onFailure(
+                eventSource: EventSource,
+                t: Throwable?,
+                response: Response?
+            ) {
+                val msg = streamFailureMessage(t, response)
+                val retryDelay = gatewayDrainRetryDelayMillis(
+                    response?.code,
+                    response?.header("Retry-After"),
+                    msg,
+                    receivedEvent.get(),
+                    drainRetryScheduled.get(),
+                )
+                if (retryDelay != null && drainRetryScheduled.compareAndSet(false, true)) {
+                    turnSource.retryAfter(retryDelay) { sseFactory.newEventSource(request, this) }
+                    return
+                }
+                tracer.done("error")
+                if (completeCalled.compareAndSet(false, true)) {
+                    mainHandler.post { onError(msg) }
+                }
+            }
+
+            override fun onClosed(eventSource: EventSource) {
+                tracer.done()
+                if (completeCalled.compareAndSet(false, true)) {
+                    mainHandler.post { onComplete() }
+                }
+            }
+        }
+
+        turnSource.attach(sseFactory.newEventSource(request, listener))
+        return turnSource
+    }
+
+    // --- Capability detection ---
+
+    /**
+     * Probe the server to determine which chat API is available.
+     * Convenience wrapper around [probeCapabilities] that collapses the
+     * per-endpoint result into the older 3-state ChatMode enum for callers
+     * that don't need the detail.
+     */
+    suspend fun detectChatMode(): ChatMode = probeCapabilities().toChatMode()
+
+    /**
+     * Probe each endpoint we care about and return a per-route capability
+     * snapshot. This is the source of truth for "which chat path should we
+     * use" — see [ServerCapabilities.preferredChatEndpoint].
+     *
+     * Probe order:
+     *   1. `/health` — if this fails, everything else is moot.
+     *   2. `GET /v1/capabilities` — native upstream feature + endpoint map.
+     *   3. `HEAD /api/sessions?limit=1` — sessions CRUD (true on fork,
+     *      native upstream, OR bootstrap-injected older upstream).
+     *   4. `HEAD /api/sessions/probe/chat/stream` — chat-stream handler
+     *      presence. The handler only accepts POST, so HEAD returns 405
+     *      (Method Not Allowed) when the route is registered. 404 means
+     *      the route doesn't exist at all.
+     *   5. `HEAD /v1/chat/completions` — OpenAI-compatible SSE fallback.
+     *   6. `HEAD /v1/runs` with `Accept: text/event-stream` — accepted only
+     *      when the response explicitly advertises event-stream compatibility.
+     *
+     * **Why HEAD instead of OPTIONS:** The hermes-agent gateway runs CORS
+     * middleware (`security_headers_middleware`) that intercepts OPTIONS
+     * preflight requests and returns 403 for both existing AND missing
+     * paths — making OPTIONS useless as a probe. HEAD bypasses the CORS
+     * middleware path and surfaces the actual router status (200/401/405
+     * for present, 404 for missing). Verified empirically against the
+     * production hermes-agent gateway on 2026-04-12.
+     *
+     * **Route presence criterion:** for sessions and completions, any HTTP
+     * response code that isn't 404 means the route is registered. We accept
+     * 200, 204, 401, 403, 405, 415, etc. as positive because the alternative
+     * (404) is the only signal that means "no such path." `/v1/runs` is
+     * stricter: route presence alone is not enough because async runs can
+     * return `202 application/json`; auto only uses it if event-stream support
+     * is explicitly advertised.
+     *
+     * Network errors (connection refused, DNS failure, etc.) count as
+     * "missing" since we can't differentiate from a server-down case.
+     */
+    suspend fun probeCapabilities(): ServerCapabilities = withContext(Dispatchers.IO) {
+        // 1. Health
+        val healthy = try {
+            val req = authRequest("$baseUrl/health").get().build()
+            client.newCall(req).execute().use { it.isSuccessful }
+        } catch (_: Exception) {
+            false
+        }
+        if (!healthy) {
+            lastCapabilities = ServerCapabilities.DISCONNECTED
+            return@withContext ServerCapabilities.DISCONNECTED
+        }
+
+        val advertisedCapabilities = try {
+            val req = authRequest("$baseUrl/v1/capabilities").get().build()
+            client.newCall(req).execute().use { response ->
+                if (!response.isSuccessful) {
+                    null
+                } else {
+                    parseCapabilitiesBody(json, response.body.string())
+                }
+            }
+        } catch (_: Exception) {
+            null
+        }
+        if (advertisedCapabilities != null) {
+            lastCapabilities = advertisedCapabilities
+            return@withContext advertisedCapabilities
+        }
+
+        // Reusable HEAD probe — returns true if the route is registered
+        // (any status except 404 + network errors). Already inside the
+        // Dispatchers.IO context from the outer withContext, so the
+        // blocking OkHttp calls are safe here.
+        fun routeExists(path: String): Boolean = try {
+            val req = authRequest("$baseUrl$path").head().build()
+            client.newCall(req).execute().use { response -> response.code != 404 }
+        } catch (_: Exception) {
+            false
+        }
+
+        fun Response.advertisesEventStream(): Boolean {
+            val contentType = header("Content-Type").orEmpty()
+            val streamMode = header("X-Hermes-Stream-Mode").orEmpty()
+            val runStreaming = header("X-Hermes-Run-Streaming").orEmpty()
+            return contentType.contains("text/event-stream", ignoreCase = true) ||
+                streamMode.equals("sse", ignoreCase = true) ||
+                runStreaming.equals("sse", ignoreCase = true)
+        }
+
+        fun routeExplicitlySupportsEventStream(path: String): Boolean = try {
+            val req = authRequest("$baseUrl$path")
+                .head()
+                .header("Accept", "text/event-stream")
+                .build()
+            client.newCall(req).execute().use { response ->
+                response.code != 404 && response.advertisesEventStream()
+            }
+        } catch (_: Exception) {
+            false
+        }
+
+        val sessionsApi = routeExists("/api/sessions?limit=1")
+        val sessionsChatStream = routeExists("/api/sessions/probe/chat/stream")
+        val portable = routeExists("/v1/chat/completions")
+        val runs = routeExplicitlySupportsEventStream("/v1/runs")
+
+        ServerCapabilities(
+            sessionsApi = sessionsApi,
+            sessionsChatStream = sessionsChatStream,
+            runs = runs,
+            portable = portable,
+            healthy = true,
+        ).also { lastCapabilities = it }
+    }
+
+    // --- Lifecycle ---
+
+    fun shutdown() = shutdownOffMainThread("HermesApiClient-shutdown") {
+        client.dispatcher.executorService.shutdown()
+        try {
+            if (!client.dispatcher.executorService.awaitTermination(2, TimeUnit.SECONDS)) {
+                client.dispatcher.executorService.shutdownNow()
+            }
+        } catch (_: InterruptedException) {
+            client.dispatcher.executorService.shutdownNow()
+        }
+        client.connectionPool.evictAll()
+    }
+
+    private fun authRequest(url: String): Request.Builder {
+        val builder = Request.Builder().url(url)
+        val credential = apiCredential.getOrElse { throw it }
+        builder.bearerAuthorization(credential, "API credential")
+        return builder
+    }
+
+    /**
+     * Non-throwing twin of [authRequest] for the streaming entry points
+     * (#131 crash class). The three send*Stream methods build their Request
+     * BEFORE any try/catch or EventSource listener exists, so a malformed
+     * [baseUrl] (hand-edited connection, corrupt settings import) made
+     * `Request.Builder.url(String)` throw `IllegalArgumentException`
+     * synchronously up through the ViewModel. Returns null on a bad URL so
+     * the caller can route the failure through its normal `onError` channel
+     * instead. Non-streaming methods keep [authRequest] — their existing
+     * try/catch already contains the throw.
+     */
+    private fun authRequestOrNull(url: String): Request.Builder? {
+        val builder = buildApiRequestOrNull(url) ?: return null
+        return runCatching {
+            builder.bearerAuthorization(
+                apiCredential.getOrElse { throw it },
+                "API credential",
+            )
+        }.getOrNull()
+    }
+
+    /**
+     * Inert [EventSource] returned by the streaming methods when the request
+     * couldn't even be built (bad base URL). The turn already failed via
+     * `onError`; this just satisfies the return type so callers' cancel()
+     * handling stays uniform.
+     */
+    private fun failedEventSource(): EventSource = object : EventSource {
+        // Guaranteed-parseable placeholder; never dispatched.
+        private val placeholder = Request.Builder().url("http://invalid.invalid/").build()
+        override fun request(): Request = placeholder
+        override fun cancel() {}
+    }
+
+    /** Human message for a base URL that fails to parse (#131). */
+    private fun invalidBaseUrlMessage(): String =
+        apiCredential.exceptionOrNull()?.message
+            ?: "Invalid server address ($baseUrl) — edit the connection's API URL or re-pair."
+
+    /**
+     * Make attachment drops on the SSE fallback transports explicit
+     * (HRUI-001): the payload builders return attachments that have no
+     * upstream-supported channel on the target endpoint instead of
+     * silently omitting them. The user-visible notice lives in
+     * ChatViewModel (`warnIfAttachmentsDropped`) — this log line is the
+     * network-layer audit trail that the bytes never left the device.
+     */
+    private fun logDroppedAttachments(
+        endpoint: String,
+        dropped: List<com.hermesandroid.relay.data.Attachment>,
+    ) {
+        if (dropped.isEmpty()) return
+        val names = dropped.joinToString(", ") {
+            it.fileName ?: if (it.isImage) "image" else "file"
+        }
+        Log.w(
+            TAG,
+            "Dropped ${dropped.size} attachment(s) with no supported channel " +
+                "on the $endpoint endpoint (not sent): $names",
+        )
+    }
+
+    private fun apiFailure(response: Response, operation: String): IOException {
+        val detail = response.message.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()
+        val message = when (response.code) {
+            401, 403 -> "$operation unauthorized - check your API key"
+            in 500..599 -> "$operation failed - server error HTTP ${response.code}"
+            else -> "$operation failed - HTTP ${response.code}$detail"
+        }
+        return IOException(message)
+    }
+
+    private fun JsonObject?.stringField(name: String): String =
+        ((this?.get(name) as? JsonPrimitive)?.contentOrNull ?: "").trim()
+
+    private fun firstNonBlank(vararg values: String?): String =
+        values.firstOrNull { !it.isNullOrBlank() }.orEmpty()
+}
+
+/**
+ * #131 guard, api_server half: parse-or-null Request builder for a URL string.
+ * `Request.Builder.url(String)` throws `IllegalArgumentException` on a
+ * malformed host; the streaming send paths must fail through `onError`
+ * instead. Top-level (like `buildRelayRequestOrNull` in ConnectionManager)
+ * so the guard is unit-testable without instantiating the client.
+ */
+internal fun buildApiRequestOrNull(url: String): Request.Builder? =
+    url.toHttpUrlOrNull()?.let { Request.Builder().url(it) }

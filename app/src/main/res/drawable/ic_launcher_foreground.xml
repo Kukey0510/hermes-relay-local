@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Hermes-Relay foreground icon — Chevron Compass with ghost V-crossbar + feathers
+    Viewport 108x108. Scaled to 75% centered at (54,54) to fit within the 72dp
+    adaptive icon safe zone with breathing room.
+    Source: assets/logo.svg
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Scale artwork to 75% around center (54,54) for adaptive icon safe zone -->
+    <group
+        android:scaleX="0.75"
+        android:scaleY="0.75"
+        android:pivotX="54"
+        android:pivotY="54">
+
+        <!-- ═══ Ghost layer: V-crossbar + diagonal feathers (no verticals) ═══ -->
+
+        <!-- Crossbar + wings (V shape) -->
+        <path
+            android:pathData="M17.6,36.8 L37.8,57 L70.2,57 L90.4,36.8"
+            android:strokeWidth="4.5"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round">
+            <aapt:attr name="android:strokeColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="0"
+                    android:startY="0"
+                    android:endX="108"
+                    android:endY="108"
+                    android:startColor="#596B35E8"
+                    android:endColor="#0D9B6BF0"/>
+            </aapt:attr>
+        </path>
+
+        <!-- Top-left feather -->
+        <path
+            android:pathData="M17.6,18.6 L37.8,38.8"
+            android:strokeWidth="4.5"
+            android:strokeLineCap="round">
+            <aapt:attr name="android:strokeColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="0"
+                    android:startY="0"
+                    android:endX="108"
+                    android:endY="108"
+                    android:startColor="#596B35E8"
+                    android:endColor="#0D9B6BF0"/>
+            </aapt:attr>
+        </path>
+
+        <!-- Top-right feather -->
+        <path
+            android:pathData="M90.4,18.6 L70.2,38.8"
+            android:strokeWidth="4.5"
+            android:strokeLineCap="round">
+            <aapt:attr name="android:strokeColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="0"
+                    android:startY="0"
+                    android:endX="108"
+                    android:endY="108"
+                    android:startColor="#596B35E8"
+                    android:endColor="#0D9B6BF0"/>
+            </aapt:attr>
+        </path>
+
+        <!-- ═══ Drop shadow (foreground offset +1.5dp Y, 20% black) ═══ -->
+
+        <path
+            android:pathData="M54,43.5 L66,55.5 L54,67.5 L42,55.5 Z"
+            android:strokeColor="#33000000"
+            android:strokeWidth="7.5"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"/>
+        <path
+            android:pathData="M30,43.5 L54,19.5 L78,43.5"
+            android:strokeColor="#33000000"
+            android:strokeWidth="7.5"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"/>
+        <path
+            android:pathData="M30,67.5 L54,91.5 L78,67.5"
+            android:strokeColor="#33000000"
+            android:strokeWidth="7.5"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"/>
+
+        <!-- ═══ Foreground: Chevron Compass ═══ -->
+
+        <!-- Central diamond -->
+        <path
+            android:pathData="M54,42 L66,54 L54,66 L42,54 Z"
+            android:strokeWidth="6.75"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round">
+            <aapt:attr name="android:strokeColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="42"
+                    android:startY="42"
+                    android:endX="66"
+                    android:endY="66"
+                    android:startColor="#9B6BF0"
+                    android:endColor="#6B35E8"/>
+            </aapt:attr>
+        </path>
+
+        <!-- Upper chevron -->
+        <path
+            android:pathData="M30,42 L54,18 L78,42"
+            android:strokeWidth="6.75"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round">
+            <aapt:attr name="android:strokeColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="30"
+                    android:startY="18"
+                    android:endX="78"
+                    android:endY="42"
+                    android:startColor="#9B6BF0"
+                    android:endColor="#6B35E8"/>
+            </aapt:attr>
+        </path>
+
+        <!-- Lower chevron -->
+        <path
+            android:pathData="M30,66 L54,90 L78,66"
+            android:strokeWidth="6.75"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round">
+            <aapt:attr name="android:strokeColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="30"
+                    android:startY="66"
+                    android:endX="78"
+                    android:endY="90"
+                    android:startColor="#9B6BF0"
+                    android:endColor="#6B35E8"/>
+            </aapt:attr>
+        </path>
+
+    </group>
+</vector>

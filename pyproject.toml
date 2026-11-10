@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-relay"
+version = "1.13.0"
+description = "Hermes-Relay plugin — Android device control toolset, QR pairing CLI, and WSS relay server for hermes-agent"
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.28.0,<3",
+    "aiohttp>=3.14.1,<4",
+    "segno>=1.6.0,<2",
+    "pyyaml>=6.0,<7",
+    "httpx>=0.25.0,<1",  # dashboard plugin proxy → relay loopback
+    "websocket-client>=1.8.0,<2",  # realtime voice provider websockets
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-mock", "responses"]
+tmux = ["libtmux>=0.37.0"]  # optional — enables persistent tmux sessions in the terminal channel
+voice-lab = ["textual>=8.2.0"]
+
+# ── Packaging layout ──────────────────────────────────────────────────────────
+#
+# The Python source for the plugin lives under `plugin/` at the repo root. A
+# flat layout (pyproject.toml *inside* plugin/) can't expose `plugin` as a
+# package — setuptools auto-discovery would walk `plugin/`'s children and
+# promote `relay/`, `tests/`, `tools/` to top-level packages instead, which
+# breaks imports like `from plugin.relay.server import main`.
+#
+# Putting pyproject.toml at the repo root and pointing `find` at `plugin*`
+# gives us the canonical hierarchy: `plugin`, `plugin.relay`,
+# `plugin.relay.channels`, `plugin.tools`. The `relay_server/` directory is a
+# separate top-level shim and is also included so `python -m relay_server`
+# keeps working via the compat layer.
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["plugin*", "relay_server*", "hermes_relay_bootstrap*"]
+exclude = ["plugin.tests*", "plugin.skills*", "app*", "docs*", "user-docs*", "scripts*"]
+
+[tool.setuptools.package-data]
+plugin = ["skill.md", "plugin.yaml"]
+
+# Note: `hermes_relay_bootstrap.pth` at the repo root is NOT installed by
+# `pip install -e` automatically — setuptools' data-files doesn't ship to
+# site-packages reliably for editable installs. install.sh copies the .pth
+# file into the venv's site-packages as a separate step. The active bootstrap
+# implementation now lives under plugin/hermes_relay_bootstrap/; the top-level
+# hermes_relay_bootstrap package is a backward-compatible import shim for old
+# hooks and editable installs.

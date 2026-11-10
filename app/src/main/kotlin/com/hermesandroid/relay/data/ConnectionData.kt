@@ -1,0 +1,661 @@
+package com.hermesandroid.relay.data
+
+import kotlinx.serialization.Serializable
+import java.net.Inet6Address
+import java.net.InetAddress
+import java.net.URI
+
+@Serializable
+data class DashboardConnectionStatus(
+    val checkedAtMillis: Long? = null,
+    val reachable: Boolean = false,
+    val authRequired: Boolean? = null,
+    val authProviders: List<String> = emptyList(),
+    val authenticated: Boolean? = null,
+    val authProvider: String? = null,
+    val gatewayTicketAvailable: Boolean? = null,
+    val message: String? = null,
+    val gatewayMode: String? = null,
+    /** Profiles positively advertised by the live multiplex gateway. */
+    val servedProfiles: List<String> = emptyList(),
+    /** Installed profiles reported by the dashboard; never routing authority. */
+    val profiles: List<String> = emptyList(),
+)
+
+/**
+ * A "connection" = a distinct Hermes server connection the app can switch between.
+ *
+ * Each connection has its own:
+ *  - One or more independently-configured Hermes surfaces. Dashboard/Gateway
+ *    is the standard primary path; API server and Relay are optional.
+ *  - EncryptedSharedPreferences file (keyed by [tokenStoreKey]) holding the
+ *    session token, device ID, API key, and paired-session metadata.
+ *  - Cert pin (already host-keyed in [com.hermesandroid.relay.auth.CertPinStore]
+ *    so that store is intrinsically per-connection as long as hosts differ).
+ *  - Last-active session ID (to restore the open chat on connection switch).
+ *  - Transport hint + session expiry mirrored from the server's `auth.ok`
+ *    payload so the connection list can show "expires in 3d" without cracking
+ *    open the token store.
+ *
+ * Switching connection is a HEAVY context swap — caller is expected to tear down
+ * the current [com.hermesandroid.relay.network.relay.ConnectionManager],
+ * [com.hermesandroid.relay.auth.AuthManager], and API client, then construct
+ * fresh ones pointed at the new connection's `tokenStoreKey`.
+ *
+ * **Zero-disruption migration:** the legacy pre-multi-connection install kept
+ * all of its auth state in a single EncryptedSharedPreferences file named
+ * [LEGACY_TOKEN_STORE_KEY]. On first launch after the multi-connection upgrade,
+ * [ConnectionStore.migrateLegacyConnectionIfNeeded] seeds connection 0 pointing
+ * at that existing file — no token migration, no re-pair.
+ *
+ * **Terminology note (2026-04-18):** earlier drafts of this feature called the
+ * concept "Profile". Renamed to [Connection] so that the term "Profile" is
+ * free to mean upstream Hermes profiles: separate host-side Hermes homes
+ * under `~/.hermes/profiles/<name>/`, each with its own config, SOUL, memory,
+ * sessions, skills, cron, and provider state.
+ */
+@Serializable
+data class Connection(
+    val id: String,
+    val label: String,
+    val apiServerUrl: String,
+    val relayUrl: String,
+    val tokenStoreKey: String,
+    /**
+     * Hermes dashboard/admin URL. Dashboard management features use this
+     * separately from the relay pairing channel; a blank/null value means
+     * "derive from [apiServerUrl] using the conventional same-host :9119".
+     */
+    val dashboardUrl: String? = null,
+    /** User-accepted cleartext origins. This does not assert or monitor VPN protection. */
+    val dashboardHttpConsentOrigins: Set<String> = emptySet(),
+    /**
+     * Credential-free origin that most recently completed Dashboard
+     * authentication for this connection. Public origins require HTTPS;
+     * loopback/private-overlay HTTP retains upstream's trusted-network mode.
+     * Dashboard/Gateway consumers prefer this origin, while [routeCandidates]
+     * continue to own only network route selection for API and Relay.
+     */
+    val authenticatedDashboardOrigin: String? = null,
+    val dashboardAuthRequired: Boolean? = null,
+    val dashboardAuthProviders: List<String> = emptyList(),
+    val dashboardLastStatus: DashboardConnectionStatus? = null,
+    /**
+     * Candidate host routes for this saved Hermes server. Standard setup
+     * stores at least one candidate here so API, dashboard, voice, and Relay
+     * helpers can follow LAN/Tailscale/public handoff before Relay pairing.
+     * Older installs and legacy serialized records default to an empty list.
+     */
+    val routeCandidates: List<EndpointCandidate> = emptyList(),
+    /** Optional user preference such as "lan" or "tailscale"; null means Auto. */
+    val preferredRouteRole: String? = null,
+    /**
+     * Explicit per-installation consent for Relay Git repository discovery.
+     * Missing legacy values remain off; route/profile changes do not broaden it.
+     */
+    val gitRepoScanningEnabled: Boolean = false,
+    /** Epoch milliseconds. Pass `System.currentTimeMillis()`; do not pass seconds. */
+    val pairedAt: Long? = null,
+    /** Last time the user explicitly selected this connection. */
+    val lastUsedAt: Long? = null,
+    val lastActiveSessionId: String? = null,
+    val transportHint: String? = null,
+    /** Epoch milliseconds. The auth.ok `expires_at` field is seconds — multiply by 1000 at the call site. */
+    val expiresAt: Long? = null,
+) {
+    /** Saved Dashboard/Gateway route before any authenticated-origin override. */
+    val configuredDashboardUrl: String
+        get() = dashboardUrl
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: deriveDefaultDashboardUrl(apiServerUrl).orEmpty()
+
+    /**
+     * Effective Dashboard/Gateway endpoint. A verified authenticated origin
+     * wins without rewriting the saved network route. Legacy records retain
+     * the conventional same-host `:9119` derivation through
+     * [configuredDashboardUrl].
+     */
+    val resolvedDashboardUrl: String
+        get() = authenticatedDashboardOrigin
+            ?.let { normalizeCredentialFreeAuthenticatedDashboardOrigin(it, dashboardHttpConsentOrigins) }
+            ?: configuredDashboardUrl
+
+    /** Stable display/host identity that does not depend on the API surface. */
+    val primaryEndpointUrl: String
+        get() = configuredDashboardUrl.takeIf { it.isNotBlank() }
+            ?: apiServerUrl.trim().takeIf { it.isNotBlank() }
+            ?: relayUrl.trim()
+
+    val primaryHost: String
+        get() = extractHost(primaryEndpointUrl).orEmpty()
+
+    companion object {
+        /**
+         * The pre-multi-connection EncryptedSharedPreferences filename. Matches
+         * [com.hermesandroid.relay.auth.KeystoreTokenStore]'s original
+         * hardcoded `PREFS_NAME`. Connection 0 re-uses this file as-is so the
+         * existing paired device keeps working across the upgrade.
+         */
+        const val LEGACY_TOKEN_STORE_KEY: String = "hermes_companion_auth_hw"
+
+        const val DEFAULT_DASHBOARD_PORT: Int = 9119
+        const val DEFAULT_API_PORT: Int = 8642
+        const val DEFAULT_RELAY_PORT: Int = 8767
+
+        /**
+         * Derive a stable per-connection EncryptedSharedPreferences filename
+         * from a connection UUID. Trimmed to the first 8 characters of the
+         * UUID so the on-disk filename stays short and human-diffable, which
+         * matters because [android.content.Context.deleteSharedPreferences]
+         * only accepts a filename string.
+         */
+        fun buildTokenStoreKey(id: String): String = "hermes_auth_${id.take(8)}"
+
+        /**
+         * Human-friendly default label for a newly-added connection. Uses the
+         * hostname of the API server URL so "http://192.168.1.10:8642" becomes
+         * "192.168.1.10". Falls back to the raw URL if parsing fails (e.g.,
+         * user typed a malformed value — better to show something recognizable
+         * than to crash).
+         */
+        fun extractDefaultLabel(apiServerUrl: String): String =
+            extractHost(apiServerUrl)?.let(::defaultLabelFromHost) ?: apiServerUrl
+
+        /** Preserve explicit labels while upgrading an auto-generated IP label to a discovered host name. */
+        fun chooseDiscoveredLabel(
+            currentLabel: String,
+            primaryHost: String,
+            discoveredHostname: String?,
+        ): String {
+            val current = currentLabel.trim()
+            val discovered = discoveredHostname?.trim()?.takeIf { it.isNotBlank() }
+            val isAutomatic = current.isBlank() || current.equals(primaryHost.trim(), ignoreCase = true)
+            return if (isAutomatic && discovered != null) discovered else currentLabel
+        }
+
+        /**
+         * Dashboard-first label for a connection whose surfaces are optional.
+         * The one-argument overload above remains for source compatibility.
+         */
+        fun extractDefaultLabel(
+            dashboardUrl: String?,
+            apiServerUrl: String,
+            relayUrl: String,
+        ): String {
+            val primary = dashboardUrl?.trim()?.takeIf { it.isNotBlank() }
+                ?: apiServerUrl.trim().takeIf { it.isNotBlank() }
+                ?: relayUrl.trim()
+            return extractHost(primary)?.let(::defaultLabelFromHost) ?: primary
+        }
+
+        /**
+         * Nous-hosted agent gateways use the stable
+         * `<slug>.agents.nousresearch.com` origin contract. The public Hermes
+         * status response deliberately carries no tenant/agent display name,
+         * so a URL-only connection uses that exact single-label slug as its
+         * least-surprising default. Portal's human-readable agent name is only
+         * available through its separately authenticated discovery API.
+         *
+         * Match the complete suffix and exactly one leading DNS label. This
+         * avoids shortening lookalike or operator-controlled hostnames.
+         */
+        private fun defaultLabelFromHost(host: String): String {
+            val suffix = ".agents.nousresearch.com"
+            if (!host.endsWith(suffix, ignoreCase = true)) return host
+            val slug = host.dropLast(suffix.length)
+            return slug.takeIf { it.isNotBlank() && '.' !in it } ?: host
+        }
+
+        private fun extractHost(url: String): String? = try {
+            URI(url).host
+        } catch (_: Exception) {
+            null
+        }
+
+        fun deriveDefaultDashboardUrl(
+            apiServerUrl: String,
+            dashboardPort: Int = DEFAULT_DASHBOARD_PORT,
+        ): String? {
+            val trimmed = apiServerUrl.trim().trimEnd('/')
+            if (trimmed.isEmpty()) return null
+
+            val uri = runCatching { URI(trimmed) }.getOrNull() ?: return null
+            val scheme = when (uri.scheme?.lowercase()) {
+                "http" -> "http"
+                "https" -> "https"
+                else -> return null
+            }
+            val host = uri.host?.takeIf { it.isNotBlank() } ?: return null
+            val hostPart = if (host.contains(":") && !host.startsWith("[")) {
+                "[$host]"
+            } else {
+                host
+            }
+            return "$scheme://$hostPart:$dashboardPort"
+        }
+
+        /** Derive the conventional same-host direct API fallback from a Dashboard URL. */
+        fun deriveDefaultApiUrl(
+            dashboardUrl: String,
+            apiPort: Int = DEFAULT_API_PORT,
+        ): String? {
+            val trimmed = dashboardUrl.trim().trimEnd('/')
+            if (trimmed.isEmpty()) return null
+
+            val uri = runCatching { URI(trimmed) }.getOrNull() ?: return null
+            val scheme = when (uri.scheme?.lowercase()) {
+                "http" -> "http"
+                "https" -> "https"
+                else -> return null
+            }
+            val host = uri.host?.takeIf { it.isNotBlank() } ?: return null
+            val hostPart = if (host.contains(":") && !host.startsWith("[")) {
+                "[$host]"
+            } else {
+                host
+            }
+            return "$scheme://$hostPart:$apiPort"
+        }
+
+        fun isAutoManagedDashboardUrl(dashboardUrl: String?, apiServerUrl: String): Boolean {
+            val trimmed = dashboardUrl?.trim()?.trimEnd('/').orEmpty()
+            if (trimmed.isEmpty()) return true
+            val derived = deriveDefaultDashboardUrl(apiServerUrl) ?: return false
+            return trimmed.equals(derived, ignoreCase = true)
+        }
+
+        fun deriveDefaultRelayUrl(
+            apiServerUrl: String,
+            relayPort: Int = DEFAULT_RELAY_PORT,
+        ): String? {
+            val trimmed = apiServerUrl.trim().trimEnd('/')
+            if (trimmed.isEmpty()) return null
+
+            val uri = runCatching { URI(trimmed) }.getOrNull() ?: return null
+            val scheme = when (uri.scheme?.lowercase()) {
+                "http" -> "ws"
+                "https" -> "wss"
+                else -> return null
+            }
+            val host = uri.host?.takeIf { it.isNotBlank() } ?: return null
+            val hostPart = if (host.contains(":") && !host.startsWith("[")) {
+                "[$host]"
+            } else {
+                host
+            }
+            return "$scheme://$hostPart:$relayPort"
+        }
+
+        fun buildRouteCandidates(
+            apiServerUrl: String,
+            relayUrl: String,
+            extraApiUrls: List<Pair<String, String>> = emptyList(),
+            dashboardUrl: String? = null,
+        ): List<EndpointCandidate> {
+            val routes = buildList {
+                endpointCandidateFromApiUrl(
+                    role = inferRouteRole(apiServerUrl),
+                    priority = 0,
+                    apiServerUrl = apiServerUrl,
+                    relayUrl = relayUrl.takeIf { it.isNotBlank() }
+                        ?: deriveDefaultRelayUrl(apiServerUrl).orEmpty(),
+                    dashboardUrl = dashboardUrl,
+                )?.let(::add)
+
+                extraApiUrls
+                    .map { it.first.trim() to it.second.trim() }
+                    .filter { (_, url) -> url.isNotBlank() }
+                    .forEachIndexed { index, (role, url) ->
+                        endpointCandidateFromApiUrl(
+                            role = role.ifBlank { inferRouteRole(url) },
+                            priority = index + 1,
+                            apiServerUrl = url,
+                            relayUrl = deriveDefaultRelayUrl(url).orEmpty(),
+                            dashboardUrl = dashboardUrl,
+                        )?.let(::add)
+                    }
+            }
+
+            return routes
+                .distinctBy {
+                    "${it.role.lowercase()}|${it.routeAuthority()}"
+                }
+                .sortedWith(compareBy<EndpointCandidate> { it.priority }.thenBy { it.role })
+        }
+
+        /**
+         * Overlay a freshly-rebuilt candidate list onto an existing stored
+         * one, preserving the stored extras (priority > 0) that the rebuild
+         * doesn't already cover. URL edits rebuild only the route(s) the
+         * user actually touched — without this merge, saving an API or
+         * Relay URL collapsed the stored list to a single candidate,
+         * silently dropping the setup wizard's Tailscale route (or a
+         * pairing payload's extra endpoints) and killing LAN/VPN roaming.
+         *
+         * Stored extras are preserved **verbatim** (role, priority, relay
+         * URL) rather than re-derived, so payload-specified relay URLs
+         * survive. Host:port collisions defer to the rebuilt entry.
+         */
+        fun mergeRouteCandidates(
+            rebuilt: List<EndpointCandidate>,
+            existing: List<EndpointCandidate>,
+        ): List<EndpointCandidate> {
+            val rebuiltHostPorts = rebuilt
+                .mapNotNull { it.mergeAuthority() }
+                .toSet()
+            val preserved = existing
+                .filter { it.priority > 0 }
+                .filterNot { it.mergeAuthority() in rebuiltHostPorts }
+            return (rebuilt + preserved)
+                .distinctBy { "${it.role.lowercase()}|${it.routeAuthority()}" }
+                .sortedWith(compareBy<EndpointCandidate> { it.priority }.thenBy { it.role })
+        }
+
+        /**
+         * Normalize hand-typed API-URL input: trim, strip trailing slashes,
+         * default a missing scheme to `http://`, and default a missing port
+         * to [defaultPort] — most Hermes API servers speak plain HTTP on
+         * 8642, and a bare `192.168.1.10` / Tailscale `100.x.y.z` is by far
+         * the most common thing users type.
+         *
+         * URLs that already carry a scheme are preserved **verbatim**
+         * (including a wrong one like `ws://`, so downstream validators can
+         * complain precisely): an explicit `https://hermes.example.com` may
+         * be a reverse proxy on 443, and force-appending :8642 would break
+         * it. Port-defaulting applies only to scheme-less input, where the
+         * user is visibly relying on our defaults.
+         */
+        fun normalizeApiUrlInput(raw: String, defaultPort: Int = 8642): String {
+            val trimmed = raw.trim().trimEnd('/')
+            if (trimmed.isEmpty()) return trimmed
+            if (SCHEME_REGEX.containsMatchIn(trimmed)) return trimmed
+            val withScheme = "http://$trimmed"
+            val uri = runCatching { URI(withScheme) }.getOrNull()
+            val canAppendPort = uri != null &&
+                !uri.host.isNullOrBlank() &&
+                uri.port <= 0 &&
+                uri.rawPath.isNullOrEmpty() &&
+                uri.rawQuery == null
+            return if (canAppendPort) "$withScheme:$defaultPort" else withScheme
+        }
+
+        private val SCHEME_REGEX = Regex("^[A-Za-z][A-Za-z0-9+.-]*://")
+
+        fun endpointCandidateFromApiUrl(
+            role: String,
+            priority: Int,
+            apiServerUrl: String,
+            relayUrl: String,
+            dashboardUrl: String? = null,
+        ): EndpointCandidate? {
+            val uri = runCatching { URI(apiServerUrl.trim().trimEnd('/')) }.getOrNull()
+                ?: return null
+            val scheme = uri.scheme?.lowercase()
+            val tls = when (scheme) {
+                "http" -> false
+                "https" -> true
+                else -> return null
+            }
+            val host = uri.host?.takeIf { it.isNotBlank() } ?: return null
+            val port = if (uri.port > 0) uri.port else 8642
+            val resolvedRelayUrl = relayUrl.trim().takeIf { it.isNotBlank() }
+                ?: deriveDefaultRelayUrl(apiServerUrl)
+                ?: return null
+            val transportHint = when {
+                resolvedRelayUrl.startsWith("wss://", ignoreCase = true) -> "wss"
+                resolvedRelayUrl.startsWith("ws://", ignoreCase = true) -> "ws"
+                else -> null
+            }
+            return EndpointCandidate(
+                role = role.ifBlank { inferRouteRole(apiServerUrl) },
+                priority = priority,
+                api = ApiEndpoint(host = host, port = port, tls = tls),
+                dashboard = dashboardUrl
+                    ?.trim()
+                    ?.trimEnd('/')
+                    ?.takeIf { it.isNotBlank() && urlsShareHost(it, apiServerUrl) }
+                    ?.let { DashboardEndpoint(url = it) }
+                    ?: deriveDefaultDashboardUrl(apiServerUrl)
+                    ?.let { DashboardEndpoint(url = it) },
+                relay = RelayEndpoint(url = resolvedRelayUrl, transportHint = transportHint),
+            )
+        }
+
+        /**
+         * Reconcile stored API-derived routes with the Dashboard origin that
+         * was actually verified during setup. Older app versions synthesized
+         * `:9119` for every API route, even when the same host was reached
+         * through an HTTPS reverse proxy on 443. Replace only that conventional
+         * synthesized value (or a missing value); preserve explicit and
+         * different-host LAN/Tailscale routes.
+         */
+        fun reconcileDashboardRoutes(
+            dashboardUrl: String?,
+            candidates: List<EndpointCandidate>,
+        ): List<EndpointCandidate> {
+            val explicitDashboard = dashboardUrl
+                ?.trim()
+                ?.trimEnd('/')
+                ?.takeIf { it.isNotBlank() }
+                ?: return candidates
+            return candidates.map { candidate ->
+                val apiUrl = candidate.api?.url ?: return@map candidate
+                if (!urlsShareHost(explicitDashboard, apiUrl)) return@map candidate
+
+                val currentDashboard = candidate.dashboard?.url
+                val derivedDashboard = deriveDefaultDashboardUrl(apiUrl)
+                val canReplace = currentDashboard.isNullOrBlank() ||
+                    (
+                        derivedDashboard != null &&
+                            currentDashboard.trim().trimEnd('/')
+                                .equals(derivedDashboard, ignoreCase = true)
+                    )
+                if (canReplace) {
+                    candidate.copy(dashboard = DashboardEndpoint(url = explicitDashboard))
+                } else {
+                    candidate
+                }
+            }
+        }
+
+        fun urlsShareHost(leftUrl: String, rightUrl: String): Boolean {
+            val leftHost = runCatching { URI(leftUrl.trim()) }.getOrNull()?.host
+            val rightHost = runCatching { URI(rightUrl.trim()) }.getOrNull()?.host
+            return !leftHost.isNullOrBlank() &&
+                !rightHost.isNullOrBlank() &&
+                leftHost.equals(rightHost, ignoreCase = true)
+        }
+
+        /**
+         * De-duplication identity for rebuilding stored routes. Prefer the
+         * legacy API authority when present so an older API-only candidate and
+         * its dashboard-enriched replacement still collide. Dashboard-only
+         * candidates fall back to their primary route authority.
+         */
+        private fun EndpointCandidate.mergeAuthority(): String? =
+            api?.let { endpoint -> "api|${endpoint.host.lowercase()}:${endpoint.port}" }
+                ?: routeAuthority()?.let { authority -> "route|$authority" }
+
+        /**
+         * Build a Dashboard/Gateway-primary route from a remote host or URL.
+         * API and Relay are retained only when explicitly configured; callers
+         * no longer need to invent an API key or legacy surface URL.
+         */
+        fun endpointCandidateFromDashboardUrl(
+            role: String,
+            priority: Int,
+            dashboardUrl: String,
+            apiServerUrl: String? = null,
+            relayUrl: String? = null,
+        ): EndpointCandidate? {
+            val normalizedDashboard = normalizeDashboardUrlInput(dashboardUrl)
+            val dashboardUri = runCatching { URI(normalizedDashboard) }.getOrNull() ?: return null
+            if (dashboardUri.scheme?.lowercase() !in setOf("http", "https") ||
+                dashboardUri.host.isNullOrBlank()
+            ) return null
+
+            val api = apiServerUrl
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+                ?.let { apiUrl ->
+                    val apiUri = runCatching { URI(apiUrl.trimEnd('/')) }.getOrNull()
+                        ?: return@let null
+                    val tls = when (apiUri.scheme?.lowercase()) {
+                        "http" -> false
+                        "https" -> true
+                        else -> return@let null
+                    }
+                    val host = apiUri.host?.takeIf { it.isNotBlank() } ?: return@let null
+                    ApiEndpoint(host, if (apiUri.port > 0) apiUri.port else 8642, tls)
+                }
+            val relay = relayUrl
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+                ?.let { url ->
+                    val hint = when {
+                        url.startsWith("wss://", ignoreCase = true) -> "wss"
+                        url.startsWith("ws://", ignoreCase = true) -> "ws"
+                        else -> null
+                    }
+                    RelayEndpoint(url, hint)
+                }
+            return EndpointCandidate(
+                role = role.ifBlank { inferRouteRole(normalizedDashboard) },
+                priority = priority,
+                dashboard = DashboardEndpoint(normalizedDashboard),
+                api = api,
+                relay = relay,
+            )
+        }
+
+        /**
+         * Normalize a hand-typed Dashboard/Gateway address. Bare private,
+         * LAN, and Tailscale hosts use upstream's `http://…:9119` default;
+         * bare public hosts use `https://` on the standard HTTPS port.
+         * Explicit schemes and ports are preserved for precise validation.
+         */
+        fun normalizeDashboardUrlInput(
+            raw: String,
+            defaultPort: Int = DEFAULT_DASHBOARD_PORT,
+        ): String {
+            val trimmed = raw.trim().trimEnd('/')
+            if (trimmed.isEmpty()) return trimmed
+            if (SCHEME_REGEX.containsMatchIn(trimmed)) return trimmed
+            val provisionalHttpUrl = "http://$trimmed"
+            val publicAddress = inferRouteRole(provisionalHttpUrl) == "public"
+            val withScheme = if (publicAddress) "https://$trimmed" else provisionalHttpUrl
+            if (publicAddress) return withScheme
+            val uri = runCatching { URI(withScheme) }.getOrNull()
+            val canAppendPort = uri != null &&
+                !uri.host.isNullOrBlank() &&
+                uri.port <= 0 &&
+                uri.rawPath.isNullOrEmpty() &&
+                uri.rawQuery == null
+            return if (canAppendPort) "$withScheme:$defaultPort" else withScheme
+        }
+
+        fun inferRouteRole(apiServerUrl: String): String {
+            val host = runCatching { URI(apiServerUrl.trim().trimEnd('/')).host }
+                .getOrNull()
+                ?.lowercase()
+                ?: return "custom"
+            val normalizedHost = host.removePrefix("[").removeSuffix("]")
+            if (normalizedHost.contains(':')) {
+                val address = runCatching { InetAddress.getByName(normalizedHost) }
+                    .getOrNull() as? Inet6Address
+                    ?: return "public"
+                return when {
+                    isTailscaleIpv6(address) -> "tailscale"
+                    address.isAnyLocalAddress ||
+                        address.isLoopbackAddress ||
+                        address.isLinkLocalAddress ||
+                        isUniqueLocalIpv6(address) -> "lan"
+                    else -> "public"
+                }
+            }
+            return when {
+                normalizedHost.endsWith(".ts.net") || isTailscaleIpv4(normalizedHost) -> "tailscale"
+                normalizedHost == "localhost" ||
+                    normalizedHost == "127.0.0.1" ||
+                    normalizedHost.endsWith(".local") ||
+                    normalizedHost.endsWith(".lan") ||
+                    !normalizedHost.contains('.') ||
+                    isPrivateLanIpv4(normalizedHost) -> "lan"
+                else -> "public"
+            }
+        }
+
+        private fun isTailscaleIpv6(address: Inet6Address): Boolean {
+            val bytes = address.address
+            val prefix = intArrayOf(0xfd, 0x7a, 0x11, 0x5c, 0xa1, 0xe0)
+            return prefix.indices.all { index -> bytes[index].toInt() and 0xff == prefix[index] }
+        }
+
+        private fun isUniqueLocalIpv6(address: Inet6Address): Boolean =
+            address.address.first().toInt() and 0xfe == 0xfc
+
+        private fun isTailscaleIpv4(host: String): Boolean {
+            val parts = host.split('.').mapNotNull { it.toIntOrNull() }
+            if (parts.size != 4) return false
+            return parts[0] == 100 && parts[1] in 64..127
+        }
+
+        private fun isPrivateLanIpv4(host: String): Boolean {
+            val parts = host.split('.').mapNotNull { it.toIntOrNull() }
+            if (parts.size != 4) return false
+            return when {
+                parts[0] == 10 -> true
+                parts[0] == 172 && parts[1] in 16..31 -> true
+                parts[0] == 192 && parts[1] == 168 -> true
+                parts[0] == 169 && parts[1] == 254 -> true
+                else -> false
+            }
+        }
+    }
+}
+
+/** Normalize an absolute, credential-free HTTPS origin for authenticated Dashboard use. */
+internal fun normalizeCredentialFreeHttpsOrigin(raw: String): String? {
+    val parsed = runCatching { URI(raw.trim()) }.getOrNull() ?: return null
+    if (!parsed.scheme.equals("https", ignoreCase = true)) return null
+    if (parsed.host.isNullOrBlank() || parsed.userInfo != null) return null
+    if (parsed.query != null || parsed.fragment != null) return null
+    if (parsed.port > 65_535) return null
+    return parsed.normalize().toASCIIString().trimEnd('/').takeIf { it.isNotBlank() }
+}
+
+/**
+ * Normalize a reviewed Dashboard credential owner. Public origins require
+ * HTTPS; cleartext is accepted only for literal loopback, RFC1918/link-local,
+ * or Tailscale CGNAT addresses.
+ */
+internal fun normalizeCredentialFreeAuthenticatedDashboardOrigin(
+    raw: String,
+    httpConsentOrigins: Set<String> = emptySet(),
+): String? {
+    normalizeCredentialFreeHttpsOrigin(raw)?.let { return it }
+    val parsed = runCatching { URI(raw.trim()) }.getOrNull() ?: return null
+    if (!parsed.scheme.equals("http", ignoreCase = true)) return null
+    val host = parsed.host
+        ?.lowercase()
+        ?.removePrefix("[")
+        ?.removeSuffix("]")
+        ?.takeIf { it.isNotBlank() }
+        ?: return null
+    if (parsed.userInfo != null || parsed.query != null || parsed.fragment != null) return null
+    if (parsed.port > 65_535) return null
+    val trustedHost = host == "localhost" || host == "127.0.0.1" || host == "::1" ||
+        host.split('.').mapNotNull(String::toIntOrNull).let { octets ->
+            octets.size == 4 && octets.all { it in 0..255 } && when {
+                octets[0] == 10 -> true
+                octets[0] == 172 && octets[1] in 16..31 -> true
+                octets[0] == 192 && octets[1] == 168 -> true
+                octets[0] == 169 && octets[1] == 254 -> true
+                octets[0] == 100 && octets[1] in 64..127 -> true
+                else -> false
+            }
+        }
+    if (!trustedHost && !dashboardHttpConsentMatches(raw, httpConsentOrigins)) return null
+    return parsed.normalize().toASCIIString().trimEnd('/').takeIf { it.isNotBlank() }
+}

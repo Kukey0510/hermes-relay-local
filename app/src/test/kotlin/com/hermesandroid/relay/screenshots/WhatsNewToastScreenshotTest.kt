@@ -1,0 +1,146 @@
+package com.hermesandroid.relay.screenshots
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeLeft
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.github.takahirom.roborazzi.captureRoboImage
+import com.hermesandroid.relay.ui.components.ChangelogStore
+import com.hermesandroid.relay.ui.components.ChangelogVersion
+import com.hermesandroid.relay.ui.components.WhatsNewToast
+import com.hermesandroid.relay.ui.components.WhatsNewToastContent
+import com.hermesandroid.relay.ui.theme.HermesRelayTheme
+import org.junit.Rule
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
+
+@RunWith(AndroidJUnit4::class)
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
+@Config(qualifiers = "w360dp-h640dp-xhdpi")
+class WhatsNewToastScreenshotTest {
+    @get:Rule val compose = createComposeRule()
+
+    @Test fun compactNoticeRemainsClearAtLargeText() {
+        lateinit var latest: ChangelogVersion
+        compose.setContent {
+            val context = LocalContext.current
+            val density = LocalDensity.current
+            val entry = ChangelogStore.load(context).versions.first()
+            latest = entry
+            CompositionLocalProvider(LocalDensity provides Density(density.density, 1.35f)) {
+                HermesRelayTheme(appThemeId = "hermes-relay", themePreference = "dark") {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(androidx.compose.material3.MaterialTheme.colorScheme.background)
+                            .padding(12.dp),
+                        contentAlignment = Alignment.TopCenter,
+                    ) {
+                        WhatsNewToastContent(
+                            entry = entry,
+                            progress = 0.62f,
+                            onExpand = {},
+                            onDismiss = {},
+                        )
+                    }
+                }
+            }
+        }
+        compose.onNodeWithText(requireNotNull(latest.title)).assertExists()
+        latest.visibleDigest()?.let { digest ->
+            compose.onNodeWithText("Also: ${digest.countText()}").assertExists()
+            compose.onNodeWithText(digest.preview.joinToString(", ") + "…").assertExists()
+            compose.onNodeWithText("View all").assertExists()
+        }
+        compose.onNodeWithContentDescription("Close").assertExists()
+        compose.onRoot().captureRoboImage("build/ui-regression/whats-new-toast-large-text.png")
+    }
+
+    @Test fun exposesExpandAndCloseActions() {
+        var expanded = false
+        var dismissed = false
+        lateinit var latest: ChangelogVersion
+        compose.setContent {
+            val entry = ChangelogStore.load(LocalContext.current).versions.first()
+            latest = entry
+            HermesRelayTheme(appThemeId = "hermes-relay", themePreference = "dark") {
+                WhatsNewToastContent(
+                    entry = entry,
+                    progress = 1f,
+                    onExpand = { expanded = true },
+                    onDismiss = { dismissed = true },
+                )
+            }
+        }
+
+        compose.onNodeWithText(requireNotNull(latest.title)).performClick()
+        assertTrue(expanded)
+        latest.visibleDigest()?.let {
+            expanded = false
+            compose.onNodeWithText("View all").performClick()
+        }
+        compose.onNodeWithContentDescription("Close").performClick()
+
+        assertTrue(expanded)
+        assertTrue(dismissed)
+    }
+
+    @Test fun horizontalSwipeDismissesTheNotice() {
+        var dismissed = false
+        lateinit var latest: ChangelogVersion
+        compose.mainClock.autoAdvance = false
+        compose.setContent {
+            latest = ChangelogStore.load(LocalContext.current).versions.first()
+            HermesRelayTheme(appThemeId = "hermes-relay", themePreference = "dark") {
+                WhatsNewToast(
+                    onDismiss = { dismissed = true },
+                    onExpand = {},
+                    autoDismissMillis = 60_000L,
+                )
+            }
+        }
+        compose.mainClock.advanceTimeBy(300L)
+        compose.onNodeWithText(requireNotNull(latest.title))
+            .performTouchInput { swipeLeft(durationMillis = 300L) }
+        compose.mainClock.advanceTimeBy(300L)
+
+        assertTrue(dismissed)
+    }
+
+    private fun com.hermesandroid.relay.ui.components.ChangelogToastDigest.countText(): String =
+        buildList {
+            if (additionalFeatureCount > 0) {
+                add("$additionalFeatureCount additional ${if (additionalFeatureCount == 1) "feature" else "features"}")
+            }
+            if (improvementCount > 0) {
+                add("$improvementCount ${if (improvementCount == 1) "improvement" else "improvements"}")
+            }
+            if (fixCount > 0) {
+                add("$fixCount ${if (fixCount == 1) "fix" else "fixes"}")
+            }
+        }.joinToString(" · ")
+
+    private fun ChangelogVersion.visibleDigest():
+        com.hermesandroid.relay.ui.components.ChangelogToastDigest? =
+        resolvedToastDigest()?.takeIf {
+            it.additionalFeatureCount > 0 || it.improvementCount > 0 || it.fixCount > 0
+        }
+}

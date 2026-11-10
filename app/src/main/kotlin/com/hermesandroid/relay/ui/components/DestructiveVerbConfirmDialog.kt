@@ -1,0 +1,309 @@
+package com.hermesandroid.relay.ui.components
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.res.stringResource
+import com.hermesandroid.relay.R
+import com.hermesandroid.relay.ui.theme.appearanceRoundedCornerShape
+
+/**
+ * Phase 3 — safety-rails `bridge-safety-rails`
+ *
+ * Destructive-verb confirmation modal content. Rendered inside a
+ * [BridgeStatusOverlay] SYSTEM_ALERT_WINDOW ComposeView — NOT a Compose
+ * `Dialog`, because Dialogs require an Activity window and we're sitting
+ * on a WindowManager overlay. The parent overlay supplies the dim + the
+ * full-screen-touch-interceptor; this composable only draws the card.
+ *
+ * Shows the agent's exact requested action + the flagged verb so the
+ * user isn't guessing what they're allowing. Two buttons:
+ *  - Deny (filled primary, the dominant safe default) — caller maps to false
+ *  - Allow (low-emphasis amber outline) — caller maps to true
+ *
+ * Kept UI-layer stateless: both `onAllow` and `onDeny` return directly.
+ * The callers in [BridgeStatusOverlay] update the overlay registry and
+ * resolve the pending `CompletableDeferred`.
+ */
+@Composable
+fun DestructiveVerbConfirmDialog(
+    method: String,
+    verb: String,
+    fullText: String,
+    onAllow: (trustVerb: Boolean) -> Unit,
+    onDeny: () -> Unit,
+) {
+    // Checkbox is always OFF when the dialog opens — the user must
+    // actively opt in to bypass future prompts. Kept local-only: we only
+    // persist the verb to the trusted set when the user then taps Allow.
+    // Tapping Deny with the box checked does NOT add the verb (denying is
+    // not consent to anything).
+    var trustVerb by remember { mutableStateOf(false) }
+    // Only offer the "Don't ask again" escape hatch when we actually have
+    // a specific verb to key the trust on. Routes like /call and
+    // /send_sms come through with verb="" and must always prompt — there's
+    // nothing to trust.
+    val canTrust = verb.isNotBlank()
+    // Root-fills-overlay-with-center-alignment. The overlay already applies
+    // FLAG_DIM_BEHIND so we only need to draw the card itself.
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center,
+    ) {
+        Card(
+            modifier = Modifier
+                .widthIn(max = 360.dp)
+                .fillMaxWidth(0.92f)
+                .padding(horizontal = 16.dp),
+            shape = appearanceRoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface,
+            ),
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Warning,
+                        contentDescription = null,
+                        tint = Color(0xFFFFA726),
+                    )
+                    Text(
+                        text = stringResource(R.string.destructive_confirm_title),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+
+                Text(
+                    text = "The Hermes agent is about to ${verbPhrase(method, verb)}.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            MaterialTheme.colorScheme.surfaceVariant,
+                            appearanceRoundedCornerShape(10.dp)
+                        )
+                        .padding(12.dp)
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = labelFor(method),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            text = fullText.ifBlank { stringResource(R.string.destructive_no_text) },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+
+                Text(
+                    text = stringResource(R.string.destructive_confirm_warning),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                if (canTrust) {
+                    // "Don't ask again" row — whole row is clickable so the
+                    // label is a tappable target (accessibility + fat-fingers).
+                    // Off by default on every open; see the @Composable KDoc.
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { trustVerb = !trustVerb }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Checkbox(
+                            checked = trustVerb,
+                            onCheckedChange = { trustVerb = it },
+                        )
+                        Text(
+                            text = "Don't ask again for \"$verb\"",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    // Deny is the dominant, safe default. Denying never writes
+                    // trust — even if the user ticked the checkbox first.
+                    Button(
+                        modifier = Modifier.weight(1f),
+                        onClick = onDeny,
+                    ) {
+                        Text(stringResource(R.string.destructive_confirm_deny))
+                    }
+                    // Allow is intentionally lower-emphasis (amber caution, not a
+                    // loud red CTA) so proceeding with a risky action never reads
+                    // as the default tap. Weight comes from the wording.
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = { onAllow(trustVerb && canTrust) },
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = Color(0xFFE65100),
+                        ),
+                    ) {
+                        Text(stringResource(R.string.destructive_confirm_allow))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun labelFor(method: String): String = when (method) {
+    "/tap_text" -> stringResource(R.string.destructive_label_tap_text)
+    "/type" -> stringResource(R.string.destructive_label_type)
+    else -> stringResource(R.string.destructive_label_payload)
+}
+
+@Composable
+private fun verbPhrase(method: String, verb: String): String {
+    val action = when (method) {
+        "/tap_text" -> "tap a button containing"
+        "/type" -> "type text containing"
+        else -> "perform an action with"
+    }
+    return if (verb.isBlank()) "$action a destructive keyword" else "$action the word \"$verb\""
+}
+
+/**
+ * Small floating status chip shown in the top-right of the screen when
+ * the user has opted in via `BridgeSafetySettings.statusOverlayEnabled`.
+ * Pure visual — no gesture handling, the parent overlay is FLAG_NOT_FOCUSABLE
+ * so taps pass through to whatever's underneath.
+ *
+ * Kept in this file so [BridgeStatusOverlay] only imports one component
+ * package.
+ */
+@Composable
+fun BridgeStatusOverlayChip(unattended: Boolean = false) {
+    // v0.4.1: when unattended access is on, the chip uses an amber dot
+    // and "Unattended ON" label so the user / a passerby can tell at a
+    // glance that the agent is permitted to wake the screen and drive
+    // the device. Default red dot + "Hermes active" preserves the v0.4
+    // appearance for the regular bridge-active path.
+    val dotColor = if (unattended) Color(0xFFFFA000) else Color(0xFFE53935)
+    val label = if (unattended) stringResource(R.string.destructive_chip_unattended) else stringResource(R.string.destructive_chip_active)
+    Box(
+        modifier = Modifier
+            .background(
+                color = Color(0xFF1A1A2E).copy(alpha = 0.85f),
+                shape = appearanceRoundedCornerShape(12.dp),
+            )
+            .padding(horizontal = 10.dp, vertical = 6.dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .height(8.dp)
+                    .widthIn(min = 8.dp, max = 8.dp)
+                    .background(dotColor, RoundedCornerShape(50))
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White,
+                fontWeight = FontWeight.Medium,
+            )
+        }
+    }
+}
+
+@Preview(showBackground = true, backgroundColor = 0xFFFFFFFF)
+@Composable
+private fun BridgeStatusOverlayChipPreview() {
+    MaterialTheme {
+        Box(modifier = Modifier.padding(24.dp)) {
+            BridgeStatusOverlayChip()
+        }
+    }
+}
+
+@Preview(showBackground = true, backgroundColor = 0x99000000)
+@Composable
+private fun DestructiveVerbConfirmDialogPreview_TapText() {
+    MaterialTheme {
+        DestructiveVerbConfirmDialog(
+            method = "/tap_text",
+            verb = "Send",
+            fullText = "Send $500 to Alice",
+            onAllow = { _ -> },
+            onDeny = {},
+        )
+    }
+}
+
+@Preview(showBackground = true, backgroundColor = 0x99000000)
+@Composable
+private fun DestructiveVerbConfirmDialogPreview_Type() {
+    MaterialTheme {
+        DestructiveVerbConfirmDialog(
+            method = "/type",
+            verb = "delete",
+            fullText = "delete all messages in #general",
+            onAllow = { _ -> },
+            onDeny = {},
+        )
+    }
+}

@@ -1,0 +1,1628 @@
+package com.hermesandroid.relay.ui.screens
+
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import com.hermesandroid.relay.ui.theme.LocalBrand
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.Message
+import androidx.compose.material.icons.filled.Analytics
+import androidx.compose.material.icons.filled.AccountTree
+import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.Devices
+import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Info
+// === PHASE3-safety-rails: bridge safety entry-point ===
+import androidx.compose.material.icons.filled.Security
+// === END PHASE3-safety-rails ===
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.NewReleases
+import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
+import com.hermesandroid.relay.R
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.hermesandroid.relay.util.BatteryOptimizations
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.hermesandroid.relay.data.AgentDisplay
+import com.hermesandroid.relay.data.BuildFlavor
+import com.hermesandroid.relay.data.FeatureFlags
+import com.hermesandroid.relay.data.Profile
+import com.hermesandroid.relay.data.ProviderUsageLandingMode
+import com.hermesandroid.relay.data.ProviderUsagePreferences
+import com.hermesandroid.relay.data.ProviderUsagePreferencesRepository
+import com.hermesandroid.relay.data.SupervisedModePolicy
+import com.hermesandroid.relay.network.usage.ProviderUsageRepository
+import com.hermesandroid.relay.network.usage.ProviderUsageResponse
+import com.hermesandroid.relay.network.upstream.GatewayAvailability
+import com.hermesandroid.relay.ui.components.AgentAvatarFace
+import com.hermesandroid.relay.ui.components.AgentInfoSheet
+import com.hermesandroid.relay.ui.components.LocalAgentIconPath
+import com.hermesandroid.relay.ui.components.ProfileInspectorCard
+import com.hermesandroid.relay.ui.components.RelaySkeletonLine
+import com.hermesandroid.relay.ui.components.pet.LocalPetCompanionCoordinator
+import com.hermesandroid.relay.ui.components.pet.petObstacleSurface
+import com.hermesandroid.relay.ui.components.pet.petPerchSurface
+import com.hermesandroid.relay.ui.theme.RelayRefresh
+import com.hermesandroid.relay.ui.theme.appearanceRoundedCornerShape
+import com.hermesandroid.relay.ui.theme.gradientBorder
+import com.hermesandroid.relay.viewmodel.ChatRuntimeStatus
+import com.hermesandroid.relay.viewmodel.ChatTransportReadiness
+import com.hermesandroid.relay.viewmodel.ChatViewModel
+import com.hermesandroid.relay.viewmodel.ConnectionViewModel
+import com.hermesandroid.relay.viewmodel.RelayUiState
+import com.hermesandroid.relay.viewmodel.resolveChatRuntimeStatus
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.delay
+
+private const val SETTINGS_PET_SURFACE_ROUTE = "settings"
+private val SETTINGS_PET_SURFACE_ROUTES = setOf(SETTINGS_PET_SURFACE_ROUTE)
+
+/** A settings card is a walkable top edge and a forbidden interactive body. */
+private fun Modifier.settingsPetSurface(key: String): Modifier =
+    petPerchSurface(
+        key = key,
+        routes = SETTINGS_PET_SURFACE_ROUTES,
+    ).petObstacleSurface(
+        key = "$key:controls",
+        routes = SETTINGS_PET_SURFACE_ROUTES,
+    )
+
+/**
+ * Root Settings destination. After the 2026-04-11 split, Settings is a
+ * lightweight category list — the heavy lifting for each category lives in
+ * a dedicated sub-screen reached by navigation. The top card shows live
+ * API / Dashboard / Relay status and opens the agent info sheet for the
+ * active connection, profile, and personality.
+ *
+ * The old mega-file version of this screen (≈2609 lines) carried every
+ * setting inline in a single scrolling Column. That was painful to navigate
+ * on-device and a maintenance hotspot; see the `ConnectionSettingsScreen`,
+ * `ChatSettingsScreen`, `AppearanceSettingsScreen`, etc. files for where
+ * the content went. The split follows the `VoiceSettingsScreen` pattern
+ * that was already in the repo.
+ */
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+fun SettingsScreen(
+    connectionViewModel: ConnectionViewModel,
+    /** Header back affordance — Settings is a pushed destination, not a tab. */
+    onBack: (() -> Unit)? = null,
+    supervisedPolicy: SupervisedModePolicy? = null,
+    parentAccessUnlocked: Boolean = false,
+    /** Called only after the restricted surface completes device authentication. */
+    onRequestParentAccess: () -> Unit = {},
+    onUpdateSupervisedPolicy: (SupervisedModePolicy) -> Unit = {},
+    onNavigateToAdvancedSettings: () -> Unit = {},
+    onNavigateToSupervisedAppearance: () -> Unit = {},
+    onNavigateToSupervisedControls: () -> Unit = {},
+    // Needed by the Active Agent summary card at the top of the screen — it
+    // reads the current personality pick so the subtitle can render
+    // `connection · model · personality` without re-reading ChatViewModel
+    // state from a different place.
+    chatViewModel: ChatViewModel,
+    gitRepoScanningEnabled: Boolean,
+    // (The `onNavigateToChatWithAgentSheet` param that used to live here
+    // was removed as part of the 2026-04-21 pairing-audit fix. Tapping the
+    // Active Agent card now opens the consolidated AgentInfoSheet INLINE
+    // on this screen — the previous redirect-to-Chat-then-open design
+    // confused users, who expected dismissing the sheet to drop them back
+    // on Settings, not on a different tab. The local state + AgentInfoSheet
+    // block at the bottom of this composable drives the flow directly.)
+    // Connections manager — the unified home for everything connection-
+    // related. Kept at the top of the category list so switching server
+    // connections is one tap from the bottom nav. The former "Active
+    // Connection quick-look card" that lived here (and navigated into a
+    // second singular detail screen) was removed on 2026-04-21 — the
+    // plural Connections screen's active card now owns the full status
+    // + manual URL + insecure toggle + manual pairing code surface via
+    // expandable sections, so there's nothing left to link to twice.
+    onNavigateToConnections: () -> Unit,
+    onNavigateToManage: () -> Unit,
+    onNavigateToProviderUsage: () -> Unit,
+    onNavigateToPlugins: () -> Unit,
+    onNavigateToGitWorkspace: () -> Unit,
+    onNavigateToChatSettings: () -> Unit,
+    onNavigateToTerminal: () -> Unit,
+    onNavigateToBridge: () -> Unit,
+    onNavigateToMediaSettings: () -> Unit,
+    onNavigateToAppearanceSettings: () -> Unit,
+    onNavigateToAnalytics: () -> Unit,
+    onNavigateToDiagnostics: () -> Unit,
+    onNavigateToVoiceSettings: () -> Unit,
+    onNavigateToNotificationCompanion: () -> Unit,
+    onNavigateToProactiveSettings: () -> Unit,
+    onNavigateToPermissions: () -> Unit,
+    // === PHASE3-safety-rails: bridge safety entry-point ===
+    onNavigateToBridgeSafety: () -> Unit,
+    // === END PHASE3-safety-rails ===
+    onNavigateToPairedDevices: () -> Unit,
+    onNavigateToDeveloperSettings: () -> Unit,
+    onNavigateToAbout: () -> Unit,
+    // Profile Inspector — opens the full-screen viewer showing Config,
+    // SOUL, Memory, and Skills for the currently-active profile. Called
+    // with the profile name so RelayApp can build the nav route. The
+    // card itself is disabled (half-alpha, no-op onClick) when no
+    // profile is selected yet — it stays visible so the feature is
+    // discoverable before a pair-and-pick happens.
+    onNavigateToProfileInspector: (profileName: String) -> Unit,
+) {
+    // Keep the restricted root when an enabled policy becomes temporarily
+    // unusable (for example, its profile was renamed). Parent authentication,
+    // not a configuration error, is what unlocks the full settings surface.
+    if (supervisedPolicy?.enabled == true && !parentAccessUnlocked) {
+        SupervisedSettingsScreen(
+            connectionViewModel = connectionViewModel,
+            policy = supervisedPolicy,
+            onPolicyChange = onUpdateSupervisedPolicy,
+            onBack = onBack,
+            onNavigateToAppearance = onNavigateToSupervisedAppearance,
+            onParentAccessGranted = onRequestParentAccess,
+        )
+        return
+    }
+
+    val context = LocalContext.current
+    val isDarkTheme = LocalBrand.current.isDark
+
+    val activeConnection by connectionViewModel.activeConnection.collectAsState()
+    val selectedProfile by connectionViewModel.selectedProfile.collectAsState()
+    val currentSessionId by chatViewModel.currentSessionId.collectAsState()
+    val providerUsagePreferencesRepository = remember(context) {
+        ProviderUsagePreferencesRepository(context)
+    }
+    val providerUsagePreferences by providerUsagePreferencesRepository.preferences.collectAsState(
+        initial = ProviderUsagePreferences(),
+    )
+    val providerUsageRepository = remember(connectionViewModel) {
+        ProviderUsageRepository(
+            gatewayClientProvider = connectionViewModel::activeGatewayChatClient,
+            dashboardClientProvider = {
+                connectionViewModel.activeDashboardUrl()?.let(
+                    connectionViewModel::dashboardClientForActive,
+                )
+            },
+            relayHttpClient = connectionViewModel.relayHttpClient,
+            profileProvider = { connectionViewModel.selectedProfile.value?.name },
+            sessionProvider = { chatViewModel.currentSessionId.value },
+        )
+    }
+    var providerUsageResponse by remember { mutableStateOf<ProviderUsageResponse?>(null) }
+    var providerUsageLoaded by remember { mutableStateOf(false) }
+    var providerUsageRefreshing by remember { mutableStateOf(false) }
+    var providerUsageRefreshKey by remember { mutableIntStateOf(0) }
+    LaunchedEffect(
+        activeConnection?.id,
+        selectedProfile?.name,
+        currentSessionId,
+        providerUsagePreferences.landingMode,
+        providerUsageRefreshKey,
+    ) {
+        if (providerUsagePreferences.landingMode == ProviderUsageLandingMode.Hidden) {
+            providerUsageResponse = null
+            providerUsageLoaded = true
+        } else {
+            if (providerUsageResponse == null) providerUsageLoaded = false
+            providerUsageRefreshing = providerUsageResponse != null
+            providerUsageRepository.fetch().getOrNull()?.let { providerUsageResponse = it }
+            providerUsageLoaded = true
+            providerUsageRefreshing = false
+        }
+    }
+    LaunchedEffect(providerUsagePreferences.landingMode) {
+        while (providerUsagePreferences.landingMode != ProviderUsageLandingMode.Hidden) {
+            delay(300_000)
+            providerUsageRefreshKey++
+        }
+    }
+    // Active Agent card inputs — personality + profile drive the title,
+    // ring-accent, and subtitle.
+    val agentProfiles by connectionViewModel.agentProfiles.collectAsState()
+    val effectiveProfile by connectionViewModel.effectiveDisplayProfile.collectAsState()
+    val profileDisplayAlias by connectionViewModel.profileDisplayAlias.collectAsState()
+    val selectedPersonality by chatViewModel.selectedPersonality.collectAsState()
+    val defaultPersonality by chatViewModel.defaultPersonality.collectAsState()
+    val relayUiState by connectionViewModel.relayUiState.collectAsState()
+    val apiServerReachable by connectionViewModel.apiServerReachable.collectAsState()
+    val apiServerHealth by connectionViewModel.apiServerHealth.collectAsState()
+    val gatewayAvailability by connectionViewModel.gatewayAvailability.collectAsState()
+    val devOptionsUnlocked by FeatureFlags.devOptionsUnlocked(context)
+        .collectAsState(initial = FeatureFlags.isDevBuild)
+    val chatRuntimeStatus = resolveChatRuntimeStatus(
+        gateway = when (gatewayAvailability) {
+            GatewayAvailability.Ready -> ChatTransportReadiness.Ready
+            GatewayAvailability.Unknown -> ChatTransportReadiness.Connecting
+            GatewayAvailability.SignInRequired,
+            GatewayAvailability.Unreachable,
+            GatewayAvailability.Unsupported -> ChatTransportReadiness.Unavailable
+        },
+        apiSse = when {
+            activeConnection?.apiServerUrl.isNullOrBlank() -> ChatTransportReadiness.NotConfigured
+            apiServerReachable -> ChatTransportReadiness.Ready
+            apiServerHealth == ConnectionViewModel.HealthStatus.Probing -> ChatTransportReadiness.Connecting
+            apiServerHealth == ConnectionViewModel.HealthStatus.Unreachable -> ChatTransportReadiness.Unavailable
+            else -> ChatTransportReadiness.Connecting
+        },
+    )
+    // Status pills are exception-only: a pill appears only when the surface
+    // needs attention (missing / checking / offline / sign-in). When it's
+    // healthy the pill is null so the card + agent summary stay clean.
+    // Chat is transport-level: Gateway is primary and API is only fallback.
+    // A healthy transport suppresses warnings from the other optional surface.
+    val chatPill: SettingsStatusPillModel? = when {
+        chatRuntimeStatus is ChatRuntimeStatus.Connected -> null
+        chatRuntimeStatus == ChatRuntimeStatus.Connecting -> null
+        gatewayAvailability == GatewayAvailability.SignInRequired -> SettingsStatusPillModel(
+            label = stringResource(R.string.settings_dashboard_sign_in),
+            tone = SettingsStatusTone.Info,
+        )
+        activeConnection?.resolvedDashboardUrl.isNullOrBlank() -> SettingsStatusPillModel(
+            label = stringResource(R.string.settings_dashboard_missing),
+            tone = SettingsStatusTone.Warning,
+        )
+        gatewayAvailability == GatewayAvailability.Unreachable ||
+            gatewayAvailability == GatewayAvailability.Unsupported -> SettingsStatusPillModel(
+            label = stringResource(R.string.settings_dashboard_offline),
+            tone = SettingsStatusTone.Warning,
+        )
+        else -> null
+    }
+    val dashboardPill: SettingsStatusPillModel? = when {
+        activeConnection?.resolvedDashboardUrl.isNullOrBlank() -> SettingsStatusPillModel(
+            label = stringResource(R.string.settings_dashboard_missing),
+            tone = SettingsStatusTone.Warning,
+        )
+        gatewayAvailability == GatewayAvailability.Ready -> null
+        gatewayAvailability == GatewayAvailability.SignInRequired -> SettingsStatusPillModel(
+            label = stringResource(R.string.settings_dashboard_sign_in),
+            tone = SettingsStatusTone.Info,
+        )
+        gatewayAvailability == GatewayAvailability.Unreachable ||
+            gatewayAvailability == GatewayAvailability.Unsupported -> SettingsStatusPillModel(
+            label = stringResource(R.string.settings_dashboard_offline),
+            tone = SettingsStatusTone.Warning,
+        )
+        else -> null
+    }
+    // The Relay tools below all ride the optional plugin. Rather than stamp an
+    // identical badge on every card (noise, not signal), the dependency is
+    // surfaced ONCE on the section header as a single plugin-state badge.
+    val pluginBadge = when (relayUiState) {
+        RelayUiState.NotConfigured -> SettingsStatusPillModel(
+            label = stringResource(R.string.relay_state_optional),
+            tone = SettingsStatusTone.Info,
+        )
+        RelayUiState.Connected -> SettingsStatusPillModel(
+            label = stringResource(R.string.relay_state_ready),
+            tone = SettingsStatusTone.Good,
+        )
+        RelayUiState.Connecting -> SettingsStatusPillModel(
+            label = stringResource(R.string.relay_state_reconnecting),
+            tone = SettingsStatusTone.Info,
+        )
+        RelayUiState.Stale,
+        RelayUiState.Disconnected -> SettingsStatusPillModel(
+            label = stringResource(R.string.relay_state_unavailable),
+            tone = SettingsStatusTone.Warning,
+        )
+        RelayUiState.Expired -> SettingsStatusPillModel(
+            label = stringResource(R.string.relay_state_needs_repair),
+            tone = SettingsStatusTone.Warning,
+        )
+    }
+
+    // Kick a WSS reconnect when Settings first composes so the Connections
+    // subpage's active-card relay row doesn't flash Disconnected on cold
+    // entry. ConnectionsSettingsScreen runs the same `reconnectIfStale()`
+    // on its own entry, but firing here too means the first "Settings →
+    // Connections" navigation lands on an already-warm reconnect attempt
+    // rather than triggering it on arrival.
+    LaunchedEffect(Unit) {
+        connectionViewModel.reconnectIfStale()
+    }
+
+    // AgentInfoSheet visibility — driven by a tap on the Active Agent
+    // card at the top of the category list. Previously this tapped
+    // route was `onNavigateToChatWithAgentSheet` (navigate to Chat +
+    // pass ?openAgentSheet=true), which caused the sheet to open on a
+    // different tab and left the user on Chat after dismissing it. Now
+    // the sheet renders inline over Settings so closing drops the user
+    // back where they started.
+    var showAgentSheet by remember { mutableStateOf(false) }
+    var showProfileLockDialog by remember { mutableStateOf(false) }
+    // What's New / Changelog — opens the full release history as a
+    // self-contained full-screen Dialog (no nav route). Always available, not
+    // gated on the post-update "seen" state that drives the auto dialog.
+    var showChangelog by remember { mutableStateOf(false) }
+
+    val settingsScrollState = rememberScrollState()
+    val petCompanionCoordinator = LocalPetCompanionCoordinator.current
+    LaunchedEffect(settingsScrollState, petCompanionCoordinator) {
+        snapshotFlow {
+            settingsScrollState.isScrollInProgress to
+                (showAgentSheet || showProfileLockDialog || showChangelog)
+        }
+            .distinctUntilChanged()
+            .collect { (scrolling, hidden) ->
+                petCompanionCoordinator.publishSurface(
+                    owner = SETTINGS_PET_SURFACE_ROUTE,
+                    scrolling = scrolling,
+                    hidden = hidden,
+                )
+            }
+    }
+    DisposableEffect(petCompanionCoordinator) {
+        onDispose { petCompanionCoordinator.clearSurface(SETTINGS_PET_SURFACE_ROUTE) }
+    }
+
+    // Profile lock state — this card/dialog is the ONE surface that always
+    // lists every profile, so it does NOT gate on isProfileLocked.
+    val isProfileLocked by connectionViewModel.isProfileLocked.collectAsState()
+    val lockedProfileName by connectionViewModel.lockedProfileName.collectAsState()
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                navigationIcon = {
+                    if (onBack != null) {
+                        IconButton(onClick = onBack) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = stringResource(R.string.settings_back),
+                            )
+                        }
+                    }
+                },
+                title = { Text(stringResource(R.string.settings_title)) },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                )
+            )
+        }
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .verticalScroll(settingsScrollState)
+                .padding(horizontal = 16.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            if (supervisedPolicy?.enabled == true && parentAccessUnlocked) {
+                SettingsCategoryRow(
+                    icon = Icons.Filled.Security,
+                    title = "Supervised mode",
+                    subtitle = "On · ${supervisedPolicy.pinnedProfileName.orEmpty()}",
+                    badge = SettingsStatusPillModel(
+                        label = "On",
+                        tone = SettingsStatusTone.Good,
+                    ),
+                    onClick = onNavigateToSupervisedControls,
+                    isDarkTheme = isDarkTheme,
+                )
+            }
+
+            // ── Active Agent summary ───────────────────────────────────
+            // Mirrors the ChatScreen TopAppBar title block (avatar + name
+            // + one-line `connection · model · personality` subtitle).
+            // Tapping opens AgentInfoSheet inline so users can change
+            // Connection / Profile / Personality without leaving Settings.
+            ActiveAgentCard(
+                agentName = AgentDisplay.agentName(
+                    profile = effectiveProfile,
+                    selectedPersonality = selectedPersonality,
+                    defaultPersonality = defaultPersonality,
+                    connectionLabel = activeConnection?.label,
+                    localDisplayAlias = profileDisplayAlias,
+                ),
+                connectionLabel = activeConnection?.label ?: stringResource(R.string.settings_no_connection),
+                model = effectiveProfile?.model ?: "default",
+                personalityLabel = AgentDisplay.personalityLabel(
+                    selectedPersonality = selectedPersonality,
+                    defaultPersonality = defaultPersonality,
+                ),
+                isCustomized = selectedProfile != null || selectedPersonality != "default",
+                statusPills = listOfNotNull(chatPill),
+                onClick = { showAgentSheet = true },
+                isDarkTheme = isDarkTheme,
+                modifier = Modifier.settingsPetSurface("settings-card:active-agent"),
+            )
+
+            // ── Inspect Agent ──────────────────────────────────────────
+            // Opens the full-screen ProfileInspectorScreen for the
+            // currently-active profile. When no explicit override is
+            // selected (server-configured model), fall back to the
+            // `default` profile — the relay always advertises one, and
+            // it IS the effective agent. Still falls back to disabled
+            // when no profiles have loaded yet (unpaired / pre-auth).
+            val inspectorTarget = effectiveProfile
+                ?: agentProfiles.firstOrNull()
+            ProfileInspectorCard(
+                activeProfile = inspectorTarget,
+                onClick = { profileName -> onNavigateToProfileInspector(profileName) },
+                isDarkTheme = isDarkTheme,
+                modifier = Modifier.settingsPetSurface("settings-card:profile-inspector"),
+            )
+
+            // ── Profile lock ───────────────────────────────────────────
+            // Pin the app to ONE profile. When locked, the profile pickers
+            // elsewhere collapse to a single locked row; this card's dialog
+            // is the only surface that still lists every profile.
+            val serverDefaultLabel = stringResource(R.string.settings_server_default)
+            val lockedDisplayName: String? = when {
+                !isProfileLocked -> null
+                lockedProfileName == null ||
+                    lockedProfileName == AgentDisplay.SERVER_DEFAULT_PROFILE_KEY ->
+                    serverDefaultLabel
+                else ->
+                    agentProfiles
+                        .firstOrNull { it.name == lockedProfileName }
+                        ?.let { AgentDisplay.profileDisplayName(it) }
+                        ?: lockedProfileName!!.replaceFirstChar { it.uppercase() }
+            }
+            ProfileLockCard(
+                lockedDisplayName = lockedDisplayName,
+                onClick = { showProfileLockDialog = true },
+                isDarkTheme = isDarkTheme,
+                modifier = Modifier.settingsPetSurface("settings-card:profile-lock"),
+            )
+
+
+            // ── Quick Controls ─────────────────────────────────────────
+            // The switches flipped most often, pinned to the top-level Settings
+            // landing instead of buried in a sub-screen. Persistent connection is
+            // connection-level (not chat-specific), so it belongs here beside the
+            // agent / profile cards. Extensible — add more frequently-toggled
+            // switches in QuickControlsCard.
+            QuickControlsCard(
+                connectionViewModel = connectionViewModel,
+                isDarkTheme = isDarkTheme,
+                modifier = Modifier.settingsPetSurface("settings-card:quick-controls"),
+            )
+
+            // (The "Active Connection quick-look card" that used to live
+            // here — showing API / Relay / Session status rows with a
+            // clickable shortcut into a separate singular-connection
+            // detail screen — was removed on 2026-04-21. It was the
+            // second "connection status" surface on a screen that already
+            // had the Active Agent card above it, and it pointed at a
+            // near-identically-named screen (`ConnectionSettings` singular
+            // vs `ConnectionsSettings` plural) which users couldn't tell
+            // apart. Everything the card did — status rows, pair, manual
+            // URL, insecure toggle, manual pairing code — now lives inline
+            // on the active card of the Connections subpage, reached via
+            // the "Connections" category row below. See ADR on the
+            // connection-settings unification.)
+
+            // ── Category list ──────────────────────────────────────────
+            // Connections sits ABOVE the Hermes section: it's the foundational
+            // layer everything else points at (standard + plugin), not a Hermes
+            // feature — and the home for multi-connection.
+            SettingsCategoryRow(
+                icon = Icons.Filled.Devices,
+                title = stringResource(R.string.settings_connections),
+                subtitle = stringResource(R.string.settings_connections_desc),
+                onClick = onNavigateToConnections,
+                isDarkTheme = isDarkTheme,
+            )
+
+            ProviderUsageLandingCard(
+                response = providerUsageResponse,
+                loaded = providerUsageLoaded,
+                refreshing = providerUsageRefreshing,
+                preferences = providerUsagePreferences,
+                onDisplay = onNavigateToProviderUsage,
+                onRefresh = { providerUsageRefreshKey++ },
+                isDarkTheme = isDarkTheme,
+            )
+
+            SettingsSectionHeader(stringResource(R.string.settings_hermes))
+
+            SettingsCategoryRow(
+                icon = Icons.Filled.Link,
+                title = stringResource(R.string.settings_hermes_management),
+                subtitle = stringResource(R.string.settings_hermes_management_desc),
+                badge = dashboardPill,
+                onClick = onNavigateToManage,
+                isDarkTheme = isDarkTheme,
+            )
+
+            SettingsCategoryRow(
+                icon = Icons.Filled.Extension,
+                title = stringResource(R.string.plugins_title),
+                subtitle = stringResource(R.string.settings_plugins_desc),
+                onClick = onNavigateToPlugins,
+                isDarkTheme = isDarkTheme,
+            )
+
+            SettingsCategoryRow(
+                icon = Icons.Filled.AccountTree,
+                title = stringResource(R.string.settings_git_workspace),
+                subtitle = stringResource(
+                    if (gitRepoScanningEnabled) {
+                        R.string.settings_git_workspace_desc
+                    } else {
+                        R.string.settings_git_workspace_off_desc
+                    },
+                ),
+                onClick = onNavigateToGitWorkspace,
+                isDarkTheme = isDarkTheme,
+            )
+
+            SettingsCategoryRow(
+                icon = Icons.AutoMirrored.Filled.Chat,
+                title = stringResource(R.string.settings_chat),
+                subtitle = stringResource(R.string.settings_chat_desc),
+                badge = chatPill,
+                onClick = onNavigateToChatSettings,
+                isDarkTheme = isDarkTheme,
+            )
+
+            SettingsCategoryRow(
+                icon = Icons.Filled.Image,
+                title = stringResource(R.string.settings_media),
+                subtitle = stringResource(R.string.settings_media_desc),
+                onClick = onNavigateToMediaSettings,
+                isDarkTheme = isDarkTheme,
+            )
+
+            SettingsCategoryRow(
+                icon = Icons.Filled.GraphicEq,
+                title = stringResource(R.string.settings_voice_mode),
+                subtitle = stringResource(R.string.settings_voice_mode_desc),
+                onClick = onNavigateToVoiceSettings,
+                isDarkTheme = isDarkTheme,
+            )
+
+            SettingsSectionHeader(stringResource(R.string.settings_power_tools), trailing = pluginBadge)
+
+            SettingsCategoryRow(
+                icon = Icons.AutoMirrored.Filled.Message,
+                title = stringResource(R.string.settings_threads),
+                subtitle = stringResource(R.string.settings_threads_desc),
+                onClick = onNavigateToProactiveSettings,
+                isDarkTheme = isDarkTheme,
+            )
+
+            SettingsCategoryRow(
+                icon = Icons.Filled.Code,
+                title = stringResource(R.string.settings_terminal),
+                subtitle = stringResource(R.string.settings_terminal_desc),                onClick = onNavigateToTerminal,
+                isDarkTheme = isDarkTheme,
+            )
+
+            SettingsCategoryRow(
+                icon = Icons.Filled.PhoneAndroid,
+                title = if (BuildFlavor.isSideload) stringResource(R.string.settings_bridge) else stringResource(R.string.settings_bridge_core),
+                subtitle = if (BuildFlavor.isSideload) {
+                    stringResource(R.string.settings_bridge_desc)
+                } else {
+                    stringResource(R.string.settings_bridge_core_desc)
+                },                onClick = onNavigateToBridge,
+                isDarkTheme = isDarkTheme,
+            )
+
+            SettingsCategoryRow(
+                icon = Icons.Filled.Devices,
+                title = stringResource(R.string.settings_relay_sessions),
+                subtitle = stringResource(R.string.settings_relay_sessions_desc),                onClick = onNavigateToPairedDevices,
+                isDarkTheme = isDarkTheme,
+            )
+
+            // === PHASE3-notif-listener-followup: notification companion entry-point ===
+            SettingsCategoryRow(
+                icon = Icons.Filled.Notifications,
+                title = stringResource(R.string.settings_notification_companion),
+                subtitle = stringResource(R.string.settings_notification_companion_desc),                onClick = onNavigateToNotificationCompanion,
+                isDarkTheme = isDarkTheme,
+            )
+            // === END PHASE3-notif-listener-followup ===
+
+            if (BuildFlavor.isSideload) {
+                // === PHASE3-safety-rails: bridge safety entry-point ===
+                SettingsCategoryRow(
+                    icon = Icons.Filled.Security,
+                    title = stringResource(R.string.settings_bridge_safety),
+                    subtitle = stringResource(R.string.settings_bridge_safety_desc),
+                    badge = SettingsStatusPillModel(
+                        label = stringResource(R.string.settings_sideload),
+                        tone = SettingsStatusTone.Info,
+                    ),
+                    onClick = onNavigateToBridgeSafety,
+                    isDarkTheme = isDarkTheme,
+                )
+                // === END PHASE3-safety-rails ===
+            }
+
+            SettingsSectionHeader("App")
+
+            SettingsCategoryRow(
+                icon = Icons.Filled.Security,
+                title = stringResource(R.string.settings_permissions),
+                subtitle = stringResource(R.string.settings_permissions_desc),
+                onClick = onNavigateToPermissions,
+                isDarkTheme = isDarkTheme,
+            )
+
+            SettingsCategoryRow(
+                icon = Icons.Filled.Palette,
+                title = stringResource(R.string.settings_appearance),
+                subtitle = stringResource(R.string.settings_appearance_desc),
+                onClick = onNavigateToAppearanceSettings,
+                isDarkTheme = isDarkTheme,
+            )
+
+            SettingsCategoryRow(
+                icon = Icons.Filled.Security,
+                title = stringResource(R.string.settings_advanced),
+                subtitle = when {
+                    supervisedPolicy?.isActive == true -> "On · ${supervisedPolicy.pinnedProfileName}"
+                    supervisedPolicy?.isConfigured == true -> "Ready · ${supervisedPolicy.pinnedProfileName}"
+                    else -> stringResource(R.string.settings_advanced_desc)
+                },
+                badge = supervisedPolicy?.takeIf { it.isActive }?.let {
+                    SettingsStatusPillModel(
+                        label = "On",
+                        tone = SettingsStatusTone.Good,
+                    )
+                },
+                onClick = onNavigateToAdvancedSettings,
+                isDarkTheme = isDarkTheme,
+            )
+
+            SettingsCategoryRow(
+                icon = Icons.Filled.Analytics,
+                title = stringResource(R.string.settings_analytics),
+                subtitle = stringResource(R.string.settings_analytics_desc),
+                onClick = onNavigateToAnalytics,
+                isDarkTheme = isDarkTheme,
+            )
+
+            SettingsCategoryRow(
+                icon = Icons.Filled.Info,
+                title = stringResource(R.string.settings_diagnostics),
+                subtitle = stringResource(R.string.settings_diagnostics_desc),
+                onClick = onNavigateToDiagnostics,
+                isDarkTheme = isDarkTheme,
+            )
+
+            if (devOptionsUnlocked) {
+                SettingsCategoryRow(
+                    icon = Icons.Filled.Code,
+                    title = stringResource(R.string.settings_developer_options),
+                    subtitle = stringResource(R.string.settings_developer_options_desc),
+                    onClick = onNavigateToDeveloperSettings,
+                    isDarkTheme = isDarkTheme,
+                )
+            }
+
+            SettingsCategoryRow(
+                icon = Icons.Filled.NewReleases,
+                title = stringResource(R.string.settings_whats_new),
+                subtitle = stringResource(R.string.settings_whats_new_desc),
+                onClick = { showChangelog = true },
+                isDarkTheme = isDarkTheme,
+            )
+
+            SettingsCategoryRow(
+                icon = Icons.Filled.Info,
+                title = stringResource(R.string.settings_about),
+                subtitle = stringResource(R.string.settings_about_desc),
+                onClick = onNavigateToAbout,
+                isDarkTheme = isDarkTheme,
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+    }
+
+    // Agent info sheet — same consolidated surface ChatScreen uses from
+    // its TopAppBar tap target, hoisted here so tapping the Active Agent
+    // card on Settings opens it in-place. ModalBottomSheet is a popup, so
+    // placement as a sibling to Scaffold is cosmetic — visual stacking is
+    // handled by the underlying window manager, not the Compose tree.
+    if (showAgentSheet) {
+        AgentInfoSheet(
+            connectionViewModel = connectionViewModel,
+            chatViewModel = chatViewModel,
+            onDismiss = { showAgentSheet = false },
+            onNavigateToConnections = onNavigateToConnections,
+            onNavigateToProfileInspector = onNavigateToProfileInspector,
+        )
+    }
+
+    if (showProfileLockDialog) {
+        ProfileLockDialog(
+            profiles = agentProfiles,
+            isLocked = isProfileLocked,
+            lockedProfileName = lockedProfileName,
+            onLock = { profile -> connectionViewModel.lockProfile(profile) },
+            onUnlock = { connectionViewModel.unlockProfile() },
+            onDismiss = { showProfileLockDialog = false },
+        )
+    }
+
+    // Full-screen changelog. Hosted as a self-contained Dialog (no nav route)
+    // so it stacks over Settings and dismisses back here — mirroring the
+    // showAgentSheet inline-surface pattern above. (Diagnostics moved to its
+    // own nav route — see Screen.Diagnostics.)
+    if (showChangelog) {
+        Dialog(
+            onDismissRequest = { showChangelog = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Surface(modifier = Modifier.fillMaxSize()) {
+                ChangelogScreen(onClose = { showChangelog = false })
+            }
+        }
+    }
+}
+
+/**
+ * Compact summary card of the currently active agent (Connection + Profile
+ * + Personality) rendered at the very top of SettingsScreen. Tapping opens
+ * AgentInfoSheet inline — that sheet is the canonical place to actually
+ * change any of these three dimensions.
+ *
+ * Visual parity with the ChatScreen TopAppBar title block: 32dp avatar with
+ * an optional 1.5dp primary-color accent ring when the user has overridden
+ * either the profile or the personality; single-line subtitle joining the
+ * three tokens with a middle-dot separator.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ActiveAgentCard(
+    agentName: String,
+    connectionLabel: String,
+    model: String,
+    personalityLabel: String,
+    isCustomized: Boolean,
+    onClick: () -> Unit,
+    isDarkTheme: Boolean,
+    statusPills: List<SettingsStatusPillModel>,
+    modifier: Modifier = Modifier,
+) {
+    val subtitle = "$connectionLabel \u00B7 $model \u00B7 $personalityLabel"
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .gradientBorder(
+                shape = appearanceRoundedCornerShape(12.dp),
+                isDarkTheme = isDarkTheme,
+            ),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+        ),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // Avatar — small 32dp variant of the 40dp ChatScreen top-bar
+            // avatar. Ring width shrinks to 1.5dp so the overall footprint
+            // stays at 32dp without the inner Surface collapsing.
+            val ringWidth = if (isCustomized) 1.5.dp else 0.dp
+            val innerSize = 32.dp - (ringWidth * 2)
+            Box(modifier = Modifier.size(32.dp)) {
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .then(
+                            if (isCustomized && LocalAgentIconPath.current.isNullOrBlank()) {
+                                Modifier.border(
+                                    width = ringWidth,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    shape = CircleShape,
+                                )
+                            } else Modifier
+                        )
+                        .padding(ringWidth),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Surface(
+                        modifier = Modifier.size(innerSize),
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primary,
+                    ) {
+                        AgentAvatarFace(
+                            name = agentName,
+                            letterStyle = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                val hermesFallback = stringResource(R.string.settings_hermes)
+                Text(
+                    text = agentName.ifBlank { hermesFallback },
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    statusPills.forEach { pill ->
+                        SettingsStatusPill(pill)
+                    }
+                }
+            }
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * Entry card for the per-connection profile lock. Subtitle reflects the live
+ * lock state: the locked profile's display name when pinned, or the generic
+ * "Pin the app to one agent profile" prompt when unlocked. Tapping opens
+ * [ProfileLockDialog].
+ */
+@Composable
+private fun ProfileLockCard(
+    lockedDisplayName: String?,
+    onClick: () -> Unit,
+    isDarkTheme: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .gradientBorder(
+                shape = appearanceRoundedCornerShape(12.dp),
+                isDarkTheme = isDarkTheme,
+            ),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+        ),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Lock,
+                contentDescription = null,
+                tint = if (lockedDisplayName != null) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = stringResource(R.string.settings_profile_lock),
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = lockedDisplayName?.let { stringResource(R.string.settings_locked_to, it) }
+                        ?: stringResource(R.string.settings_profile_lock_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * Quick Controls card on the top-level Settings landing — the switches the user
+ * flips most often (Persistent connection, turn-complete alerts), kept out of
+ * the per-feature sub-screens so they're one tap from the Settings root. Wired
+ * straight to the same ConnectionViewModel flows the sub-screens use.
+ */
+@Composable
+private fun QuickControlsCard(
+    connectionViewModel: ConnectionViewModel,
+    isDarkTheme: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val gatewayKeepAlive by connectionViewModel.gatewayKeepAlive.collectAsState()
+    val notifyTurnComplete by connectionViewModel.notifyTurnComplete.collectAsState()
+    val context = LocalContext.current
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted -> connectionViewModel.setNotifyTurnComplete(granted) }
+    val requestNotificationPermission = {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .gradientBorder(
+                shape = appearanceRoundedCornerShape(12.dp),
+                isDarkTheme = isDarkTheme,
+            ),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = stringResource(R.string.settings_quick_controls),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            // Persistent connection — connection-level keep-alive: holds the app
+            // process up via a notification so the gateway chat socket (and, for
+            // relay-paired setups, device control + notification mirroring) stays
+            // reachable in the background. Off by default; uses more battery.
+            QuickControlToggle(
+                title = stringResource(R.string.settings_persistent_connection),
+                subtitle = if (gatewayKeepAlive) {
+                    stringResource(R.string.settings_persistent_connection_desc)
+                } else {
+                    stringResource(R.string.settings_connect_on_demand)
+                },
+                checked = gatewayKeepAlive,
+                onCheckedChange = { enabled ->
+                    connectionViewModel.setGatewayKeepAlive(enabled)
+                    if (enabled && notifyTurnComplete) requestNotificationPermission()
+                },
+            )
+            // Doze: even with the keep-alive service running, a specialUse FGS
+            // still gets its network deferred in deep sleep unless the app is
+            // battery-optimization exempt. Nudge for the exemption when the
+            // toggle is on and we're not yet exempt (sideload only — Play
+            // restricts the permission).
+            if (gatewayKeepAlive && BuildFlavor.isSideload) {
+                BatteryOptimizationNudge()
+            }
+            HorizontalDivider()
+            QuickControlToggle(
+                title = stringResource(R.string.settings_turn_complete_alerts),
+                subtitle = if (notifyTurnComplete) {
+                    stringResource(R.string.settings_turn_complete_alerts_desc)
+                } else {
+                    stringResource(R.string.settings_turn_complete_alerts_off)
+                },
+                checked = notifyTurnComplete,
+                onCheckedChange = { enabled ->
+                    connectionViewModel.setNotifyTurnComplete(enabled)
+                    if (enabled) requestNotificationPermission()
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun QuickControlToggle(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(modifier = Modifier.width(12.dp))
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+/**
+ * Doze allow-list nudge shown under the "Persistent connection" toggle when
+ * it's on but the app isn't battery-optimization exempt (sideload only).
+ * Re-checks on ON_RESUME so it disappears after the user grants the exemption
+ * in the system dialog. See [BatteryOptimizations].
+ */
+@Composable
+private fun BatteryOptimizationNudge() {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var exempt by remember {
+        mutableStateOf(BatteryOptimizations.isIgnoringBatteryOptimizations(context))
+    }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                exempt = BatteryOptimizations.isIgnoringBatteryOptimizations(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    if (exempt) return
+    Surface(
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        shape = appearanceRoundedCornerShape(8.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = stringResource(R.string.settings_keep_connected_deep_sleep),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+            )
+            Text(
+                text = stringResource(R.string.settings_keep_connected_battery_desc),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+            )
+            TextButton(
+                onClick = { BatteryOptimizations.launchRequest(context) },
+                contentPadding = PaddingValues(horizontal = 0.dp),
+            ) {
+                Text(stringResource(R.string.settings_allow_unrestricted_battery))
+            }
+        }
+    }
+}
+
+/**
+ * The one surface that ALWAYS lists every profile (it never gates on the lock
+ * state — it's how the user picks the target or unlocks). A master "Lock to a
+ * profile" toggle reveals a radio list of "Server default" + every advertised
+ * profile. When the stored lock target isn't present in the list, a banner
+ * names the missing profile with an inline Unlock affordance.
+ */
+@Composable
+private fun ProfileLockDialog(
+    profiles: List<Profile>,
+    isLocked: Boolean,
+    lockedProfileName: String?,
+    onLock: (Profile?) -> Unit,
+    onUnlock: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    // Selectable rows: a synthetic "Server default" sentinel + every advertised
+    // profile, including a profile literally named `default`.
+    val selectableProfiles = profiles
+
+    // Is the stored lock target Server default (sentinel / null)?
+    val lockedIsServerDefault = lockedProfileName == null ||
+        lockedProfileName == AgentDisplay.SERVER_DEFAULT_PROFILE_KEY
+    val lockedProfile = if (lockedIsServerDefault) {
+        null
+    } else {
+        selectableProfiles.firstOrNull { it.name == lockedProfileName }
+    }
+    // Locked to a named profile the server no longer advertises.
+    val lockedProfileMissing = isLocked && !lockedIsServerDefault && lockedProfile == null
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.settings_profile_lock)) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.settings_profile_lock_full_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                if (lockedProfileMissing) {
+                    Surface(
+                        color = RelayRefresh.Amber.copy(alpha = 0.15f),
+                        contentColor = RelayRefresh.Amber,
+                        shape = appearanceRoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, RelayRefresh.Amber.copy(alpha = 0.5f)),
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                text = stringResource(R.string.settings_locked_profile_not_found_prefix) +
+                                    (lockedProfileName ?: "") +
+                                    stringResource(R.string.settings_locked_profile_not_found_suffix),
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                            TextButton(
+                                onClick = onUnlock,
+                                modifier = Modifier.align(Alignment.End),
+                            ) {
+                                Text(stringResource(R.string.settings_unlock))
+                            }
+                        }
+                    }
+                }
+
+                // Master toggle. Off = unlocked; flipping on locks to the
+                // current effective target (Server default by default, or the
+                // already-stored target when it still resolves).
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = stringResource(R.string.settings_lock_to_profile),
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Switch(
+                        checked = isLocked,
+                        onCheckedChange = { checked ->
+                            if (checked) {
+                                // Lock to the existing target if it still
+                                // resolves, else Server default.
+                                onLock(lockedProfile)
+                            } else {
+                                onUnlock()
+                            }
+                        },
+                    )
+                }
+
+                if (isLocked) {
+                    HorizontalDivider()
+                    // Server default option.
+                    ProfileLockOptionRow(
+                        label = stringResource(R.string.profile_follow_server_default),
+                        secondary = stringResource(R.string.settings_use_default_profile),
+                        selected = lockedIsServerDefault,
+                        onSelect = { onLock(null) },
+                    )
+                    selectableProfiles.forEach { profile ->
+                        ProfileLockOptionRow(
+                            label = AgentDisplay.profileDisplayName(profile)
+                                ?: profile.name.replaceFirstChar { it.uppercase() },
+                            secondary = profile.model.takeIf { it.isNotBlank() },
+                            selected = !lockedIsServerDefault &&
+                                lockedProfileName == profile.name,
+                            onSelect = { onLock(profile) },
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.settings_done)) }
+        },
+    )
+}
+
+@Composable
+private fun ProfileLockOptionRow(
+    label: String,
+    secondary: String?,
+    selected: Boolean,
+    onSelect: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(appearanceRoundedCornerShape(8.dp))
+            .selectable(
+                selected = selected,
+                role = Role.RadioButton,
+                onClick = onSelect,
+            )
+            .padding(vertical = 6.dp, horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(
+            selected = selected,
+            onClick = null,
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (secondary != null) {
+                Text(
+                    text = secondary,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+internal data class SettingsStatusPillModel(
+    val label: String,
+    val tone: SettingsStatusTone = SettingsStatusTone.Neutral,
+)
+
+internal enum class SettingsStatusTone {
+    Neutral,
+    Good,
+    Info,
+    Warning,
+}
+
+@Composable
+private fun SettingsStatusPill(pill: SettingsStatusPillModel) {
+    // Soft "chip" treatment that matches the translucent, bordered language
+    // of the chat/manage/bridge mode strip (relaySelectedPanel) instead of a
+    // solid full-strength fill — a tinted wash + hairline accent border + cream
+    // label reads cleaner and stays in-theme across tones.
+    val hue = when (pill.tone) {
+        SettingsStatusTone.Good -> RelayRefresh.Electric
+        SettingsStatusTone.Info -> RelayRefresh.Purple
+        SettingsStatusTone.Warning -> RelayRefresh.Amber
+        SettingsStatusTone.Neutral -> RelayRefresh.Muted
+    }
+    val contentColor = when (pill.tone) {
+        SettingsStatusTone.Good, SettingsStatusTone.Info -> RelayRefresh.Paper
+        SettingsStatusTone.Warning -> RelayRefresh.Amber
+        SettingsStatusTone.Neutral -> RelayRefresh.Muted
+    }
+    Surface(
+        color = hue.copy(alpha = 0.18f),
+        contentColor = contentColor,
+        shape = appearanceRoundedCornerShape(7.dp),
+        border = BorderStroke(1.dp, hue.copy(alpha = 0.55f)),
+    ) {
+        Text(
+            text = pill.label,
+            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+        )
+    }
+}
+
+@Composable
+private fun ProviderUsageLandingCard(
+    response: ProviderUsageResponse?,
+    loaded: Boolean,
+    refreshing: Boolean,
+    preferences: ProviderUsagePreferences,
+    onDisplay: () -> Unit,
+    onRefresh: () -> Unit,
+    isDarkTheme: Boolean,
+) {
+    val providers = response?.providers
+        ?.filter { it.available && it.id in preferences.visibleProviders }
+        .orEmpty()
+    Card(
+        modifier = Modifier
+            .settingsPetSurface("settings-card:provider-usage")
+            .fillMaxWidth()
+            .gradientBorder(
+                shape = appearanceRoundedCornerShape(12.dp),
+                isDarkTheme = isDarkTheme,
+            ),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+        ),
+    ) {
+        Column {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Analytics,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp),
+                )
+                Spacer(modifier = Modifier.width(16.dp))
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.provider_usage_title),
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Text(
+                        text = stringResource(
+                            when (response?.relayEnhanced) {
+                                true -> R.string.provider_usage_settings_desc_relay
+                                false -> R.string.provider_usage_settings_desc_basic
+                                null -> R.string.provider_usage_settings_desc
+                            },
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                IconButton(onClick = onRefresh, enabled = !refreshing) {
+                    Icon(
+                        imageVector = Icons.Filled.Refresh,
+                        contentDescription = stringResource(R.string.provider_usage_refresh),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                TextButton(onClick = onDisplay) {
+                    Text(stringResource(R.string.provider_usage_customize))
+                }
+            }
+
+            HorizontalDivider(
+                modifier = Modifier.padding(horizontal = 16.dp),
+                color = MaterialTheme.colorScheme.outlineVariant,
+            )
+
+            when {
+                preferences.landingMode == ProviderUsageLandingMode.Hidden -> {
+                    Text(
+                        text = stringResource(R.string.provider_usage_hidden_hint),
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                !loaded -> {
+                    ProviderUsageSkeleton(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                    )
+                }
+                providers.isEmpty() -> {
+                    Text(
+                        text = stringResource(R.string.provider_usage_not_available_compact),
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                else -> providers.forEachIndexed { index, provider ->
+                    if (index > 0) {
+                        HorizontalDivider(
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                            color = MaterialTheme.colorScheme.outlineVariant,
+                        )
+                    }
+                    ProviderUsageContent(
+                        provider = provider,
+                        detailed = preferences.landingMode == ProviderUsageLandingMode.Expanded,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProviderUsageSkeleton(modifier: Modifier = Modifier) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        RelaySkeletonLine(width = 112.dp, height = 16.dp)
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            RelaySkeletonLine(width = 86.dp)
+            RelaySkeletonLine(width = 58.dp)
+        }
+        RelaySkeletonLine(width = 260.dp, height = 6.dp)
+        RelaySkeletonLine(width = 92.dp, height = 10.dp)
+    }
+}
+
+@Composable
+private fun SettingsSectionHeader(
+    label: String,
+    trailing: SettingsStatusPillModel? = null,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.weight(1f),
+        )
+        if (trailing != null) {
+            SettingsStatusPill(trailing)
+        }
+    }
+}
+
+/**
+ * One row in the root Settings category list. Matches the visual style of
+ * the existing Voice navigation row that was previously inline in the
+ * mega-SettingsScreen.
+ */
+@Composable
+internal fun SettingsCategoryRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+    isDarkTheme: Boolean,
+    badge: SettingsStatusPillModel? = null,
+    petPerchKey: String? = title,
+) {
+    val surfaceModifier = if (petPerchKey != null) {
+        Modifier.settingsPetSurface("settings-category:$petPerchKey")
+    } else {
+        Modifier
+    }
+    Card(
+        modifier = surfaceModifier
+            .fillMaxWidth()
+            .gradientBorder(
+                shape = appearanceRoundedCornerShape(12.dp),
+                isDarkTheme = isDarkTheme
+            ),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(22.dp),
+            )
+            Spacer(modifier = Modifier.width(16.dp))
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (badge != null) {
+                    SettingsStatusPill(badge)
+                }
+            }
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}

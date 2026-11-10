@@ -1,0 +1,231 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- Turn-complete chat notification (TurnCompleteNotifier) — runtime-requested
+         on API 33+ from the Chat Settings toggle. Lives in main (not just the
+         sideload overlay) so the googlePlay flavor can notify too. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Opt-in "Keep connected in background" (GatewayKeepAliveService). In main
+         (not the sideload overlay) so the googlePlay flavor ships it too — the
+         Home-Assistant-class persistent-connection use case Play permits. The
+         specialUse type requires a one-time Play Console foreground-service
+         declaration at submission. (Also already present in the sideload overlay
+         for the device-control bridge service; the merger dedups.) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+    <application
+        android:name=".HermesRelayApp"
+        android:allowBackup="true"
+        android:enableOnBackInvokedCallback="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:localeConfig="@xml/locales_config"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.HermesRelay">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="portrait"
+            tools:ignore="LockedOrientationActivity"
+            android:configChanges="uiMode|fontScale|density|orientation|screenSize|screenLayout|keyboardHidden"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.HermesRelay.Splash">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- User-mediated sharesheet handoff. Shared text and files open in
+                 a fresh reviewable Chat draft; external intents never send. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <!-- The loopback native-PKCE result page uses this fixed, tokenless
+                 link only to bring the installed flavor back to the foreground.
+                 MainActivity intentionally does not interpret the URI as an auth
+                 callback or navigation command. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="${applicationId}"
+                    android:host="return" />
+            </intent-filter>
+            <!-- Some Android OEM assistant pickers enumerate ACTION_ASSIST
+                 activities in addition to VoiceInteractionService providers. -->
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.VOICE" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".assistant.AssistantLaunchActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:noHistory="true"
+            android:permission="android.permission.STATUS_BAR_SERVICE"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.speech.action.WEB_SEARCH" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- AppCompat persists in-app language choices on Android 12 and lower.
+             Android 13+ stores the same selection in the platform LocaleManager. -->
+        <service
+            android:name="androidx.appcompat.app.AppLocalesMetadataHolderService"
+            android:enabled="false"
+            android:exported="false">
+            <meta-data
+                android:name="autoStoreLocales"
+                android:value="true" />
+        </service>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_provider_paths" />
+        </provider>
+
+        <!-- === PHASE3-notif-listener: notification companion service === -->
+        <service
+            android:name=".notifications.HermesNotificationCompanion"
+            android:label="@string/notification_companion_label"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+        <!-- === END PHASE3-notif-listener === -->
+
+        <!-- Inline-reply receiver for proactive-message notifications
+             (Phase 2c — two-way phone messaging). Not exported: it is only
+             ever triggered by the app's own mutable RemoteInput PendingIntent
+             delivered by the system, never by a third party. -->
+        <receiver
+            android:name=".notifications.ProactiveReplyReceiver"
+            android:exported="false" />
+
+        <!-- Protects user-started active turns automatically; the optional
+             "Persistent connection" setting extends the same foreground
+             protection to idle/background connectivity (and relay-paired
+             device features). In main so BOTH flavors ship it. Every Play
+             foreground-service type needs its matching App content declaration. -->
+        <service
+            android:name=".network.upstream.GatewayKeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps user-started Hermes turns connected until they finish or need input, and optionally keeps idle connections responsive when the user enables Persistent connection." />
+        </service>
+
+        <!-- Bound only during a user-started browser sign-in. Include this
+             bounded callback use case in the Play specialUse declaration. -->
+        <service
+            android:name=".network.upstream.NativeDashboardAuthService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps the local callback reachable during a user-started browser sign-in with a five-minute callback timeout and bounded token exchange and session verification." />
+        </service>
+
+        <!-- Experimental, explicitly user-started on-device wake-word listener.
+             Audio remains local and the service is never boot/restart started.
+             The Play build's microphone type needs an App content declaration. -->
+        <service
+            android:name=".wake.WakeWordForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="microphone"
+            android:stopWithTask="false" />
+
+        <!-- User-started protection for voice capture from the system overlay.
+             The service does not own AudioRecord; it keeps foreground-only
+             microphone app-ops available while Hermes is behind another app.
+             Include this use case in the Play microphone declaration. -->
+        <service
+            android:name=".voice.VoiceOverlayForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="microphone"
+            android:stopWithTask="false" />
+
+        <!-- Explicitly opt-in Android Digital Assistant integration. Android
+             binds this only after the user selects Hermes for ROLE_ASSISTANT. -->
+        <service
+            android:name=".assistant.HermesVoiceInteractionService"
+            android:exported="true"
+            android:label="@string/assistant_service_label"
+            android:permission="android.permission.BIND_VOICE_INTERACTION">
+            <intent-filter>
+                <action android:name="android.service.voice.VoiceInteractionService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.voice_interaction"
+                android:resource="@xml/voice_interaction_service" />
+        </service>
+
+        <!-- Heavy assistant UI is isolated from the always-running interaction
+             service, matching the platform lifecycle guidance. -->
+        <service
+            android:name=".assistant.HermesVoiceInteractionSessionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_VOICE_INTERACTION"
+            android:process=":assistant_session" />
+
+        <!-- Required companion component for VoiceInteractionService metadata.
+             Hermes session transcription remains owned by the existing voice
+             pipeline; this service does not open a second microphone stream. -->
+        <service
+            android:name=".assistant.HermesRecognitionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_VOICE_INTERACTION">
+            <intent-filter>
+                <action android:name="android.speech.RecognitionService" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </service>
+
+        <receiver
+            android:name=".assistant.AssistantSessionStateReceiver"
+            android:exported="false"
+            android:process=":assistant_session" />
+
+        <receiver
+            android:name=".assistant.AssistantSessionLifecycleReceiver"
+            android:exported="false" />
+
+    </application>
+
+</manifest>

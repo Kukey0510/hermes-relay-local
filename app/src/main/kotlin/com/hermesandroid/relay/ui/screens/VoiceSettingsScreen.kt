@@ -1,0 +1,5455 @@
+@file:Suppress("LocalContextGetResourceValueCall")
+
+package com.hermesandroid.relay.ui.screens
+
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.ViewInAr
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuAnchorType
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.core.content.ContextCompat
+import com.hermesandroid.relay.R
+import com.hermesandroid.relay.ui.theme.appearanceRoundedCornerShape
+import com.hermesandroid.relay.data.AgentDisplay
+import com.hermesandroid.relay.data.BargeInPreferences
+import com.hermesandroid.relay.data.BargeInSensitivity
+import com.hermesandroid.relay.data.Profile
+import com.hermesandroid.relay.data.VoiceAudioRoute
+import com.hermesandroid.relay.data.VoiceEngineMode
+import com.hermesandroid.relay.data.VoiceModePreset
+import com.hermesandroid.relay.data.VoiceModePresetState
+import com.hermesandroid.relay.data.VoicePreferencesRepository
+import com.hermesandroid.relay.data.VoicePresetPromotionSettings
+import com.hermesandroid.relay.data.VoiceSettings
+import com.hermesandroid.relay.data.detectVoiceModePreset
+import com.hermesandroid.relay.network.relay.RealtimeProviderInfo
+import com.hermesandroid.relay.network.relay.RealtimeVoiceConfig
+import com.hermesandroid.relay.network.relay.RealtimeVoicePromotion
+import com.hermesandroid.relay.network.relay.RelayVoiceClient
+import com.hermesandroid.relay.network.relay.VoiceConfig
+import com.hermesandroid.relay.network.relay.VoiceOutputConfig
+import com.hermesandroid.relay.network.relay.VoiceProviderValidationResponse
+import com.hermesandroid.relay.network.upstream.ConfigFieldType
+import com.hermesandroid.relay.network.upstream.ConfigSchemaField
+import com.hermesandroid.relay.network.upstream.DashboardApiClient
+import com.hermesandroid.relay.network.upstream.ElevenLabsVoices
+import com.hermesandroid.relay.network.upstream.applyConfigEdits
+import com.hermesandroid.relay.network.upstream.configValueAt
+import com.hermesandroid.relay.network.upstream.parseConfigSchema
+import com.hermesandroid.relay.network.upstream.parseTtsToolsetProviders
+import com.hermesandroid.relay.network.upstream.voiceConfigFields
+import com.hermesandroid.relay.ui.LocalSnackbarHost
+import com.hermesandroid.relay.ui.components.VoiceWaveform
+import com.hermesandroid.relay.ui.components.RelaySkeletonLine
+import com.hermesandroid.relay.ui.showHumanError
+import com.hermesandroid.relay.util.classifyError
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
+import com.hermesandroid.relay.viewmodel.InteractionMode
+import com.hermesandroid.relay.viewmodel.StandardVoiceAvailability
+import com.hermesandroid.relay.viewmodel.VoiceConfigUiState
+import com.hermesandroid.relay.viewmodel.VoiceSettingsViewModel
+import com.hermesandroid.relay.viewmodel.VoiceViewModel
+import com.hermesandroid.relay.viewmodel.VoiceState
+import com.hermesandroid.relay.viewmodel.VoicePreviewUiState
+import com.hermesandroid.relay.wake.WakeWordPreferences
+import com.hermesandroid.relay.wake.WakeWordRuntimeState
+import com.hermesandroid.relay.wake.WakeWordTestPhase
+import com.hermesandroid.relay.wake.WakeWordTestState
+import com.hermesandroid.relay.assistant.AssistantRole
+import com.hermesandroid.relay.assistant.AssistantRoleStatus
+import com.hermesandroid.relay.assistant.AssistantWakeRuntimeState
+import kotlinx.coroutines.launch
+
+internal enum class VoiceSettingsSection { Output, Listening, Advanced }
+
+/**
+ * Dedicated voice-mode settings screen. Reachable from Settings → Voice.
+ *
+ * Information architecture (WP-V3/WP-V4 overhaul):
+ *   1. Profile summary          — active profile + resolved voice line
+ *   2. Voice scope banner        — the SINGLE home for "Profile / Scope"; on a
+ *                                  Standard (no-Relay) connection it honestly
+ *                                  shows that upstream audio follows the active
+ *                                  Hermes profile.
+ *   3. Voice for this profile    — engine + STT/TTS route; these are persisted
+ *                                  per-profile (WP-V2 scope-aware prefs).
+ *   4. Text-to-Speech            — merged streaming output + basic-synthesize
+ *                                  fallback + enhanced overrides (Advanced).
+ *   5. Realtime Agent            — provider-native realtime config (Relay only).
+ *   6. Global voice controls     — interaction mode + silence threshold.
+ *   7. Barge-in                  — interrupt TTS by speaking.
+ *   8. Speech-to-Text            — provider/model labels.
+ *   9. Server voice config        — edit host tts/stt config (Standard path)
+ *                                  plus the ElevenLabs voice picker.
+ *  10. Test current engine       — voice-output / realtime sample playback.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun VoiceSettingsScreen(
+    voiceViewModel: VoiceViewModel,
+    voiceClient: RelayVoiceClient?,
+    selectedProfile: Profile? = null,
+    displayProfile: Profile? = selectedProfile,
+    standardVoiceAvailability: StandardVoiceAvailability = StandardVoiceAvailability.Unknown,
+    /**
+     * Non-null endpoint display label (e.g. "Tailscale") when the sign-in
+     * gate is up because the resolver moved the dashboard to a route the
+     * saved shared dashboard session was rejected or expired.
+     */
+    standardVoiceSignInRouteHint: String? = null,
+    relayVoiceReady: Boolean = false,
+    /**
+     * Active connection id used to namespace per-profile voice prefs so two
+     * connections that expose a same-named profile don't share voice picks.
+     * Passed from RelayApp; null degrades to profile-only namespacing.
+     */
+    connectionId: String? = null,
+    /**
+     * Dashboard base URL + trusted per-connection client provider for the
+     * standard-path server voice-config editor (`/api/config`, session auth).
+     * Null on connections with no dashboard — the editor card is then hidden.
+     */
+    dashboardUrl: String? = null,
+    dashboardClientProvider: ((String) -> DashboardApiClient)? = null,
+    onOpenManage: (() -> Unit)? = null,
+    onBack: () -> Unit,
+    settingsViewModel: VoiceSettingsViewModel = viewModel(),
+) {
+    val context = LocalContext.current
+
+    val prefsRepo = remember { VoicePreferencesRepository(context) }
+    val voiceSettings by prefsRepo.settings.collectAsState(initial = VoiceSettings())
+    val currentEngine = VoiceEngineMode.fromStorage(voiceSettings.engineMode)
+    val currentAudioRoute = VoiceAudioRoute.fromStorage(voiceSettings.audioRoute)
+
+    val bargeInPrefs by settingsViewModel.bargeInPrefs.collectAsState()
+    val aecAvailable = settingsViewModel.aecAvailable
+    val wakeWordPrefs by settingsViewModel.wakeWordPrefs.collectAsState()
+    val wakeWordRuntimeState by settingsViewModel.wakeWordRuntimeState.collectAsState()
+    val wakeWordInstallState by settingsViewModel.wakeWordInstallState.collectAsState()
+    val assistantWakeRuntimeState by settingsViewModel.assistantWakeRuntimeState.collectAsState()
+    var assistantRoleStatus by remember { mutableStateOf(AssistantRole.status(context)) }
+    val voiceSettingsLifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(voiceSettingsLifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                assistantRoleStatus = AssistantRole.status(context)
+            }
+        }
+        voiceSettingsLifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { voiceSettingsLifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    val assistantRoleLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        assistantRoleStatus = AssistantRole.status(context)
+    }
+
+    var wakeWordPermissionError by remember { mutableStateOf<String?>(null) }
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted || Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            wakeWordPermissionError = null
+            settingsViewModel.setWakeWordEnabled(true)
+        } else {
+            wakeWordPermissionError =
+                context.getString(R.string.wake_word_notification_permission_required)
+        }
+    }
+    val microphonePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (!granted) {
+            wakeWordPermissionError =
+                context.getString(R.string.wake_word_microphone_permission_required)
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            wakeWordPermissionError = null
+            settingsViewModel.setWakeWordEnabled(true)
+        }
+    }
+    val assistantMicrophonePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            wakeWordPermissionError = null
+            settingsViewModel.setAssistantWakeEnabled(true)
+        } else {
+            wakeWordPermissionError =
+                context.getString(R.string.wake_word_microphone_permission_required)
+        }
+    }
+    val assistantRoleMicrophonePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            wakeWordPermissionError = null
+            AssistantRole.selectionIntent(context)?.let(assistantRoleLauncher::launch)
+        } else {
+            wakeWordPermissionError =
+                context.getString(R.string.wake_word_microphone_permission_required)
+        }
+    }
+    val requestWakeWordEnable: () -> Unit = {
+        when {
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) !=
+                PackageManager.PERMISSION_GRANTED ->
+                microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED ->
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            else -> {
+                wakeWordPermissionError = null
+                settingsViewModel.setWakeWordEnabled(true)
+            }
+        }
+    }
+    val requestAssistantWakeEnable: () -> Unit = {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            assistantMicrophonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        } else {
+            wakeWordPermissionError = null
+            settingsViewModel.setAssistantWakeEnabled(true)
+        }
+    }
+    val requestAssistantRole: () -> Unit = {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            assistantRoleMicrophonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        } else {
+            AssistantRole.selectionIntent(context)?.let(assistantRoleLauncher::launch)
+        }
+    }
+    LaunchedEffect(assistantRoleStatus, wakeWordPrefs.assistantEnabled) {
+        if (assistantRoleStatus != AssistantRoleStatus.Selected &&
+            wakeWordPrefs.assistantEnabled
+        ) {
+            settingsViewModel.setAssistantWakeEnabled(false)
+        }
+    }
+
+    // Authoritative relay voice config now lives in the VM (WP-V3). The screen
+    // just observes it; the editor cards push saves back through the VM.
+    val configState by settingsViewModel.configState.collectAsState()
+
+    // Standard-path server voice-config editor client (cookie or native bearer).
+    // Built once per (dashboardUrl, connection); shut down on dispose. Null when
+    // the connection has no dashboard, which hides the card entirely.
+    val dashboardConfigClient = remember(dashboardUrl, connectionId) {
+        val url = dashboardUrl?.trim()?.takeIf { it.isNotBlank() } ?: return@remember null
+        dashboardClientProvider?.invoke(url)
+    }
+    DisposableEffect(dashboardConfigClient) {
+        onDispose { dashboardConfigClient?.shutdown() }
+    }
+
+    // Global snackbar host — voice/config errors routed through the classifier
+    // are shown here as well as the inline "unavailable" labels.
+    val snackbarHost = LocalSnackbarHost.current
+    val scope = rememberCoroutineScope()
+    var presetApplying by remember { mutableStateOf(false) }
+    var selectedSection by remember { mutableStateOf(VoiceSettingsSection.Output) }
+
+    val presetState = VoiceModePresetState(
+        voiceSettings = voiceSettings,
+        bargeInPreferences = bargeInPrefs,
+        promotion = configState.realtimeConfig?.promotion?.toPresetSettings(),
+    )
+    val activePreset = detectVoiceModePreset(presetState)
+    val presetsReady = voiceClient != null && presetState.promotion != null
+
+    fun applyPreset(preset: VoiceModePreset) {
+        if (presetApplying) return
+        val client = voiceClient
+        val priorPromotion = presetState.promotion
+        if (client == null || priorPromotion == null) {
+            scope.launch {
+                snackbarHost.showSnackbar(
+                    "Realtime Agent background settings must be available before applying a preset.",
+                )
+            }
+            return
+        }
+        val target = preset.applyTo(presetState)
+        val update = preset.promotionUpdate
+        scope.launch {
+            presetApplying = true
+            try {
+                // Server first: if the relay rejects a preset, local controls
+                // stay untouched and the UI cannot falsely report it active.
+                val result = client.updateRealtimeAgentPromotion(
+                    promotionEnabled = update.enabled,
+                    promoteAfterMs = update.promoteAfterMs,
+                    spokenHandoff = update.spokenHandoff,
+                    resultDelivery = update.resultDelivery,
+                    backgroundDefaultMode = update.backgroundDefaultMode,
+                    progressSpokenAfterMs = update.progressSpokenAfterMs,
+                    progressRepeatMs = update.progressRepeatMs,
+                    maxBackgroundRuns = update.maxBackgroundRuns,
+                )
+                if (result.isFailure) {
+                    snackbarHost.showHumanError(
+                        classifyError(result.exceptionOrNull(), context = "voice_config"),
+                    )
+                    return@launch
+                }
+                settingsViewModel.setRealtimeConfig(result.getOrNull())
+
+                try {
+                    // One DataStore transaction covers Voice + barge-in.
+                    prefsRepo.applyModePreset(preset)
+                } catch (error: Exception) {
+                    // The network and DataStore cannot share one transaction.
+                    // Restore the captured relay values so a local write
+                    // failure does not leave a half-applied preset.
+                    val rollback = client.updateRealtimeAgentPromotion(
+                        promotionEnabled = priorPromotion.enabled,
+                        promoteAfterMs = priorPromotion.promoteAfterMs,
+                        spokenHandoff = priorPromotion.spokenHandoff,
+                        resultDelivery = priorPromotion.resultDelivery,
+                        backgroundDefaultMode = priorPromotion.backgroundDefaultMode,
+                        progressSpokenAfterMs = priorPromotion.progressSpokenAfterMs,
+                        progressRepeatMs = priorPromotion.progressRepeatMs,
+                        maxBackgroundRuns = priorPromotion.maxBackgroundRuns,
+                    )
+                    if (rollback.isSuccess) {
+                        settingsViewModel.setRealtimeConfig(rollback.getOrNull())
+                        snackbarHost.showHumanError(
+                            classifyError(error, context = "voice_config"),
+                        )
+                    } else {
+                        snackbarHost.showSnackbar(
+                            "Preset partly applied: Relay settings changed, but phone " +
+                                "settings could not be saved. Reapply a preset to recover.",
+                        )
+                    }
+                    return@launch
+                }
+
+                voiceViewModel.setInteractionMode(
+                    when (target.voiceSettings.interactionMode) {
+                        "hold" -> InteractionMode.HoldToTalk
+                        "continuous" -> InteractionMode.Continuous
+                        else -> InteractionMode.TapToTalk
+                    },
+                )
+                snackbarHost.showSnackbar(
+                    context.getString(
+                        R.string.voice_preset_applied,
+                        context.getString(presetDisplayNameRes(preset)),
+                    ),
+                )
+            } finally {
+                presetApplying = false
+            }
+        }
+    }
+
+    // WP-V2/V3: point the screen's prefs repo at the active (connection,
+    // profile) scope so the per-profile engine/route/enhanced toggles read and
+    // write the SAME namespaced keys VoiceViewModel seeds from. The connection
+    // id (when supplied by RelayApp) disambiguates two connections that expose
+    // a same-named profile; the normalized profile name matches VoiceViewModel.
+    LaunchedEffect(connectionId, selectedProfile?.name) {
+        prefsRepo.setActiveScope(
+            connectionId = connectionId,
+            profileName = AgentDisplay.profileRequestName(selectedProfile?.name),
+        )
+    }
+
+    // Fetch (or clear, on a Standard connection) the relay voice config.
+    LaunchedEffect(voiceClient, selectedProfile?.name, relayVoiceReady) {
+        settingsViewModel.loadVoiceConfig(voiceClient, relayVoiceReady)
+    }
+
+    // Surface config-fetch failures as one-shot snackbars.
+    LaunchedEffect(settingsViewModel) {
+        settingsViewModel.configErrorEvents.collect { err ->
+            snackbarHost.showHumanError(err)
+        }
+    }
+
+    // Surface VoiceViewModel errors (testVoice synthesize failures etc.) as
+    // snackbars while the user is on this screen.
+    LaunchedEffect(voiceViewModel) {
+        voiceViewModel.errorEvents.collect { err ->
+            snackbarHost.showHumanError(err)
+        }
+    }
+
+    // Preview audio belongs to this screen. Stop immediately when navigation
+    // removes it, even if the currently selected tab no longer owns an editor.
+    DisposableEffect(voiceViewModel) {
+        onDispose { voiceViewModel.stopVoicePreview() }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(stringResource(R.string.voice_settings_title)) },
+                navigationIcon = {
+                    IconButton(
+                        onClick = {
+                            voiceViewModel.stopVoicePreview()
+                            onBack()
+                        },
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = stringResource(R.string.voice_settings_back),
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                ),
+            )
+        }
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            VoiceProfileSummaryCard(
+                displayProfile = displayProfile,
+                currentEngine = currentEngine,
+                output = configState.voiceOutputConfig,
+                realtime = configState.realtimeConfig,
+                realtimeModel = voiceSettings.realtimeModel,
+                realtimeVoice = voiceSettings.realtimeVoice,
+                currentAudioRoute = currentAudioRoute,
+                relayVoiceReady = relayVoiceReady,
+                onClick = { selectedSection = VoiceSettingsSection.Advanced },
+            )
+
+            VoiceSettingsTabs(
+                selected = selectedSection,
+                onSelect = { selectedSection = it },
+            )
+
+            when (selectedSection) {
+                VoiceSettingsSection.Output -> {
+                    AnswerDeliveryCard(
+                        voiceSettings = voiceSettings,
+                        prefsRepo = prefsRepo,
+                    )
+                    if (currentEngine == VoiceEngineMode.HermesVoiceOutput) {
+                        val useRelayOutput = relayVoiceReady && currentAudioRoute != VoiceAudioRoute.Standard
+                        if (useRelayOutput) {
+                            if (configState.isLoading || !configState.hasLoaded) {
+                                VoiceOutputLoadingSkeleton()
+                            } else {
+                                StreamingVoiceOutputEditor(
+                                    voiceClient = voiceClient,
+                                    settingsViewModel = settingsViewModel,
+                                    configState = configState,
+                                    voiceViewModel = voiceViewModel,
+                                )
+                            }
+                        } else {
+                            StandardVoiceOutputOverview(
+                                client = dashboardConfigClient,
+                                availability = standardVoiceAvailability,
+                                onOpenManage = onOpenManage,
+                                voiceViewModel = voiceViewModel,
+                            )
+                        }
+                    } else if (relayVoiceReady) {
+                        if (configState.isLoading || !configState.hasLoaded) {
+                            VoiceOutputLoadingSkeleton()
+                        } else {
+                            RealtimeAgentCard(
+                                voiceClient = voiceClient,
+                                settingsViewModel = settingsViewModel,
+                                configState = configState,
+                                voiceSettings = voiceSettings,
+                                prefsRepo = prefsRepo,
+                                voiceViewModel = voiceViewModel,
+                            )
+                        }
+                    }
+                }
+
+                VoiceSettingsSection.Listening -> {
+                    com.hermesandroid.relay.voice.VoiceOverlaySettingsCard()
+                    GlobalVoiceControlsCard(
+                        voiceSettings = voiceSettings,
+                        prefsRepo = prefsRepo,
+                        voiceViewModel = voiceViewModel,
+                    )
+                    val wakeWordTestState by
+                        settingsViewModel.wakeWordTestState.collectAsState()
+                    DigitalAssistantCard(
+                        preferences = wakeWordPrefs,
+                        roleStatus = assistantRoleStatus,
+                        runtimeState = assistantWakeRuntimeState,
+                        installing = wakeWordInstallState.installing,
+                        error = wakeWordPermissionError ?: wakeWordInstallState.error,
+                        onChooseAssistant = requestAssistantRole,
+                        onManageAssistant = {
+                            AssistantRole.managementIntent(context)?.let(assistantRoleLauncher::launch)
+                        },
+                        onEnableWake = requestAssistantWakeEnable,
+                        onDisableWake = {
+                            settingsViewModel.setAssistantWakeEnabled(false)
+                        },
+                    )
+                    WakeWordCard(
+                        preferences = wakeWordPrefs,
+                        runtimeState = wakeWordRuntimeState,
+                        testState = wakeWordTestState,
+                        installing = wakeWordInstallState.installing,
+                        error = wakeWordPermissionError ?: wakeWordInstallState.error,
+                        onEnable = requestWakeWordEnable,
+                        onDisable = { settingsViewModel.setWakeWordEnabled(false) },
+                        onSensitivityChange = settingsViewModel::setWakeWordSensitivity,
+                        onConfirmationFramesChange =
+                            settingsViewModel::setWakeWordConfirmationFrames,
+                        onStartNewSessionChange =
+                            settingsViewModel::setWakeWordStartNewSession,
+                        onTest = settingsViewModel::testWakeWord,
+                    )
+                    BargeInCard(
+                        bargeInPrefs = bargeInPrefs,
+                        aecAvailable = aecAvailable,
+                        settingsViewModel = settingsViewModel,
+                    )
+                    SpeechToTextCard(
+                        relayVoiceReady = relayVoiceReady,
+                        configState = configState,
+                    )
+                    if (currentEngine == VoiceEngineMode.RealtimeAgent && relayVoiceReady) {
+                        VoiceModePresetCard(
+                            activePreset = activePreset,
+                            enabled = presetsReady,
+                            applying = presetApplying,
+                            onSelect = ::applyPreset,
+                        )
+                    }
+                }
+
+                VoiceSettingsSection.Advanced -> {
+                    VoiceForThisProfileCard(
+                        currentEngine = currentEngine,
+                        currentAudioRoute = currentAudioRoute,
+                        relayVoiceReady = relayVoiceReady,
+                        prefsRepo = prefsRepo,
+                        standardVoiceAvailability = standardVoiceAvailability,
+                        standardVoiceSignInRouteHint = standardVoiceSignInRouteHint,
+                        onOpenManage = onOpenManage,
+                    )
+                    VoiceScopeBanner(
+                        relayVoiceReady = relayVoiceReady,
+                        currentEngine = currentEngine,
+                        configState = configState,
+                        displayProfile = displayProfile,
+                    )
+                    if (currentEngine == VoiceEngineMode.RealtimeAgent && relayVoiceReady) {
+                        RealtimeBehaviorSettingsCard(
+                            voiceClient = voiceClient,
+                            settingsViewModel = settingsViewModel,
+                            configState = configState,
+                            voiceSettings = voiceSettings,
+                            prefsRepo = prefsRepo,
+                        )
+                    }
+                    if (dashboardConfigClient != null) {
+                        StandardVoiceServerConfigCard(
+                            client = dashboardConfigClient,
+                            profileName = AgentDisplay.profileRequestName(selectedProfile?.name),
+                            onOpenManage = onOpenManage,
+                            onMessage = { message ->
+                                scope.launch { snackbarHost.showSnackbar(message) }
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun VoiceSettingsTabs(
+    selected: VoiceSettingsSection,
+    onSelect: (VoiceSettingsSection) -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = appearanceRoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+    ) {
+        Row(modifier = Modifier.padding(3.dp)) {
+            VoiceSettingsSection.entries.forEach { section ->
+                val active = selected == section
+                Surface(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                        .clickable { onSelect(section) },
+                    shape = appearanceRoundedCornerShape(13.dp),
+                    color = if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else androidx.compose.ui.graphics.Color.Transparent,
+                    contentColor = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                    ) {
+                        Text(
+                            when (section) {
+                                VoiceSettingsSection.Output -> "Output"
+                                VoiceSettingsSection.Listening -> "Listening"
+                                VoiceSettingsSection.Advanced -> "Advanced"
+                            },
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Voice scope banner — the single home for Profile / Scope (WP-V3 dedupe).
+// Standard and Relay both follow the selected Hermes profile; Relay can still
+// add provider-specific overrides without replacing the host configuration.
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun VoiceScopeBanner(
+    relayVoiceReady: Boolean,
+    currentEngine: VoiceEngineMode,
+    configState: VoiceConfigUiState,
+    displayProfile: Profile?,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = appearanceRoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.30f),
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            if (!relayVoiceReady) {
+                // Standard (no-Relay): current upstream audio routes accept the
+                // active profile explicitly, so TTS/STT resolve through the
+                // same Hermes home as chat.
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.voice_settings_scope_label),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    ExperimentalBadge(stringResource(R.string.voice_settings_profile_aware))
+                }
+                Text(
+                    text = stringResource(R.string.voice_settings_standard_scope_body),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                // Relay: voice is scoped per profile. Show the resolved scope
+                // once, here, instead of repeating it on every provider card.
+                val config: Any? = when (currentEngine) {
+                    VoiceEngineMode.HermesVoiceOutput ->
+                        configState.voiceOutputConfig ?: configState.voiceConfig
+                    VoiceEngineMode.RealtimeAgent ->
+                        configState.realtimeConfig ?: configState.voiceConfig
+                }
+                val profileRaw = scopeProfile(config)
+                val scopeRaw = scopeScope(config)
+                val fallback = scopeFallback(config)
+                Text(
+                    text = stringResource(R.string.voice_settings_scope_label),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                if (config == null) {
+                    Text(
+                        text = stringResource(R.string.voice_settings_scope_resolving),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    ProviderRow(
+                        label = stringResource(R.string.voice_settings_label_profile),
+                        value = voiceProfileLabel(profileRaw, displayProfile),
+                    )
+                    ProviderRow(
+                        label = stringResource(R.string.voice_settings_label_scope),
+                        value = voiceScopeLabel(scopeRaw, fallback),
+                    )
+                    Text(
+                        text = stringResource(R.string.voice_settings_relay_scope_footer),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+// Small adapters so the banner can read profile/scope off any of the three
+// config shapes without a shared interface.
+private fun scopeProfile(config: Any?): String? = when (config) {
+    is VoiceConfig -> config.profile
+    is VoiceOutputConfig -> config.profile
+    is RealtimeVoiceConfig -> config.profile
+    else -> null
+}
+
+private fun scopeScope(config: Any?): String? = when (config) {
+    is VoiceConfig -> config.configScope
+    is VoiceOutputConfig -> config.configScope
+    is RealtimeVoiceConfig -> config.configScope
+    else -> null
+}
+
+private fun scopeFallback(config: Any?): Boolean = when (config) {
+    is VoiceConfig -> config.fallbackToGlobal
+    is VoiceOutputConfig -> config.fallbackToGlobal
+    is RealtimeVoiceConfig -> config.fallbackToGlobal
+    else -> false
+}
+
+private fun RealtimeVoicePromotion.toPresetSettings(): VoicePresetPromotionSettings =
+    VoicePresetPromotionSettings(
+        enabled = enabled,
+        promoteAfterMs = promoteAfterMs,
+        backgroundDefaultMode = backgroundDefaultMode,
+        spokenHandoff = spokenHandoff,
+        progressSpokenAfterMs = progressSpokenAfterMs,
+        progressRepeatMs = progressRepeatMs,
+        resultDelivery = resultDelivery,
+        maxBackgroundRuns = maxBackgroundRuns,
+    )
+
+// ---------------------------------------------------------------------------
+// Mode presets — compact bundles over controls already present on this screen.
+// ---------------------------------------------------------------------------
+
+/** Display-name resource per preset (shown as the active-preset caption). */
+private fun presetDisplayNameRes(preset: VoiceModePreset): Int = when (preset) {
+    VoiceModePreset.HandsFree -> R.string.voice_preset_hands_free
+    VoiceModePreset.LowLatency -> R.string.voice_preset_low_latency
+    VoiceModePreset.CarefulTools -> R.string.voice_preset_careful_tools
+    VoiceModePreset.QuietVisualOnly -> R.string.voice_preset_quiet_visual
+}
+
+/** Compact segmented-button label resource per preset. */
+private fun presetShortLabelRes(preset: VoiceModePreset): Int = when (preset) {
+    VoiceModePreset.HandsFree -> R.string.voice_preset_hands_free
+    VoiceModePreset.LowLatency -> R.string.voice_preset_fast
+    VoiceModePreset.CarefulTools -> R.string.voice_preset_careful
+    VoiceModePreset.QuietVisualOnly -> R.string.voice_preset_quiet
+}
+
+@Composable
+private fun VoiceModePresetCard(
+    activePreset: VoiceModePreset?,
+    enabled: Boolean,
+    applying: Boolean,
+    onSelect: (VoiceModePreset) -> Unit,
+) {
+    SectionCard(title = stringResource(R.string.voice_settings_mode_preset_title)) {
+        Text(
+            text = stringResource(R.string.voice_settings_mode_preset_desc),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+
+        // Two rows keep each target about 148dp wide on a 360dp screen after
+        // screen/card padding; all four labels remain readable without tiny
+        // type or ambiguous abbreviations.
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            VoiceModePreset.entries.chunked(2).forEach { rowPresets ->
+                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                    rowPresets.forEachIndexed { index, preset ->
+                        SegmentedButton(
+                            shape = SegmentedButtonDefaults.itemShape(
+                                index = index,
+                                count = rowPresets.size,
+                            ),
+                            onClick = { onSelect(preset) },
+                            selected = activePreset == preset,
+                            enabled = enabled && !applying,
+                        ) {
+                            Text(
+                                text = stringResource(presetShortLabelRes(preset)),
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = activePreset?.let { stringResource(presetDisplayNameRes(it)) }
+                ?: stringResource(R.string.voice_preset_custom),
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            text = activePreset?.description
+                ?: stringResource(R.string.voice_preset_manual_values),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (!enabled) {
+            Text(
+                text = "Connect Relay voice so background delivery can be " +
+                    "applied with the local controls.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (applying) {
+            Spacer(Modifier.height(4.dp))
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = stringResource(R.string.voice_preset_keep_unchanged),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Voice for this profile — engine + STT/TTS route (per-profile prefs).
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun VoiceForThisProfileCard(
+    currentEngine: VoiceEngineMode,
+    currentAudioRoute: VoiceAudioRoute,
+    relayVoiceReady: Boolean,
+    prefsRepo: VoicePreferencesRepository,
+    standardVoiceAvailability: StandardVoiceAvailability,
+    standardVoiceSignInRouteHint: String?,
+    onOpenManage: (() -> Unit)?,
+) {
+    val scope = rememberCoroutineScope()
+
+    SectionCard(title = stringResource(R.string.voice_settings_for_profile_title)) {
+        Text(
+            text = stringResource(R.string.voice_settings_engine_label),
+            style = MaterialTheme.typography.labelLarge,
+        )
+        listOf(
+            VoiceEngineMode.HermesVoiceOutput to Triple(
+                stringResource(R.string.voice_settings_engine_hermes),
+                stringResource(R.string.voice_settings_engine_hermes_desc),
+                false,
+            ),
+            VoiceEngineMode.RealtimeAgent to Triple(
+                stringResource(R.string.voice_settings_engine_realtime),
+                stringResource(R.string.voice_settings_engine_realtime_desc),
+                true,
+            ),
+        ).forEach { (engine, copy) ->
+            val (label, detail, experimental) = copy
+            // RealtimeAgent requires a paired Relay; HermesVoiceOutput is always
+            // selectable. The existing warning row below explains the disabled
+            // RealtimeAgent radio.
+            val engineEnabled = engine == VoiceEngineMode.HermesVoiceOutput || relayVoiceReady
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .selectable(
+                        selected = currentEngine == engine,
+                        enabled = engineEnabled,
+                        onClick = {
+                            scope.launch {
+                                prefsRepo.setEngineMode(engine)
+                                // Switching to HermesVoiceOutput may leave a now
+                                // invalid persisted route (e.g. Relay while
+                                // unpaired) — coerce it to a reachable one.
+                                if (engine == VoiceEngineMode.HermesVoiceOutput) {
+                                    val coerced = coerceAudioRoute(
+                                        engine = engine,
+                                        route = currentAudioRoute,
+                                        relayVoiceReady = relayVoiceReady,
+                                    )
+                                    if (coerced != currentAudioRoute) {
+                                        prefsRepo.setAudioRoute(coerced)
+                                    }
+                                }
+                            }
+                        },
+                    )
+                    .padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(
+                    selected = currentEngine == engine,
+                    onClick = null,
+                    enabled = engineEnabled,
+                )
+                Spacer(Modifier.size(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            label,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (engineEnabled) {
+                                MaterialTheme.colorScheme.onSurface
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                            },
+                        )
+                        if (experimental) ExperimentalBadge(stringResource(R.string.voice_settings_experimental))
+                    }
+                    Text(
+                        text = detail,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        if (currentEngine == VoiceEngineMode.RealtimeAgent && !relayVoiceReady) {
+            Spacer(Modifier.height(4.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Warning,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.size(8.dp))
+                Text(
+                    text = stringResource(R.string.voice_settings_realtime_no_relay),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+
+        if (currentEngine == VoiceEngineMode.HermesVoiceOutput) {
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+            Text(
+                text = stringResource(R.string.voice_settings_route_label),
+                style = MaterialTheme.typography.labelLarge,
+            )
+            val standardStatus = when (standardVoiceAvailability) {
+                StandardVoiceAvailability.Ready -> stringResource(R.string.voice_settings_status_ready)
+                StandardVoiceAvailability.SignInRequired -> stringResource(R.string.voice_settings_status_sign_in_required)
+                StandardVoiceAvailability.Unreachable -> stringResource(R.string.voice_settings_status_dashboard_unreachable)
+                StandardVoiceAvailability.Unsupported -> stringResource(R.string.voice_settings_status_unsupported_build)
+                StandardVoiceAvailability.Unknown -> stringResource(R.string.voice_settings_status_checking)
+            }
+            val standardOk = standardVoiceAvailability == StandardVoiceAvailability.Ready
+            val relayStatus = if (relayVoiceReady) stringResource(R.string.voice_settings_status_ready) else stringResource(R.string.voice_settings_relay_not_configured)
+            val autoStatus = when {
+                relayVoiceReady -> stringResource(R.string.voice_settings_status_auto_relay)
+                standardOk -> stringResource(R.string.voice_settings_status_auto_hermes)
+                else -> stringResource(R.string.voice_settings_status_no_route)
+            }
+            listOf(
+                RouteOption(
+                    route = VoiceAudioRoute.Auto,
+                    label = stringResource(R.string.voice_settings_route_auto),
+                    detail = stringResource(R.string.voice_settings_route_auto_desc),
+                    status = autoStatus,
+                    statusOk = relayVoiceReady || standardOk,
+                ),
+                RouteOption(
+                    route = VoiceAudioRoute.Standard,
+                    label = stringResource(R.string.voice_settings_route_hermes),
+                    detail = stringResource(R.string.voice_settings_route_hermes_desc),
+                    status = standardStatus,
+                    statusOk = standardOk,
+                ),
+                RouteOption(
+                    route = VoiceAudioRoute.Relay,
+                    label = stringResource(R.string.voice_settings_route_relay),
+                    detail = stringResource(R.string.voice_settings_route_relay_desc),
+                    status = relayStatus,
+                    statusOk = relayVoiceReady,
+                    badge = stringResource(R.string.voice_settings_optional),
+                ),
+            ).forEach { option ->
+                // Auto always stays selectable (it self-resolves to whatever's
+                // reachable). Standard/Relay are only selectable when their live
+                // availability probe says so — otherwise the radio is dimmed.
+                val routeEnabled = option.route == VoiceAudioRoute.Auto || option.statusOk
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .selectable(
+                            selected = currentAudioRoute == option.route,
+                            enabled = routeEnabled,
+                            onClick = {
+                                scope.launch { prefsRepo.setAudioRoute(option.route) }
+                            },
+                        )
+                        .padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    RadioButton(
+                        selected = currentAudioRoute == option.route,
+                        onClick = null,
+                        enabled = routeEnabled,
+                    )
+                    Spacer(Modifier.size(8.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                option.label,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (routeEnabled) {
+                                    MaterialTheme.colorScheme.onSurface
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                                },
+                            )
+                            option.badge?.let { ExperimentalBadge(it) }
+                        }
+                        Text(
+                            text = option.detail,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            text = option.status,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (option.statusOk) {
+                                MaterialTheme.colorScheme.tertiary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    }
+                }
+            }
+
+            when (standardVoiceAvailability) {
+                StandardVoiceAvailability.SignInRequired -> {
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                    Text(
+                        text = if (standardVoiceSignInRouteHint != null) {
+                            stringResource(R.string.voice_settings_signin_route_hint, standardVoiceSignInRouteHint)
+                        } else {
+                            stringResource(R.string.voice_settings_signin_default_hint)
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (onOpenManage != null) {
+                        TextButton(onClick = onOpenManage) {
+                            Text(stringResource(R.string.voice_settings_sign_in_via_manage))
+                        }
+                    }
+                }
+                StandardVoiceAvailability.Unsupported -> {
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                    Text(
+                        text = stringResource(R.string.voice_settings_unsupported_build_body),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                else -> Unit
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Text-to-Speech — merged streaming output + basic synthesize fallback +
+// enhanced overrides (WP-V3 card merge).
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun TextToSpeechCard(
+    showStreaming: Boolean,
+    voiceClient: RelayVoiceClient?,
+    settingsViewModel: VoiceSettingsViewModel,
+    configState: VoiceConfigUiState,
+    voiceSettings: VoiceSettings,
+    prefsRepo: VoicePreferencesRepository,
+    voiceViewModel: VoiceViewModel,
+) {
+    val scope = rememberCoroutineScope()
+    SectionCard(title = stringResource(R.string.voice_settings_tts_title)) {
+        if (showStreaming) {
+            Text(
+                text = stringResource(R.string.voice_settings_streaming_output_label),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = stringResource(R.string.voice_settings_streaming_output_desc),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            StreamingVoiceOutputEditor(
+                voiceClient = voiceClient,
+                settingsViewModel = settingsViewModel,
+                configState = configState,
+                voiceViewModel = voiceViewModel,
+            )
+            HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+        }
+
+        Text(
+            text = stringResource(R.string.voice_settings_basic_synthesize_label),
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            text = stringResource(R.string.voice_settings_basic_synthesize_desc),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(4.dp))
+        val providerUnavailable = stringResource(R.string.voice_settings_provider_unavailable)
+        val loadingLabel = stringResource(R.string.voice_settings_loading)
+        val yesLabel = stringResource(R.string.voice_settings_yes)
+        val noLabel = stringResource(R.string.voice_settings_no)
+        ProviderRow(
+            label = stringResource(R.string.voice_settings_label_provider),
+            value = configState.voiceConfig?.tts?.provider
+                ?: (configState.voiceConfigError?.let { providerUnavailable } ?: loadingLabel),
+        )
+        configState.voiceConfig?.tts?.let { tts ->
+            ProviderRow(label = stringResource(R.string.voice_settings_label_enabled), value = if (tts.isEnabled) yesLabel else noLabel)
+        }
+        configState.voiceConfig?.tts?.model?.let { model ->
+            ProviderRow(label = stringResource(R.string.voice_settings_label_model), value = model)
+        }
+        configState.voiceConfig?.tts?.displayVoice?.let { voice ->
+            ProviderRow(label = stringResource(R.string.voice_settings_label_voice), value = voice)
+        }
+        configState.voiceConfigError?.let { error ->
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = error,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+
+        // Enhanced-voice overrides ride the per-request /voice/synthesize body
+        // (the basic path), so they live under this fallback subgroup, gated
+        // behind an Advanced expander. Shown only when the relay advertises a
+        // provider with a per-request enhanced surface (Gemini / xAI).
+        configState.voiceConfig?.tts?.enhanced?.takeIf { it.supported }?.let { enhanced ->
+            val providerLabel = when (enhanced.provider) {
+                "gemini" -> stringResource(R.string.voice_settings_provider_gemini)
+                "xai" -> stringResource(R.string.voice_settings_provider_xai)
+                else -> enhanced.provider?.replaceFirstChar { it.uppercase() } ?: stringResource(R.string.voice_settings_label_provider)
+            }
+            var enhancedOpen by remember { mutableStateOf(false) }
+            Spacer(Modifier.height(8.dp))
+            TextButton(onClick = { enhancedOpen = !enhancedOpen }) {
+                Text(
+                    if (enhancedOpen) {
+                        stringResource(R.string.voice_settings_hide_enhanced, providerLabel)
+                    } else {
+                        stringResource(R.string.voice_settings_advanced_enhanced, providerLabel)
+                    }
+                )
+            }
+            if (enhancedOpen) {
+                Text(
+                    text = stringResource(R.string.voice_settings_enhanced_body, providerLabel),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+
+                // Curated dropdown when the relay enumerates voices (Gemini);
+                // free-text entry otherwise (xAI's catalog isn't enumerated).
+                if (enhanced.voices.isNotEmpty()) {
+                    val voiceChoices = buildList {
+                        add(VoiceChoice(value = "", label = stringResource(R.string.voice_settings_server_default)))
+                        enhanced.voices.forEach { add(VoiceChoice(value = it, label = it)) }
+                    }
+                    VoiceChoiceDropdown(
+                        label = stringResource(R.string.voice_settings_label_voice),
+                        value = voiceSettings.enhancedVoice,
+                        choices = voiceChoices,
+                        onValueChange = { scope.launch { prefsRepo.setEnhancedVoice(it) } },
+                    )
+                } else {
+                    OutlinedTextField(
+                        value = voiceSettings.enhancedVoice,
+                        onValueChange = { scope.launch { prefsRepo.setEnhancedVoice(it) } },
+                        label = { Text(stringResource(R.string.voice_settings_voice_blank_label)) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+
+                if (enhanced.models.isNotEmpty()) {
+                    val modelChoices = buildList {
+                        add(VoiceChoice(value = "", label = stringResource(R.string.voice_settings_server_default)))
+                        enhanced.models.forEach { model ->
+                            add(
+                                VoiceChoice(
+                                    value = model,
+                                    label = model,
+                                    detail = if (model in enhanced.audioTagModels) {
+                                        stringResource(R.string.voice_settings_supports_tone_tags)
+                                    } else {
+                                        null
+                                    },
+                                ),
+                            )
+                        }
+                    }
+                    VoiceChoiceDropdown(
+                        label = stringResource(R.string.voice_settings_label_model),
+                        value = voiceSettings.enhancedModel,
+                        choices = modelChoices,
+                        onValueChange = { scope.launch { prefsRepo.setEnhancedModel(it) } },
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+
+                // Tone/speech tags. xAI advertises no gating model list, so
+                // they're always available there; Gemini requires a 3.1 TTS
+                // model (matches upstream _gemini_model_supports_audio_tags).
+                val effectiveModel =
+                    voiceSettings.enhancedModel.ifBlank { configState.voiceConfig?.tts?.model.orEmpty() }
+                val audioTagsSupported = enhanced.audioTagModels.isEmpty() ||
+                    enhanced.audioTagModels.any { it.equals(effectiveModel, ignoreCase = true) } ||
+                    (
+                        effectiveModel.contains("gemini-3.1", ignoreCase = true) &&
+                            effectiveModel.contains("tts", ignoreCase = true)
+                    )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = enhanced.audioTagsLabel,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Text(
+                            text = if (audioTagsSupported) {
+                                stringResource(R.string.voice_settings_audio_tags_supported)
+                            } else {
+                                stringResource(R.string.voice_settings_audio_tags_unsupported)
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = voiceSettings.enhancedAudioTags && audioTagsSupported,
+                        enabled = audioTagsSupported,
+                        onCheckedChange = { scope.launch { prefsRepo.setEnhancedAudioTags(it) } },
+                    )
+                }
+
+                if (enhanced.supportsPersona) {
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = voiceSettings.enhancedPersona,
+                        onValueChange = { scope.launch { prefsRepo.setEnhancedPersona(it) } },
+                        label = { Text(stringResource(R.string.voice_settings_voice_direction_label)) },
+                        placeholder = { Text(stringResource(R.string.voice_settings_voice_direction_placeholder)) },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 2,
+                    )
+                }
+
+                if (enhanced.supportsLanguage) {
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = voiceSettings.enhancedLanguage,
+                        onValueChange = { scope.launch { prefsRepo.setEnhancedLanguage(it) } },
+                        label = { Text(stringResource(R.string.voice_settings_language_label)) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StreamingVoiceOutputEditor(
+    voiceClient: RelayVoiceClient?,
+    settingsViewModel: VoiceSettingsViewModel,
+    configState: VoiceConfigUiState,
+    voiceViewModel: VoiceViewModel,
+) {
+    val scope = rememberCoroutineScope()
+    val snackbarHost = LocalSnackbarHost.current
+    val previewState by voiceViewModel.voicePreviewState.collectAsState()
+
+    var voiceOutputEnabled by remember { mutableStateOf(true) }
+    var voiceOutputProvider by remember { mutableStateOf("") }
+    var voiceOutputModel by remember { mutableStateOf("") }
+    var voiceOutputVoice by remember { mutableStateOf("") }
+    var voiceOutputSampleRate by remember { mutableStateOf("24000") }
+    var voiceOutputLanguage by remember { mutableStateOf("en") }
+    var voiceOutputLatency by remember { mutableStateOf(1f) }
+    var voiceOutputFallback by remember { mutableStateOf(true) }
+    var voiceOutputSpeechTags by remember { mutableStateOf(false) }
+    var voiceOutputSaving by remember { mutableStateOf(false) }
+    var voiceOutputManualOpen by remember { mutableStateOf(false) }
+
+    DisposableEffect(voiceViewModel) {
+        onDispose { voiceViewModel.stopVoicePreview() }
+    }
+
+    val config = configState.voiceOutputConfig
+    LaunchedEffect(
+        config?.enabled,
+        config?.default_provider,
+        config?.default_model,
+        config?.default_voice,
+        config?.sample_rate,
+        config?.language,
+        config?.optimize_streaming_latency,
+        config?.fallback_enabled,
+        config?.auto_speech_tags,
+    ) {
+        val c = config ?: return@LaunchedEffect
+        voiceOutputEnabled = c.enabled
+        voiceOutputProvider = c.default_provider.orEmpty()
+        voiceOutputModel = c.default_model.orEmpty()
+        voiceOutputVoice = c.default_voice.orEmpty()
+        voiceOutputSampleRate = c.sample_rate.toString()
+        voiceOutputLanguage = c.language
+        voiceOutputLatency = c.optimize_streaming_latency.toFloat()
+        voiceOutputFallback = c.fallback_enabled
+        voiceOutputSpeechTags = c.auto_speech_tags
+    }
+
+    // Refresh advertised options for a provider, re-seeding draft defaults from
+    // the fresher metadata once it arrives. The VM owns the fetch + options map;
+    // the applyDefaults callback mutates this editor's draft.
+    fun refreshVoiceOutputProviderOptions(providerId: String, applyDefaults: Boolean) {
+        settingsViewModel.refreshVoiceOutputProviderOptions(
+            client = voiceClient,
+            providerId = providerId,
+            applyDefaults = applyDefaults,
+        ) { provider ->
+            if (voiceOutputProvider == providerId) {
+                val selection = selectionWithProviderDefaults(
+                    provider = provider,
+                    model = voiceOutputModel,
+                    voice = voiceOutputVoice,
+                    sampleRate = voiceOutputSampleRate,
+                    language = voiceOutputLanguage,
+                )
+                voiceOutputModel = selection.model
+                voiceOutputVoice = selection.voice
+                voiceOutputSampleRate = selection.sampleRate
+                voiceOutputLanguage = selection.language
+            }
+        }
+    }
+
+    val providers = mergedProviders(
+        config?.providers.orEmpty(),
+        configState.voiceOutputProviderOptions,
+    )
+    val selectedOutputProvider = providerFor(providers, voiceOutputProvider)
+    val availableVoices = voiceChoices(
+        selectedOutputProvider,
+        voiceOutputVoice,
+        voiceOutputModel,
+    )
+    val visibleVoices = previewVoiceChoices(availableVoices, voiceOutputVoice)
+
+    fun preview(selectionKey: String, voice: String) {
+        val sampleRate = voiceOutputSampleRate.toIntOrNull()
+        if (sampleRate == null) {
+            settingsViewModel.setVoiceOutputError("Sample rate must be a number")
+            return
+        }
+        voiceViewModel.previewVoiceOutput(
+            selectionKey = selectionKey,
+            provider = voiceOutputProvider,
+            model = voiceOutputModel,
+            voice = voice,
+            sampleRate = sampleRate,
+            language = voiceOutputLanguage,
+        ) { result ->
+            result.exceptionOrNull()?.let { error ->
+                settingsViewModel.setVoiceOutputError(error.message ?: "Voice preview failed")
+            }
+        }
+    }
+
+    VoiceProviderGroupCard(
+        provider = selectedOutputProvider,
+        providerValue = voiceOutputProvider,
+        enabled = voiceOutputEnabled,
+        providerChoices = providerChoices(providers, voiceOutputProvider),
+        onEnabledChange = { voiceOutputEnabled = it },
+        onProviderChange = { providerId ->
+            voiceViewModel.stopVoicePreview()
+            voiceOutputProvider = providerId
+            providerFor(providers, providerId)?.let { provider ->
+                val selection = selectionWithProviderDefaults(
+                    provider = provider,
+                    model = voiceOutputModel,
+                    voice = voiceOutputVoice,
+                    sampleRate = voiceOutputSampleRate,
+                    language = voiceOutputLanguage,
+                )
+                voiceOutputModel = selection.model
+                voiceOutputVoice = selection.voice
+                voiceOutputSampleRate = selection.sampleRate
+                voiceOutputLanguage = selection.language
+            }
+            refreshVoiceOutputProviderOptions(providerId, applyDefaults = true)
+        },
+        controlsEnabled = voiceClient != null,
+    )
+    providerOptionsStatusText(
+        loading = configState.voiceOutputOptionsLoading == voiceOutputProvider,
+        status = configState.voiceOutputOptionsStatus,
+        refreshingMessage = stringResource(R.string.voice_settings_refreshing_options),
+    )?.let { status ->
+        Text(
+            text = status,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    ModelAndVoiceGroupCard(
+        modelValue = voiceOutputModel,
+        modelChoices = valueChoices(
+            selectedOutputProvider?.models.orEmpty(),
+            voiceOutputModel,
+            selectedOutputProvider?.model_labels.orEmpty(),
+        ),
+        voices = visibleVoices,
+        allVoices = availableVoices,
+        selectedVoice = voiceOutputVoice,
+        previewState = previewState,
+        onModelChange = { model ->
+            voiceViewModel.stopVoicePreview()
+            voiceOutputModel = model
+            selectedOutputProvider?.let { provider ->
+                voiceOutputVoice = voiceForModel(provider, model, voiceOutputVoice)
+            }
+        },
+        onVoiceChange = { voice ->
+            voiceViewModel.stopVoicePreview()
+            voiceOutputVoice = voice
+        },
+        onPreviewVoice = { voice -> preview("voice:$voice", voice) },
+        enabled = voiceClient != null && voiceOutputEnabled,
+    )
+    compatibilityNotice(
+        selectedOutputProvider,
+        voiceOutputModel,
+        voiceOutputVoice,
+        notAdvertisedMessage = stringResource(R.string.voice_settings_voice_not_advertised),
+    )?.let { notice ->
+        Text(
+            text = notice,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+        )
+    }
+    LanguageQualityCard(
+        expanded = voiceOutputManualOpen,
+        onExpandedChange = { voiceOutputManualOpen = it },
+        language = voiceOutputLanguage,
+        languages = commonLanguages(voiceOutputLanguage, selectedOutputProvider),
+        onLanguageChange = { voiceOutputLanguage = it },
+        sampleRate = voiceOutputSampleRate,
+        sampleRates = intChoices(selectedOutputProvider?.sample_rates.orEmpty(), voiceOutputSampleRate),
+        onSampleRateChange = { voiceOutputSampleRate = it },
+        enabled = voiceClient != null,
+    )
+
+    if (voiceOutputManualOpen) {
+        OutlinedTextField(
+            value = voiceOutputProvider,
+            onValueChange = { voiceOutputProvider = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text(stringResource(R.string.voice_settings_provider_id)) },
+        )
+        OutlinedTextField(
+            value = voiceOutputModel,
+            onValueChange = { voiceOutputModel = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text(stringResource(R.string.voice_settings_model_id)) },
+        )
+        OutlinedTextField(
+            value = voiceOutputVoice,
+            onValueChange = { voiceOutputVoice = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text(stringResource(R.string.voice_settings_voice_id)) },
+        )
+        OutlinedTextField(
+            value = voiceOutputSampleRate,
+            onValueChange = { voiceOutputSampleRate = it.filter(Char::isDigit) },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text(stringResource(R.string.voice_settings_label_sample_rate)) },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        )
+        OutlinedTextField(
+            value = voiceOutputLanguage,
+            onValueChange = { voiceOutputLanguage = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text(stringResource(R.string.voice_settings_label_language)) },
+        )
+        Text(
+            text = stringResource(R.string.voice_settings_streaming_latency, voiceOutputLatency.toInt()),
+            style = MaterialTheme.typography.labelLarge,
+        )
+        Slider(
+            value = voiceOutputLatency,
+            onValueChange = { voiceOutputLatency = it },
+            valueRange = 0f..1f,
+            steps = 0,
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(stringResource(R.string.voice_settings_label_fallback), style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    text = stringResource(R.string.voice_settings_fallback_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = voiceOutputFallback,
+                onCheckedChange = { voiceOutputFallback = it },
+            )
+        }
+
+        if (voiceOutputProvider == "xai_tts") {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(stringResource(R.string.voice_settings_expressive_tags), style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        text = stringResource(R.string.voice_settings_expressive_tags_desc),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = voiceOutputSpeechTags,
+                    onCheckedChange = { voiceOutputSpeechTags = it },
+                )
+            }
+        }
+    }
+
+    val sampleRateMustBeNumber = stringResource(R.string.voice_settings_sample_rate_must_be_number)
+    val providerNotValidMsg = stringResource(R.string.voice_settings_provider_not_valid)
+    val savedWithWarningFmt = stringResource(R.string.voice_settings_saved_with_warning_format)
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+        Button(
+            onClick = {
+                val client = voiceClient ?: return@Button
+                val sampleRate = voiceOutputSampleRate.toIntOrNull()
+                if (sampleRate == null) {
+                    settingsViewModel.setVoiceOutputError(sampleRateMustBeNumber)
+                    return@Button
+                }
+                scope.launch {
+                    voiceOutputSaving = true
+                    val validationResult = client.validateVoiceOutputProvider(
+                        providerId = voiceOutputProvider,
+                        model = voiceOutputModel,
+                        voice = voiceOutputVoice,
+                        sampleRate = sampleRate,
+                        language = voiceOutputLanguage,
+                    )
+                    validationIssue(validationResult.getOrNull(), providerNotValidMsg)?.let { issue ->
+                        voiceOutputSaving = false
+                        settingsViewModel.setVoiceOutputError(issue)
+                        return@launch
+                    }
+                    if (validationResult.isFailure) {
+                        voiceOutputSaving = false
+                        val human = classifyError(
+                            validationResult.exceptionOrNull(),
+                            context = "voice_config",
+                        )
+                        settingsViewModel.setVoiceOutputError(human.body)
+                        snackbarHost.showHumanError(human)
+                        return@launch
+                    }
+                    validationWarning(validationResult.getOrNull(), savedWithWarningFmt)?.let { warning ->
+                        settingsViewModel.setVoiceOutputOptionsStatus(warning)
+                    }
+                    val result = client.updateVoiceOutputConfig(
+                        enabled = voiceOutputEnabled,
+                        provider = voiceOutputProvider,
+                        model = voiceOutputModel,
+                        voice = voiceOutputVoice,
+                        sampleRate = sampleRate,
+                        language = voiceOutputLanguage,
+                        codec = "pcm",
+                        optimizeStreamingLatency = voiceOutputLatency.toInt(),
+                        autoSpeechTags = voiceOutputSpeechTags,
+                        fallbackEnabled = voiceOutputFallback,
+                    )
+                    voiceOutputSaving = false
+                    if (result.isSuccess) {
+                        settingsViewModel.setVoiceOutputConfig(result.getOrNull())
+                    } else {
+                        val human = classifyError(
+                            result.exceptionOrNull(),
+                            context = "voice_config",
+                        )
+                        settingsViewModel.setVoiceOutputError(human.body)
+                        snackbarHost.showHumanError(human)
+                    }
+                }
+            },
+            enabled = !voiceOutputSaving && voiceClient != null,
+            modifier = Modifier.weight(1f).height(52.dp),
+            shape = appearanceRoundedCornerShape(16.dp),
+        ) {
+            Text(if (voiceOutputSaving) stringResource(R.string.voice_settings_saving) else "Save changes", fontWeight = FontWeight.SemiBold)
+        }
+        OutlinedButton(
+            onClick = {
+                voiceViewModel.stopVoicePreview()
+                config?.let { saved ->
+                    voiceOutputEnabled = saved.enabled
+                    voiceOutputProvider = saved.default_provider.orEmpty()
+                    voiceOutputModel = saved.default_model.orEmpty()
+                    voiceOutputVoice = saved.default_voice.orEmpty()
+                    voiceOutputSampleRate = saved.sample_rate.toString()
+                    voiceOutputLanguage = saved.language
+                    voiceOutputLatency = saved.optimize_streaming_latency.toFloat()
+                    voiceOutputFallback = saved.fallback_enabled
+                    voiceOutputSpeechTags = saved.auto_speech_tags
+                }
+            },
+            enabled = !voiceOutputSaving && config != null,
+            modifier = Modifier.weight(1f).height(52.dp),
+            shape = appearanceRoundedCornerShape(16.dp),
+        ) {
+            Text(stringResource(R.string.voice_settings_discard), fontWeight = FontWeight.SemiBold)
+        }
+        }
+    }
+    configState.voiceOutputConfigError?.let { error ->
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = error,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+        )
+    }
+}
+
+internal fun previewVoiceChoices(
+    choices: List<VoiceChoice>,
+    selected: String,
+    limit: Int = 3,
+): List<VoiceChoice> {
+    if (choices.size <= limit) return choices
+    val selectedChoice = choices.firstOrNull { it.value == selected }
+    val recommended = choices.filter { it.recommended && it.value != selected }.take(limit - 1)
+    return buildList {
+        selectedChoice?.let(::add)
+        addAll(recommended)
+        choices.forEach { choice ->
+            if (size < limit && none { it.value == choice.value }) add(choice)
+        }
+    }
+}
+
+@Composable
+internal fun VoiceProviderGroupCard(
+    provider: RealtimeProviderInfo?,
+    providerValue: String,
+    enabled: Boolean,
+    providerChoices: List<VoiceChoice>,
+    onEnabledChange: (Boolean) -> Unit,
+    onProviderChange: (String) -> Unit,
+    controlsEnabled: Boolean,
+) {
+    var pickerOpen by remember { mutableStateOf(false) }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = appearanceRoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text(stringResource(R.string.voice_settings_label_provider), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(
+                stringResource(R.string.voice_settings_provider_desc),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Surface(
+                    modifier = Modifier.size(44.dp),
+                    shape = appearanceRoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    contentColor = MaterialTheme.colorScheme.primary,
+                ) {
+                    Icon(Icons.Filled.GraphicEq, contentDescription = null, modifier = Modifier.padding(10.dp))
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        provider?.name?.takeIf { it.isNotBlank() } ?: providerValue,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        provider?.description?.takeIf { it.isNotBlank() }
+                            ?: "${provider?.models?.size ?: 0} models · ${provider?.voices?.size ?: 0} voices",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(999.dp),
+                    color = if (enabled) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = if (enabled) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
+                ) {
+                    Text(
+                        when {
+                            !enabled -> "Off"
+                            provider?.status == "unavailable" -> "Unavailable"
+                            provider?.status == "needs_auth" -> "Sign in"
+                            else -> "Ready"
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                    )
+                }
+                Icon(Icons.Filled.ChevronRight, contentDescription = null)
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Filled.Refresh,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.tertiary,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(stringResource(R.string.voice_settings_refreshes_from_provider), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { pickerOpen = true }, enabled = controlsEnabled) {
+                    Text(stringResource(R.string.voice_settings_change_provider))
+                    Icon(Icons.Filled.ChevronRight, contentDescription = null, modifier = Modifier.size(18.dp))
+                }
+            }
+        }
+    }
+    if (pickerOpen) {
+        AlertDialog(
+            onDismissRequest = { pickerOpen = false },
+            title = { Text(stringResource(R.string.voice_settings_choose_provider_title)) },
+            text = {
+                Column(
+                    modifier = Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(stringResource(R.string.voice_settings_voice_output_label), style = MaterialTheme.typography.titleSmall)
+                            Text(if (enabled) stringResource(R.string.voice_settings_enabled_status) else stringResource(R.string.voice_settings_disabled_status), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(checked = enabled, onCheckedChange = onEnabledChange, enabled = controlsEnabled)
+                    }
+                    HorizontalDivider()
+                    providerChoices.forEach { choice ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .selectable(
+                                    selected = choice.value == providerValue,
+                                    enabled = choice.enabled,
+                                    onClick = {
+                                        onProviderChange(choice.value)
+                                        pickerOpen = false
+                                    },
+                                )
+                                .padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(selected = choice.value == providerValue, onClick = null, enabled = choice.enabled)
+                            Column {
+                                Text(choice.label, style = MaterialTheme.typography.titleSmall)
+                                choice.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { pickerOpen = false }) { Text(stringResource(R.string.settings_done)) } },
+        )
+    }
+}
+
+@Composable
+internal fun ModelAndVoiceGroupCard(
+    modelValue: String,
+    modelChoices: List<VoiceChoice>,
+    voices: List<VoiceChoice>,
+    allVoices: List<VoiceChoice>,
+    selectedVoice: String,
+    previewState: VoicePreviewUiState,
+    onModelChange: (String) -> Unit,
+    onVoiceChange: (String) -> Unit,
+    onPreviewVoice: (String) -> Unit,
+    enabled: Boolean,
+) {
+    var voiceListExpanded by remember { mutableStateOf(false) }
+    var modelPickerOpen by remember { mutableStateOf(false) }
+    val selectedModel = modelChoices.firstOrNull { it.value == modelValue }
+    val displayedVoices = if (voiceListExpanded) allVoices else voices
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = appearanceRoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(stringResource(R.string.voice_settings_model_and_voice_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(
+                stringResource(R.string.voice_settings_voice_desc),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth().clickable(enabled = enabled) { modelPickerOpen = true },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Surface(
+                    modifier = Modifier.size(38.dp),
+                    shape = appearanceRoundedCornerShape(13.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    contentColor = MaterialTheme.colorScheme.primary,
+                ) {
+                    Icon(Icons.Filled.ViewInAr, contentDescription = null, modifier = Modifier.padding(9.dp))
+                }
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(stringResource(R.string.model_picker_title), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(selectedModel?.label ?: modelValue, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    selectedModel?.detail?.let { detail ->
+                        Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                Icon(Icons.Filled.ChevronRight, contentDescription = null, modifier = Modifier.size(18.dp))
+            }
+            Column(
+                modifier = if (voiceListExpanded) {
+                    Modifier.height(312.dp).verticalScroll(rememberScrollState())
+                } else {
+                    Modifier
+                },
+            ) {
+            displayedVoices.forEachIndexed { index, choice ->
+                val selected = choice.value == selectedVoice
+                val active = previewState.isActive && previewState.selectionKey?.endsWith(":${choice.value}") == true
+                if (index > 0 && !selected) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(start = 54.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                    )
+                }
+                Surface(
+                    shape = appearanceRoundedCornerShape(14.dp),
+                    color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.11f) else androidx.compose.ui.graphics.Color.Transparent,
+                    border = if (selected) BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)) else null,
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(
+                                selected = selected,
+                                enabled = enabled && choice.enabled,
+                                onClick = { onVoiceChange(choice.value) },
+                            )
+                            .padding(horizontal = if (selected) 7.dp else 0.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        RadioButton(selected = selected, onClick = null, enabled = enabled && choice.enabled)
+                        Surface(
+                            modifier = Modifier.size(34.dp),
+                            shape = appearanceRoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                            contentColor = MaterialTheme.colorScheme.primary,
+                        ) {
+                            Icon(Icons.Filled.Person, contentDescription = null, modifier = Modifier.padding(8.dp))
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(voiceDisplayName(choice), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                                if (choice.recommended) {
+                                    Surface(
+                                        shape = RoundedCornerShape(999.dp),
+                                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                                        contentColor = MaterialTheme.colorScheme.primary,
+                                    ) {
+                                        Text(stringResource(R.string.voice_settings_recommended), style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp))
+                                    }
+                                }
+                            }
+                            voiceDisplayDetail(choice)?.let {
+                                Text(
+                                    it,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            if (active && previewState.isLoading) {
+                                RelaySkeletonLine(
+                                    width = 72.dp,
+                                    height = 7.dp,
+                                    modifier = Modifier.padding(top = 6.dp),
+                                )
+                            } else if (active && previewState.isPlaying) {
+                                VoiceWaveform(
+                                    amplitude = previewState.amplitude.coerceAtLeast(0.08f),
+                                    state = VoiceState.Speaking,
+                                    outputAudioActive = previewState.amplitude > 0f,
+                                    height = 20.dp,
+                                    compactBars = true,
+                                    modifier = Modifier.width(84.dp),
+                                )
+                            }
+                        }
+                        PreviewCircleButton(
+                            active = active,
+                            loading = active && previewState.isLoading,
+                            enabled = enabled && choice.enabled,
+                            contentDescription = if (active) "Stop ${choice.label} preview" else "Preview ${choice.label}",
+                            onClick = { onPreviewVoice(choice.value) },
+                        )
+                    }
+                }
+            }
+            }
+            if (allVoices.size > voices.size || voiceListExpanded) {
+                TextButton(
+                    onClick = { voiceListExpanded = !voiceListExpanded },
+                    enabled = enabled,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (voiceListExpanded) stringResource(R.string.voice_settings_show_fewer_voices) else stringResource(R.string.voice_settings_view_all_voices, allVoices.size))
+                    Icon(
+                        if (voiceListExpanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+        }
+    }
+    if (modelPickerOpen) {
+        ChoicePickerDialog(
+            title = stringResource(R.string.voice_settings_choose_model),
+            choices = modelChoices,
+            selected = modelValue,
+            onSelected = {
+                onModelChange(it)
+                modelPickerOpen = false
+            },
+            onDismiss = { modelPickerOpen = false },
+        )
+    }
+}
+
+private fun voiceDisplayName(choice: VoiceChoice): String = choice.label.substringBefore(" - ").trim()
+
+private fun voiceDisplayDetail(choice: VoiceChoice): String? {
+    val embedded = choice.label.substringAfter(" - ", missingDelimiterValue = "").trim()
+    if (embedded.isNotBlank()) return embedded.replaceFirstChar { it.uppercase() }
+    return choice.detail
+        ?.split('·')
+        ?.map(String::trim)
+        ?.firstOrNull { value ->
+            value.isNotBlank() &&
+                !value.equals(choice.value, ignoreCase = true) &&
+                !value.equals("recommended", ignoreCase = true) &&
+                !value.equals("custom", ignoreCase = true) &&
+                !value.endsWith("_api", ignoreCase = true)
+        }
+}
+
+@Composable
+private fun PreviewCircleButton(
+    active: Boolean,
+    loading: Boolean,
+    enabled: Boolean,
+    contentDescription: String,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(44.dp)
+            .semantics { this.contentDescription = contentDescription }
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Surface(
+            modifier = Modifier.size(32.dp),
+            shape = RoundedCornerShape(999.dp),
+            border = BorderStroke(1.dp, if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
+            color = androidx.compose.ui.graphics.Color.Transparent,
+            contentColor = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+        ) {
+            if (loading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.padding(7.dp),
+                    strokeWidth = 1.5.dp,
+                )
+            } else {
+                Icon(
+                    imageVector = if (active) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    contentDescription = null,
+                    modifier = Modifier.padding(6.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChoicePickerDialog(
+    title: String,
+    choices: List<VoiceChoice>,
+    selected: String,
+    onSelected: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(modifier = Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
+                choices.forEach { choice ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(
+                                selected = choice.value == selected,
+                                enabled = choice.enabled,
+                                onClick = { onSelected(choice.value) },
+                            )
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = choice.value == selected, onClick = null, enabled = choice.enabled)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(choice.label, style = MaterialTheme.typography.titleSmall)
+                            choice.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.pair_close)) } },
+    )
+}
+
+@Composable
+internal fun LanguageQualityCard(
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    language: String,
+    languages: List<VoiceChoice>,
+    onLanguageChange: (String) -> Unit,
+    sampleRate: String,
+    sampleRates: List<VoiceChoice>,
+    onSampleRateChange: (String) -> Unit,
+    enabled: Boolean,
+    showLanguage: Boolean = true,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = appearanceRoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        ),
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onExpandedChange(!expanded) }
+                    .padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(stringResource(R.string.voice_settings_provider_options_title), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (showLanguage) {
+                            "${languageDisplayName(language)} · ${qualityLabel(sampleRate)}"
+                        } else {
+                            qualityLabel(sampleRate)
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Icon(
+                    if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.ChevronRight,
+                    contentDescription = if (expanded) "Collapse" else "Expand",
+                )
+            }
+            if (expanded) {
+                if (showLanguage && languages.isNotEmpty()) {
+                    VoiceChoiceDropdown(
+                        label = "Language",
+                        value = language,
+                        choices = languages,
+                        onValueChange = onLanguageChange,
+                        enabled = enabled,
+                    )
+                }
+                VoiceChoiceDropdown(
+                    label = "Sample rate",
+                    value = sampleRate,
+                    choices = sampleRates,
+                    onValueChange = onSampleRateChange,
+                    enabled = enabled,
+                )
+            }
+        }
+    }
+}
+
+private fun languageDisplayName(language: String): String = when (language.lowercase()) {
+    "en", "en-us" -> "English (US)"
+    "en-gb" -> "English (UK)"
+    "es" -> "Spanish"
+    "fr" -> "French"
+    "de" -> "German"
+    "ja" -> "Japanese"
+    "zh" -> "Chinese"
+    else -> language
+}
+
+private fun qualityLabel(sampleRate: String): String = when (sampleRate.toIntOrNull()) {
+    null -> sampleRate
+    in 0..15999 -> "Compact"
+    in 16000..23999 -> "Balanced"
+    else -> "High quality"
+}
+
+@Composable
+private fun LanguageQualitySummaryCard(summary: String) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = appearanceRoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(stringResource(R.string.voice_settings_provider_options_title), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(summary, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun StaticProviderCard(
+    provider: String,
+    detail: String,
+    ready: Boolean,
+    actionLabel: String?,
+    onAction: (() -> Unit)?,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = appearanceRoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Text(stringResource(R.string.voice_settings_label_provider), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Surface(
+                    modifier = Modifier.size(44.dp),
+                    shape = appearanceRoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    contentColor = MaterialTheme.colorScheme.primary,
+                ) { Icon(Icons.Filled.GraphicEq, contentDescription = null, modifier = Modifier.padding(10.dp)) }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(provider, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Surface(
+                    shape = RoundedCornerShape(999.dp),
+                    color = if (ready) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = if (ready) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
+                ) {
+                    Text(if (ready) "Ready" else "Unavailable", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp))
+                }
+            }
+            if (actionLabel != null && onAction != null) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Refresh, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(stringResource(R.string.voice_settings_uses_host_config), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = onAction) {
+                        Text(actionLabel)
+                        Icon(Icons.Filled.ChevronRight, contentDescription = null, modifier = Modifier.size(18.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StaticModelVoiceCard(
+    model: String,
+    voice: String,
+    enabled: Boolean,
+    onPreview: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = appearanceRoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(stringResource(R.string.voice_settings_model_and_voice_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Surface(
+                    modifier = Modifier.size(42.dp),
+                    shape = appearanceRoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    contentColor = MaterialTheme.colorScheme.primary,
+                ) { Icon(Icons.Filled.ViewInAr, contentDescription = null, modifier = Modifier.padding(10.dp)) }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(stringResource(R.string.model_picker_title), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(model, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                }
+                PreviewCircleButton(active = false, loading = false, enabled = enabled, contentDescription = "Preview standard voice", onClick = onPreview)
+            }
+            Surface(
+                shape = appearanceRoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.11f),
+            ) {
+                Row(modifier = Modifier.fillMaxWidth().padding(10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    RadioButton(selected = true, onClick = null, enabled = enabled)
+                    Surface(
+                        modifier = Modifier.size(38.dp),
+                        shape = appearanceRoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                        contentColor = MaterialTheme.colorScheme.primary,
+                    ) { Icon(Icons.Filled.Person, contentDescription = null, modifier = Modifier.padding(9.dp)) }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(voice, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        Text(stringResource(R.string.voice_settings_configured_in_standard), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    PreviewCircleButton(active = false, loading = false, enabled = enabled, contentDescription = "Preview $voice", onClick = onPreview)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VoiceSaveActions(
+    saving: Boolean,
+    enabled: Boolean,
+    onDiscard: () -> Unit,
+    onSave: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surface,
+    ) {
+        Row(
+            modifier = Modifier.padding(top = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            OutlinedButton(
+                onClick = onDiscard,
+                enabled = enabled && !saving,
+                modifier = Modifier.weight(1f).height(52.dp),
+                shape = appearanceRoundedCornerShape(16.dp),
+            ) { Text(stringResource(R.string.voice_settings_discard), fontWeight = FontWeight.SemiBold) }
+            Button(
+                onClick = onSave,
+                enabled = enabled && !saving,
+                modifier = Modifier.weight(1f).height(52.dp),
+                shape = appearanceRoundedCornerShape(16.dp),
+            ) { Text(if (saving) stringResource(R.string.voice_settings_saving) else stringResource(R.string.voice_settings_save_changes), fontWeight = FontWeight.SemiBold) }
+        }
+    }
+}
+
+@Composable
+private fun VoiceOutputLoadingSkeleton() {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Text(
+            text = "Loading voice options",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = appearanceRoundedCornerShape(18.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                RelaySkeletonLine(width = 92.dp, height = 18.dp)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    RelaySkeletonLine(width = 42.dp, height = 42.dp)
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        RelaySkeletonLine(width = 176.dp, height = 16.dp)
+                        RelaySkeletonLine(width = 132.dp, height = 11.dp)
+                    }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                RelaySkeletonLine(width = 220.dp, height = 12.dp)
+            }
+        }
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = appearanceRoundedCornerShape(18.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                RelaySkeletonLine(width = 138.dp, height = 18.dp)
+                RelaySkeletonLine(width = 250.dp, height = 46.dp)
+                repeat(3) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        RelaySkeletonLine(width = 34.dp, height = 34.dp)
+                        Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                            RelaySkeletonLine(width = 120.dp, height = 15.dp)
+                            RelaySkeletonLine(width = 180.dp, height = 10.dp)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Realtime Agent (Relay-only engine).
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun RealtimeBehaviorSettingsCard(
+    voiceClient: RelayVoiceClient?,
+    settingsViewModel: VoiceSettingsViewModel,
+    configState: VoiceConfigUiState,
+    voiceSettings: VoiceSettings,
+    prefsRepo: VoicePreferencesRepository,
+) {
+    val scope = rememberCoroutineScope()
+    val promotion = configState.realtimeConfig?.promotion
+    SectionCard(title = "Real-time behavior") {
+        SettingSwitchRow(
+            title = stringResource(R.string.voice_settings_detailed_trace),
+            detail = stringResource(R.string.voice_settings_detailed_trace_desc),
+            checked = voiceSettings.realtimeTraceDetails,
+            onCheckedChange = { value -> scope.launch { prefsRepo.setRealtimeTraceDetails(value) } },
+        )
+        HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
+        SettingSwitchRow(
+            title = stringResource(R.string.voice_settings_persistent_session),
+            detail = stringResource(R.string.voice_settings_persistent_session_desc),
+            checked = voiceSettings.realtimePersistentSession,
+            onCheckedChange = { value -> scope.launch { prefsRepo.setRealtimePersistentSession(value) } },
+        )
+        promotion?.let { promo ->
+            HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
+            SettingSwitchRow(
+                title = stringResource(R.string.voice_settings_promote_long_tasks),
+                detail = stringResource(R.string.voice_settings_promote_long_tasks_desc, promo.promoteAfterMs),
+                checked = promo.enabled,
+                onCheckedChange = { value ->
+                    scope.launch {
+                        val result = voiceClient?.updateRealtimeAgentPromotion(promotionEnabled = value)
+                        if (result?.isSuccess == true) settingsViewModel.setRealtimeConfig(result.getOrNull())
+                    }
+                },
+            )
+            if (promo.enabled) {
+                SettingSwitchRow(
+                    title = stringResource(R.string.voice_settings_spoken_handoff),
+                    detail = stringResource(R.string.voice_settings_spoken_handoff_desc),
+                    checked = promo.spokenHandoff,
+                    onCheckedChange = { value ->
+                        scope.launch {
+                            val result = voiceClient?.updateRealtimeAgentPromotion(spokenHandoff = value)
+                            if (result?.isSuccess == true) settingsViewModel.setRealtimeConfig(result.getOrNull())
+                        }
+                    },
+                )
+                Text(stringResource(R.string.voice_settings_when_answer_ready), style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 8.dp))
+                val modes = listOf(
+                    "speak_verbatim" to "Exact",
+                    "speak_when_idle" to "Summary",
+                    "notify_then_speak" to "Notify",
+                    "visual_only" to "Show",
+                )
+                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                    modes.forEachIndexed { index, (value, label) ->
+                        SegmentedButton(
+                            selected = promo.resultDelivery == value,
+                            onClick = {
+                                scope.launch {
+                                    val result = voiceClient?.updateRealtimeAgentPromotion(resultDelivery = value)
+                                    if (result?.isSuccess == true) settingsViewModel.setRealtimeConfig(result.getOrNull())
+                                }
+                            },
+                            shape = SegmentedButtonDefaults.itemShape(index, modes.size),
+                        ) { Text(label, style = MaterialTheme.typography.labelSmall) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingSwitchRow(
+    title: String,
+    detail: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+@Composable
+private fun RealtimeAgentCard(
+    voiceClient: RelayVoiceClient?,
+    settingsViewModel: VoiceSettingsViewModel,
+    configState: VoiceConfigUiState,
+    voiceSettings: VoiceSettings,
+    prefsRepo: VoicePreferencesRepository,
+    voiceViewModel: VoiceViewModel,
+) {
+    val scope = rememberCoroutineScope()
+    val snackbarHost = LocalSnackbarHost.current
+    val previewState by voiceViewModel.voicePreviewState.collectAsState()
+    val config = configState.realtimeConfig
+
+    var enabled by remember { mutableStateOf(true) }
+    var provider by remember { mutableStateOf("") }
+    var model by remember { mutableStateOf("") }
+    var voice by remember { mutableStateOf("") }
+    var sampleRate by remember { mutableStateOf("24000") }
+    var saving by remember { mutableStateOf(false) }
+    var qualityOpen by remember { mutableStateOf(false) }
+
+    DisposableEffect(voiceViewModel) {
+        onDispose { voiceViewModel.stopVoicePreview() }
+    }
+    LaunchedEffect(
+        config?.enabled,
+        config?.default_provider,
+        config?.default_model,
+        config?.default_voice,
+        config?.sample_rate,
+        voiceSettings.realtimeModel,
+        voiceSettings.realtimeVoice,
+    ) {
+        val saved = config ?: return@LaunchedEffect
+        enabled = saved.enabled
+        provider = saved.default_provider.orEmpty()
+        model = voiceSettings.realtimeModel.ifBlank { saved.default_model.orEmpty() }
+        voice = voiceSettings.realtimeVoice.ifBlank { saved.default_voice.orEmpty() }
+        sampleRate = saved.sample_rate.toString()
+    }
+
+    fun refreshOptions(providerId: String, applyDefaults: Boolean) {
+        settingsViewModel.refreshRealtimeProviderOptions(
+            client = voiceClient,
+            providerId = providerId,
+            applyDefaults = applyDefaults,
+        ) { refreshed ->
+            if (provider == providerId) {
+                val selection = selectionWithProviderDefaults(
+                    provider = refreshed,
+                    model = model,
+                    voice = voice,
+                    sampleRate = sampleRate,
+                    language = null,
+                )
+                model = selection.model
+                voice = selection.voice
+                sampleRate = selection.sampleRate
+            }
+        }
+    }
+
+    val providers = mergedProviders(config?.providers.orEmpty(), configState.realtimeProviderOptions)
+        .filter { it.supports_realtime_agent_native }
+    val selectedProvider = providerFor(providers, provider)
+    val allVoices = voiceChoices(selectedProvider, voice, model)
+    val visibleVoices = previewVoiceChoices(allVoices, voice)
+
+    fun preview(key: String, selectedVoice: String) {
+        val rate = sampleRate.toIntOrNull()
+        if (rate == null) {
+            settingsViewModel.setRealtimeError("Sample rate must be a number")
+            return
+        }
+        voiceViewModel.previewRealtimeAgent(
+            selectionKey = key,
+            provider = provider,
+            model = model,
+            voice = selectedVoice,
+            sampleRate = rate,
+        ) { result ->
+            result.exceptionOrNull()?.let { settingsViewModel.setRealtimeError(it.message ?: "Realtime preview failed") }
+        }
+    }
+
+    VoiceProviderGroupCard(
+        provider = selectedProvider,
+        providerValue = provider,
+        enabled = enabled,
+        providerChoices = providerChoices(providers, provider),
+        onEnabledChange = { enabled = it },
+        onProviderChange = { providerId ->
+            voiceViewModel.stopVoicePreview()
+            provider = providerId
+            providerFor(providers, providerId)?.let { selected ->
+                val selection = selectionWithProviderDefaults(selected, model, voice, sampleRate, null)
+                model = selection.model
+                voice = selection.voice
+                sampleRate = selection.sampleRate
+            }
+            refreshOptions(providerId, applyDefaults = true)
+        },
+        controlsEnabled = voiceClient != null,
+    )
+    providerOptionsStatusText(
+        loading = configState.realtimeOptionsLoading == provider,
+        status = configState.realtimeOptionsStatus,
+        refreshingMessage = stringResource(R.string.voice_settings_refreshing_options),
+    )?.let { status ->
+        Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    ModelAndVoiceGroupCard(
+        modelValue = model,
+        modelChoices = valueChoices(selectedProvider?.models.orEmpty(), model, selectedProvider?.model_labels.orEmpty()),
+        voices = visibleVoices,
+        allVoices = allVoices,
+        selectedVoice = voice,
+        previewState = previewState,
+        onModelChange = { selectedModel ->
+            voiceViewModel.stopVoicePreview()
+            model = selectedModel
+            selectedProvider?.let { voice = voiceForModel(it, selectedModel, voice) }
+        },
+        onVoiceChange = { selectedVoice ->
+            voiceViewModel.stopVoicePreview()
+            voice = selectedVoice
+        },
+        onPreviewVoice = { selectedVoice -> preview("voice:realtime:$selectedVoice", selectedVoice) },
+        enabled = voiceClient != null && enabled,
+    )
+    compatibilityNotice(
+        selectedProvider,
+        model,
+        voice,
+        notAdvertisedMessage = stringResource(R.string.voice_settings_voice_not_advertised),
+    )?.let { notice ->
+        Text(notice, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+    }
+    LanguageQualityCard(
+        expanded = qualityOpen,
+        onExpandedChange = { qualityOpen = it },
+        language = "Provider default",
+        languages = emptyList(),
+        onLanguageChange = {},
+        sampleRate = sampleRate,
+        sampleRates = intChoices(selectedProvider?.sample_rates.orEmpty(), sampleRate),
+        onSampleRateChange = { sampleRate = it },
+        enabled = voiceClient != null,
+        showLanguage = false,
+    )
+
+    VoiceSaveActions(
+        saving = saving,
+        enabled = voiceClient != null,
+        onDiscard = {
+            voiceViewModel.stopVoicePreview()
+            config?.let { saved ->
+                enabled = saved.enabled
+                provider = saved.default_provider.orEmpty()
+                model = voiceSettings.realtimeModel.ifBlank { saved.default_model.orEmpty() }
+                voice = voiceSettings.realtimeVoice.ifBlank { saved.default_voice.orEmpty() }
+                sampleRate = saved.sample_rate.toString()
+            }
+        },
+        onSave = {
+            val client = voiceClient ?: return@VoiceSaveActions
+            val rate = sampleRate.toIntOrNull()
+            if (rate == null) {
+                settingsViewModel.setRealtimeError("Sample rate must be a number")
+                return@VoiceSaveActions
+            }
+            scope.launch {
+                saving = true
+                val validation = client.validateRealtimeAgentProvider(provider, model, voice, rate)
+                val issue = validationIssue(validation.getOrNull(), "Provider selection is not valid")
+                if (validation.isFailure || issue != null) {
+                    saving = false
+                    val error = validation.exceptionOrNull()
+                    if (error != null) snackbarHost.showHumanError(classifyError(error, context = "voice_config"))
+                    settingsViewModel.setRealtimeError(issue ?: error?.message ?: "Provider validation failed")
+                    return@launch
+                }
+                val result = client.updateRealtimeAgentConfig(enabled, provider, model, voice, rate)
+                saving = false
+                if (result.isSuccess) {
+                    prefsRepo.setRealtimeSelection(model, voice)
+                    settingsViewModel.setRealtimeConfig(result.getOrNull())
+                } else {
+                    val human = classifyError(result.exceptionOrNull(), context = "voice_config")
+                    settingsViewModel.setRealtimeError(human.body)
+                    snackbarHost.showHumanError(human)
+                }
+            }
+        },
+    )
+    configState.realtimeConfigError?.let { error ->
+        Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+    }
+}
+
+@Composable
+private fun LegacyRealtimeAgentCard(
+    voiceClient: RelayVoiceClient?,
+    settingsViewModel: VoiceSettingsViewModel,
+    configState: VoiceConfigUiState,
+    voiceSettings: VoiceSettings,
+    prefsRepo: VoicePreferencesRepository,
+) {
+    val scope = rememberCoroutineScope()
+    val snackbarHost = LocalSnackbarHost.current
+
+    var realtimeEnabled by remember { mutableStateOf(true) }
+    var realtimeProvider by remember { mutableStateOf("") }
+    var realtimeModel by remember { mutableStateOf("") }
+    var realtimeVoice by remember { mutableStateOf("") }
+    var realtimeSampleRate by remember { mutableStateOf("24000") }
+    var realtimeSaving by remember { mutableStateOf(false) }
+    var realtimeManualOpen by remember { mutableStateOf(false) }
+    var showDeliveryInfo by remember { mutableStateOf(false) }
+
+    val config = configState.realtimeConfig
+    LaunchedEffect(
+        config?.enabled,
+        config?.default_provider,
+        config?.sample_rate,
+    ) {
+        val c = config ?: return@LaunchedEffect
+        realtimeEnabled = c.enabled
+        realtimeProvider = c.default_provider.orEmpty()
+        realtimeSampleRate = c.sample_rate.toString()
+    }
+    LaunchedEffect(
+        config?.default_model,
+        config?.default_voice,
+        voiceSettings.realtimeModel,
+        voiceSettings.realtimeVoice,
+    ) {
+        val c = config ?: return@LaunchedEffect
+        realtimeModel = voiceSettings.realtimeModel.ifBlank { c.default_model.orEmpty() }
+        realtimeVoice = voiceSettings.realtimeVoice.ifBlank { c.default_voice.orEmpty() }
+    }
+
+    fun refreshRealtimeProviderOptions(providerId: String, applyDefaults: Boolean) {
+        settingsViewModel.refreshRealtimeProviderOptions(
+            client = voiceClient,
+            providerId = providerId,
+            applyDefaults = applyDefaults,
+        ) { provider ->
+            if (realtimeProvider == providerId) {
+                val selection = selectionWithProviderDefaults(
+                    provider = provider,
+                    model = realtimeModel,
+                    voice = realtimeVoice,
+                    sampleRate = realtimeSampleRate,
+                    language = null,
+                )
+                realtimeModel = selection.model
+                realtimeVoice = selection.voice
+                realtimeSampleRate = selection.sampleRate
+            }
+        }
+    }
+
+    SectionCard(title = stringResource(R.string.voice_settings_realtime_agent_title), badge = stringResource(R.string.voice_settings_experimental)) {
+        Text(
+            text = stringResource(R.string.voice_settings_realtime_agent_desc),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(stringResource(R.string.voice_settings_detailed_trace), style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    text = stringResource(R.string.voice_settings_detailed_trace_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = voiceSettings.realtimeTraceDetails,
+                onCheckedChange = { enabled ->
+                    scope.launch { prefsRepo.setRealtimeTraceDetails(enabled) }
+                },
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(stringResource(R.string.voice_settings_persistent_session), style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    text = stringResource(R.string.voice_settings_persistent_session_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = voiceSettings.realtimePersistentSession,
+                onCheckedChange = { enabled ->
+                    scope.launch { prefsRepo.setRealtimePersistentSession(enabled) }
+                },
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        val availableLabel = stringResource(R.string.voice_settings_status_available)
+        val unavailableLabel = stringResource(R.string.voice_settings_status_unavailable)
+        val disabledLabel = stringResource(R.string.voice_settings_status_disabled)
+        val loadingLabel = stringResource(R.string.voice_settings_loading)
+        ProviderRow(
+            label = stringResource(R.string.voice_settings_label_status),
+            value = when {
+                config?.enabled == true -> availableLabel
+                configState.realtimeConfigError != null -> unavailableLabel
+                config != null -> disabledLabel
+                else -> loadingLabel
+            },
+        )
+        ProviderRow(
+            label = stringResource(R.string.voice_settings_label_provider),
+            value = config?.default_provider
+                ?: (configState.realtimeConfigError?.let { unavailableLabel } ?: loadingLabel),
+        )
+        realtimeModel.takeIf { it.isNotBlank() }?.let { model ->
+            ProviderRow(label = "Model", value = model)
+        }
+        realtimeVoice.takeIf { it.isNotBlank() }?.let { voice ->
+            ProviderRow(label = "Voice", value = voice)
+        }
+        config?.let { c ->
+            ProviderRow(label = stringResource(R.string.voice_settings_label_advertised), value = realtimeProviderList(c))
+            ProviderRow(label = stringResource(R.string.voice_settings_label_auth), value = realtimeAuthLabel(c))
+        }
+
+        config?.promotion?.let { promo ->
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+            Text(stringResource(R.string.voice_settings_background_tasks), style = MaterialTheme.typography.titleSmall)
+            Text(
+                text = stringResource(R.string.voice_settings_background_tasks_desc),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(stringResource(R.string.voice_settings_promote_long_tasks), style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        text = stringResource(R.string.voice_settings_promote_long_tasks_desc, promo.promoteAfterMs),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = promo.enabled,
+                    onCheckedChange = { enabled ->
+                        scope.launch {
+                            val client = voiceClient ?: return@launch
+                            val result = client.updateRealtimeAgentPromotion(
+                                promotionEnabled = enabled,
+                            )
+                            if (result.isSuccess) settingsViewModel.setRealtimeConfig(result.getOrNull())
+                        }
+                    },
+                )
+            }
+            if (promo.enabled) {
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(stringResource(R.string.voice_settings_spoken_handoff), style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            text = stringResource(R.string.voice_settings_spoken_handoff_desc),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = promo.spokenHandoff,
+                        onCheckedChange = { enabled ->
+                            scope.launch {
+                                val client = voiceClient ?: return@launch
+                                val result = client.updateRealtimeAgentPromotion(
+                                    spokenHandoff = enabled,
+                                )
+                                if (result.isSuccess) settingsViewModel.setRealtimeConfig(result.getOrNull())
+                            }
+                        },
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        "When the answer is ready",
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                    IconButton(
+                        onClick = { showDeliveryInfo = true },
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Info,
+                            contentDescription = "Delivery mode details",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                val deliveryOptions = listOf(
+                    "speak_verbatim",
+                    "speak_when_idle",
+                    "notify_then_speak",
+                    "visual_only",
+                )
+                val deliveryLabels = listOf("Exact", "Summary", "Notify", "Show")
+                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                    deliveryOptions.forEachIndexed { index, option ->
+                        SegmentedButton(
+                            shape = SegmentedButtonDefaults.itemShape(
+                                index = index,
+                                count = deliveryOptions.size,
+                            ),
+                            onClick = {
+                                scope.launch {
+                                    val client = voiceClient ?: return@launch
+                                    val result = client.updateRealtimeAgentPromotion(
+                                        resultDelivery = option,
+                                    )
+                                    if (result.isSuccess) settingsViewModel.setRealtimeConfig(result.getOrNull())
+                                }
+                            },
+                            selected = option == promo.resultDelivery,
+                        ) {
+                            Text(
+                                deliveryLabels[index],
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (showDeliveryInfo) {
+            DeliveryModeInfoDialog(onDismiss = { showDeliveryInfo = false })
+        }
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(stringResource(R.string.voice_settings_label_enabled), style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    text = stringResource(R.string.voice_settings_realtime_defaults_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = realtimeEnabled,
+                onCheckedChange = { realtimeEnabled = it },
+            )
+        }
+
+        val realtimeProviders = mergedProviders(
+            config?.providers.orEmpty(),
+            configState.realtimeProviderOptions,
+        )
+            .filter { it.supports_realtime_agent_native }
+        val selectedRealtimeProvider = providerFor(
+            realtimeProviders,
+            realtimeProvider,
+        )
+        VoiceChoiceDropdown(
+            label = stringResource(R.string.voice_settings_label_provider),
+            value = realtimeProvider,
+            choices = providerChoices(realtimeProviders, realtimeProvider),
+            onValueChange = { providerId ->
+                realtimeProvider = providerId
+                providerFor(realtimeProviders, providerId)?.let { provider ->
+                    val selection = selectionWithProviderDefaults(
+                        provider = provider,
+                        model = realtimeModel,
+                        voice = realtimeVoice,
+                        sampleRate = realtimeSampleRate,
+                        language = null,
+                    )
+                    realtimeModel = selection.model
+                    realtimeVoice = selection.voice
+                    realtimeSampleRate = selection.sampleRate
+                }
+                refreshRealtimeProviderOptions(providerId, applyDefaults = true)
+            },
+            enabled = voiceClient != null,
+        )
+        providerOptionsStatusText(
+            loading = configState.realtimeOptionsLoading == realtimeProvider,
+            status = configState.realtimeOptionsStatus,
+            refreshingMessage = stringResource(R.string.voice_settings_refreshing_options),
+        )?.let { status ->
+            Text(
+                text = status,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        VoiceChoiceDropdown(
+            label = stringResource(R.string.voice_settings_label_model),
+            value = realtimeModel,
+            choices = valueChoices(
+                selectedRealtimeProvider?.models.orEmpty(),
+                realtimeModel,
+                selectedRealtimeProvider?.model_labels.orEmpty(),
+            ),
+            onValueChange = { model ->
+                realtimeModel = model
+                selectedRealtimeProvider?.let { provider ->
+                    realtimeVoice = voiceForModel(provider, model, realtimeVoice)
+                }
+                scope.launch {
+                    prefsRepo.setRealtimeSelection(realtimeModel, realtimeVoice)
+                }
+            },
+            enabled = voiceClient != null,
+        )
+        VoiceChoiceDropdown(
+            label = stringResource(R.string.voice_settings_label_voice),
+            value = realtimeVoice,
+            choices = voiceChoices(
+                selectedRealtimeProvider,
+                realtimeVoice,
+                realtimeModel,
+            ),
+            onValueChange = { voice ->
+                realtimeVoice = voice
+                scope.launch { prefsRepo.setRealtimeVoice(voice) }
+            },
+            enabled = voiceClient != null,
+        )
+        compatibilityNotice(
+            selectedRealtimeProvider,
+            realtimeModel,
+            realtimeVoice,
+            notAdvertisedMessage = stringResource(R.string.voice_settings_voice_not_advertised),
+        )?.let { notice ->
+            Text(
+                text = notice,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        VoiceChoiceDropdown(
+            label = stringResource(R.string.voice_settings_label_sample_rate),
+            value = realtimeSampleRate,
+            choices = intChoices(
+                selectedRealtimeProvider?.sample_rates.orEmpty(),
+                realtimeSampleRate,
+            ),
+            onValueChange = { realtimeSampleRate = it },
+            enabled = voiceClient != null,
+        )
+
+        AdvancedManualToggle(
+            expanded = realtimeManualOpen,
+            onExpandedChange = { realtimeManualOpen = it },
+        )
+        if (realtimeManualOpen) {
+            OutlinedTextField(
+                value = realtimeProvider,
+                onValueChange = { realtimeProvider = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text(stringResource(R.string.voice_settings_provider_id)) },
+            )
+            OutlinedTextField(
+                value = realtimeModel,
+                onValueChange = { model ->
+                    realtimeModel = model
+                    scope.launch { prefsRepo.setRealtimeModel(model) }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text(stringResource(R.string.voice_settings_model_id)) },
+            )
+            OutlinedTextField(
+                value = realtimeVoice,
+                onValueChange = { voice ->
+                    realtimeVoice = voice
+                    scope.launch { prefsRepo.setRealtimeVoice(voice) }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text(stringResource(R.string.voice_settings_voice_id)) },
+            )
+            OutlinedTextField(
+                value = realtimeSampleRate,
+                onValueChange = { realtimeSampleRate = it.filter(Char::isDigit) },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text(stringResource(R.string.voice_settings_label_sample_rate)) },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            )
+        }
+
+        val realtimeSampleRateMustBeNumber = stringResource(R.string.voice_settings_sample_rate_must_be_number)
+        val providerNotValidMsg = stringResource(R.string.voice_settings_provider_not_valid)
+        val savedWithWarningFmt = stringResource(R.string.voice_settings_saved_with_warning_format)
+        FilledTonalButton(
+            onClick = {
+                val client = voiceClient ?: return@FilledTonalButton
+                val sampleRate = realtimeSampleRate.toIntOrNull()
+                if (sampleRate == null) {
+                    settingsViewModel.setRealtimeError(realtimeSampleRateMustBeNumber)
+                    return@FilledTonalButton
+                }
+                scope.launch {
+                    realtimeSaving = true
+                    val validationResult = client.validateRealtimeAgentProvider(
+                        providerId = realtimeProvider,
+                        model = realtimeModel,
+                        voice = realtimeVoice,
+                        sampleRate = sampleRate,
+                    )
+                    validationIssue(validationResult.getOrNull(), providerNotValidMsg)?.let { issue ->
+                        realtimeSaving = false
+                        settingsViewModel.setRealtimeError(issue)
+                        return@launch
+                    }
+                    if (validationResult.isFailure) {
+                        realtimeSaving = false
+                        val human = classifyError(
+                            validationResult.exceptionOrNull(),
+                            context = "voice_config",
+                        )
+                        settingsViewModel.setRealtimeError(human.body)
+                        snackbarHost.showHumanError(human)
+                        return@launch
+                    }
+                    validationWarning(validationResult.getOrNull(), savedWithWarningFmt)?.let { warning ->
+                        settingsViewModel.setRealtimeOptionsStatus(warning)
+                    }
+                    val result = client.updateRealtimeAgentConfig(
+                        enabled = realtimeEnabled,
+                        provider = realtimeProvider,
+                        model = realtimeModel,
+                        voice = realtimeVoice,
+                        sampleRate = sampleRate,
+                    )
+                    realtimeSaving = false
+                    if (result.isSuccess) {
+                        prefsRepo.setRealtimeSelection(realtimeModel, realtimeVoice)
+                        settingsViewModel.setRealtimeConfig(result.getOrNull())
+                    } else {
+                        val human = classifyError(
+                            result.exceptionOrNull(),
+                            context = "voice_config",
+                        )
+                        settingsViewModel.setRealtimeError(human.body)
+                        snackbarHost.showHumanError(human)
+                    }
+                }
+            },
+            enabled = !realtimeSaving && voiceClient != null,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(if (realtimeSaving) stringResource(R.string.voice_settings_saving) else stringResource(R.string.voice_settings_save_realtime_agent))
+        }
+        configState.realtimeConfigError?.let { error ->
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = error,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+    }
+}
+
+@Composable
+private fun DeliveryModeInfoDialog(onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.voice_settings_answer_delivery_title)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                DeliveryModeInfoRow(
+                    label = "Exact",
+                    body = "Recommended. The realtime voice reads the Hermes answer word for word, falling back to standard TTS only if it goes off-script.",
+                )
+                DeliveryModeInfoRow(
+                    label = "Summary",
+                    body = "The realtime voice rephrases the result in its own words. More conversational, less faithful to the exact answer.",
+                )
+                DeliveryModeInfoRow(
+                    label = "Notify",
+                    body = "Shows that the answer is ready first, then speaks when you re-engage.",
+                )
+                DeliveryModeInfoRow(
+                    label = "Show",
+                    body = "Keeps the completed answer visual only.",
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.paired_devices_got_it))
+            }
+        },
+    )
+}
+
+@Composable
+private fun DeliveryModeInfoRow(label: String, body: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(label, style = MaterialTheme.typography.titleSmall)
+        Text(
+            text = body,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Global voice controls — interaction mode + silence threshold.
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun GlobalVoiceControlsCard(
+    voiceSettings: VoiceSettings,
+    prefsRepo: VoicePreferencesRepository,
+    voiceViewModel: VoiceViewModel,
+) {
+    val scope = rememberCoroutineScope()
+    val focusManager = LocalFocusManager.current
+    var stopPhrasesDraft by remember { mutableStateOf(voiceSettings.stopPhrases.joinToString(", ")) }
+    var stopPhrasesFocused by remember { mutableStateOf(false) }
+    LaunchedEffect(voiceSettings.stopPhrases, stopPhrasesFocused) {
+        if (!stopPhrasesFocused) {
+            stopPhrasesDraft = voiceSettings.stopPhrases.joinToString(", ")
+        }
+    }
+    fun persistStopPhrases() {
+        scope.launch {
+            prefsRepo.setStopPhrases(stopPhrasesDraft.split(',').map(String::trim))
+        }
+    }
+    SectionCard(title = stringResource(R.string.voice_settings_global_controls_title)) {
+        Text(
+            text = stringResource(R.string.voice_settings_global_controls_desc),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+        Text(
+            text = stringResource(R.string.voice_settings_interaction_mode),
+            style = MaterialTheme.typography.labelLarge,
+        )
+        val currentMode = voiceSettings.interactionMode
+        listOf(
+            "tap" to stringResource(R.string.voice_settings_interaction_tap),
+            "hold" to stringResource(R.string.voice_settings_interaction_hold),
+            "continuous" to stringResource(R.string.voice_settings_interaction_continuous),
+        ).forEach { (value, label) ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .selectable(
+                        selected = currentMode == value,
+                        onClick = {
+                            scope.launch { prefsRepo.setInteractionMode(value) }
+                            voiceViewModel.setInteractionMode(
+                                when (value) {
+                                    "hold" -> InteractionMode.HoldToTalk
+                                    "continuous" -> InteractionMode.Continuous
+                                    else -> InteractionMode.TapToTalk
+                                }
+                            )
+                        },
+                    )
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(
+                    selected = currentMode == value,
+                    onClick = null,
+                )
+                Spacer(Modifier.size(8.dp))
+                Text(label, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+        Text(
+            text = stringResource(R.string.voice_settings_silence_threshold, "%.2f".format(voiceSettings.silenceThresholdMs / 1000f)),
+            style = MaterialTheme.typography.labelLarge,
+        )
+        Text(
+            text = stringResource(R.string.voice_settings_silence_threshold_desc),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        // 750 ms..5 s in 250 ms steps (18 stops) so the desktop-matching 1.25s
+        // default lands on a stop. Idle/no-speech (12 s) and the 60 s hard turn
+        // cap are fixed in VoiceViewModel, not exposed here.
+        Slider(
+            value = voiceSettings.silenceThresholdMs.toFloat(),
+            onValueChange = { newValue ->
+                scope.launch { prefsRepo.setSilenceThresholdMs(newValue.toLong()) }
+            },
+            valueRange = 750f..5000f,
+            steps = 16,
+        )
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+        Text(
+            text = stringResource(R.string.voice_settings_stop_phrases),
+            style = MaterialTheme.typography.labelLarge,
+        )
+        Text(
+            text = stringResource(R.string.voice_settings_stop_phrases_desc),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = stopPhrasesDraft,
+            onValueChange = { stopPhrasesDraft = it },
+            modifier = Modifier
+                .fillMaxWidth()
+                .onFocusChanged { state ->
+                    val lostFocus = stopPhrasesFocused && !state.isFocused
+                    stopPhrasesFocused = state.isFocused
+                    if (lostFocus) persistStopPhrases()
+                },
+            singleLine = true,
+            placeholder = { Text("stop, goodbye hermes") },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(
+                onDone = {
+                    persistStopPhrases()
+                    focusManager.clearFocus()
+                },
+            ),
+        )
+    }
+}
+
+@Composable
+private fun AnswerDeliveryCard(
+    voiceSettings: VoiceSettings,
+    prefsRepo: VoicePreferencesRepository,
+) {
+    val scope = rememberCoroutineScope()
+    SectionCard(title = stringResource(R.string.voice_settings_tts_title)) {
+        SettingSwitchRow(
+            title = stringResource(R.string.voice_settings_final_answer_only),
+            detail = stringResource(R.string.voice_settings_final_answer_only_desc),
+            checked = voiceSettings.finalAnswerOnly,
+            onCheckedChange = { enabled ->
+                scope.launch { prefsRepo.setFinalAnswerOnly(enabled) }
+            },
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Experimental local wake word.
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun DigitalAssistantCard(
+    preferences: WakeWordPreferences,
+    roleStatus: AssistantRoleStatus,
+    runtimeState: AssistantWakeRuntimeState,
+    installing: Boolean,
+    error: String?,
+    onChooseAssistant: () -> Unit,
+    onManageAssistant: () -> Unit,
+    onEnableWake: () -> Unit,
+    onDisableWake: () -> Unit,
+) {
+    val selected = roleStatus == AssistantRoleStatus.Selected
+    SectionCard(title = stringResource(R.string.assistant_mode_title)) {
+        Text(
+            text = stringResource(R.string.assistant_mode_description),
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Spacer(Modifier.height(8.dp))
+        ProviderRow(
+            label = stringResource(R.string.assistant_mode_role_status),
+            value = when (roleStatus) {
+                AssistantRoleStatus.Selected ->
+                    stringResource(R.string.assistant_mode_role_selected)
+                AssistantRoleStatus.NotSelected ->
+                    stringResource(R.string.assistant_mode_role_not_selected)
+                AssistantRoleStatus.Unavailable ->
+                    stringResource(R.string.assistant_mode_role_unavailable)
+            },
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = onChooseAssistant,
+                enabled = roleStatus != AssistantRoleStatus.Unavailable && !selected,
+            ) {
+                Text(stringResource(R.string.assistant_mode_choose))
+            }
+            OutlinedButton(
+                onClick = onManageAssistant,
+                enabled = roleStatus != AssistantRoleStatus.Unavailable,
+            ) {
+                Text(stringResource(R.string.assistant_mode_manage))
+            }
+        }
+        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    stringResource(R.string.assistant_mode_wake_enable),
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+                Text(
+                    stringResource(R.string.assistant_mode_wake_enable_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (installing && !preferences.enabled) {
+                CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
+            } else {
+                Switch(
+                    checked = preferences.assistantEnabled,
+                    enabled = selected || preferences.assistantEnabled,
+                    onCheckedChange = { if (it) onEnableWake() else onDisableWake() },
+                )
+            }
+        }
+        if (preferences.assistantEnabled) {
+            ProviderRow(
+                label = stringResource(R.string.wake_word_status),
+                value = when (runtimeState) {
+                    AssistantWakeRuntimeState.Stopped ->
+                        stringResource(R.string.wake_word_status_stopped)
+                    AssistantWakeRuntimeState.Starting ->
+                        stringResource(R.string.wake_word_status_starting)
+                    AssistantWakeRuntimeState.Listening ->
+                        stringResource(R.string.wake_word_status_listening)
+                    AssistantWakeRuntimeState.PausedForVoice ->
+                        stringResource(R.string.wake_word_status_paused)
+                    AssistantWakeRuntimeState.AwaitingSession ->
+                        stringResource(R.string.assistant_mode_status_session)
+                    AssistantWakeRuntimeState.Error ->
+                        stringResource(R.string.wake_word_status_error)
+                },
+            )
+        }
+        error?.let {
+            Text(it, color = MaterialTheme.colorScheme.error)
+        }
+        Text(
+            text = stringResource(R.string.assistant_mode_removal),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = stringResource(R.string.assistant_mode_battery),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun WakeWordCard(
+    preferences: WakeWordPreferences,
+    runtimeState: WakeWordRuntimeState,
+    testState: WakeWordTestState,
+    installing: Boolean,
+    error: String?,
+    onEnable: () -> Unit,
+    onDisable: () -> Unit,
+    onSensitivityChange: (Float) -> Unit,
+    onConfirmationFramesChange: (Int) -> Unit,
+    onStartNewSessionChange: (Boolean) -> Unit,
+    onTest: () -> Unit,
+) {
+    val abiSupported = Build.SUPPORTED_ABIS.any {
+        it == "arm64-v8a" || it == "armeabi-v7a" || it == "x86_64" || it == "x86"
+    }
+    var sensitivityDraft by remember(preferences.sensitivity) {
+        mutableStateOf(preferences.sensitivity)
+    }
+    var confirmationFramesDraft by remember(preferences.confirmationFrames) {
+        mutableStateOf(preferences.confirmationFrames)
+    }
+    SectionCard(
+        title = stringResource(R.string.wake_word_title),
+        badge = stringResource(R.string.voice_settings_experimental),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = stringResource(R.string.wake_word_enable),
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+                Text(
+                    text = stringResource(R.string.wake_word_enable_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (installing) {
+                CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
+            } else {
+                Switch(
+                    checked = preferences.enabled,
+                    enabled = abiSupported,
+                    onCheckedChange = { enabled ->
+                        if (enabled) onEnable() else onDisable()
+                    },
+                )
+            }
+        }
+
+        if (!abiSupported) {
+            Text(
+                text = stringResource(R.string.wake_word_unsupported_abi),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        if (installing) {
+            Spacer(Modifier.height(8.dp))
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            Text(
+                text = stringResource(R.string.wake_word_installing),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        error?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+
+        if (preferences.enabled) {
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+            ProviderRow(
+                label = stringResource(R.string.wake_word_phrase),
+                value = preferences.phrase,
+            )
+            ProviderRow(
+                label = stringResource(R.string.wake_word_status),
+                value = when (runtimeState) {
+                    WakeWordRuntimeState.Stopped ->
+                        stringResource(R.string.wake_word_status_stopped)
+                    WakeWordRuntimeState.Starting ->
+                        stringResource(R.string.wake_word_status_starting)
+                    WakeWordRuntimeState.Listening ->
+                        stringResource(R.string.wake_word_status_listening)
+                    WakeWordRuntimeState.PausedForVoice ->
+                        stringResource(R.string.wake_word_status_paused)
+                    WakeWordRuntimeState.AwaitingUser ->
+                        stringResource(R.string.wake_word_status_detected)
+                    WakeWordRuntimeState.Error ->
+                        stringResource(R.string.wake_word_status_error)
+                },
+            )
+
+            Spacer(Modifier.height(8.dp))
+            FilledTonalButton(
+                onClick = onTest,
+                enabled = runtimeState == WakeWordRuntimeState.Listening &&
+                    testState.phase != WakeWordTestPhase.Listening,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    if (testState.phase == WakeWordTestPhase.Listening) {
+                        stringResource(R.string.wake_word_test_listening)
+                    } else {
+                        stringResource(R.string.wake_word_test_action)
+                    }
+                )
+            }
+            if (testState.phase == WakeWordTestPhase.Listening) {
+                LinearProgressIndicator(
+                    progress = { testState.inputLevel },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            val testStatus = when (testState.phase) {
+                WakeWordTestPhase.Idle -> null
+                WakeWordTestPhase.Listening ->
+                    stringResource(R.string.wake_word_test_prompt)
+                WakeWordTestPhase.Detected ->
+                    stringResource(R.string.wake_word_test_detected)
+                WakeWordTestPhase.TimedOut ->
+                    stringResource(R.string.wake_word_test_timed_out)
+                WakeWordTestPhase.Unavailable ->
+                    stringResource(R.string.wake_word_test_unavailable)
+            }
+            testStatus?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (testState.phase == WakeWordTestPhase.Detected) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+            }
+
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = stringResource(
+                    R.string.wake_word_sensitivity_value,
+                    sensitivityDraft,
+                ),
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Text(
+                text = stringResource(R.string.wake_word_sensitivity_desc),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Slider(
+                value = sensitivityDraft,
+                onValueChange = { sensitivityDraft = it },
+                onValueChangeFinished = { onSensitivityChange(sensitivityDraft) },
+                valueRange = 0.2f..0.9f,
+                steps = 6,
+            )
+
+            Text(
+                text = stringResource(
+                    R.string.wake_word_confirmation_frames,
+                    confirmationFramesDraft,
+                ),
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Text(
+                text = stringResource(R.string.wake_word_confirmation_frames_desc),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Slider(
+                value = confirmationFramesDraft.toFloat(),
+                onValueChange = {
+                    confirmationFramesDraft = it.toInt().coerceIn(1, 5)
+                },
+                onValueChangeFinished = {
+                    onConfirmationFramesChange(confirmationFramesDraft)
+                },
+                valueRange = 1f..5f,
+                steps = 3,
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.wake_word_new_session),
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Text(
+                        text = stringResource(R.string.wake_word_new_session_desc),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = preferences.startNewSession,
+                    onCheckedChange = onStartNewSessionChange,
+                )
+            }
+        }
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+        Text(
+            text = stringResource(R.string.wake_word_privacy_battery),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Barge-in.
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun BargeInCard(
+    bargeInPrefs: BargeInPreferences,
+    aecAvailable: Boolean,
+    settingsViewModel: VoiceSettingsViewModel,
+) {
+    SectionCard(title = stringResource(R.string.voice_settings_barge_in_title)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(stringResource(R.string.voice_settings_barge_in_master), style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    text = stringResource(R.string.voice_settings_barge_in_master_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = bargeInPrefs.enabled,
+                onCheckedChange = { settingsViewModel.setBargeInEnabled(it) },
+            )
+        }
+
+        if (!aecAvailable) {
+            // Badge sits directly below the master toggle so the explanation
+            // stays adjacent to the control. We do NOT disable the toggle —
+            // barge-in still works on AEC-less devices, just more
+            // false-trigger-prone.
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Warning,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.size(8.dp))
+                Text(
+                    text = stringResource(R.string.voice_settings_barge_in_aec_warning),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        if (bargeInPrefs.enabled) {
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+            Text(
+                text = stringResource(R.string.voice_settings_sensitivity),
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Text(
+                text = stringResource(R.string.voice_settings_sensitivity_desc),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            val sensitivityOptions = listOf(
+                BargeInSensitivity.Off,
+                BargeInSensitivity.Low,
+                BargeInSensitivity.Default,
+                BargeInSensitivity.High,
+            )
+            val sensitivityLabels = listOf(
+                stringResource(R.string.voice_settings_sensitivity_off),
+                stringResource(R.string.voice_settings_sensitivity_low),
+                stringResource(R.string.voice_settings_sensitivity_default),
+                stringResource(R.string.voice_settings_sensitivity_high),
+            )
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                sensitivityOptions.forEachIndexed { index, option ->
+                    SegmentedButton(
+                        shape = SegmentedButtonDefaults.itemShape(
+                            index = index,
+                            count = sensitivityOptions.size,
+                        ),
+                        onClick = { settingsViewModel.setBargeInSensitivity(option) },
+                        selected = option == bargeInPrefs.sensitivity,
+                    ) {
+                        Text(
+                            sensitivityLabels[index],
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text = stringResource(
+                    R.string.voice_settings_barge_in_rms_multiplier,
+                    bargeInPrefs.thresholdMultiplier,
+                ),
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Text(
+                text = stringResource(R.string.voice_settings_barge_in_rms_multiplier_desc),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Slider(
+                value = bargeInPrefs.thresholdMultiplier,
+                onValueChange = settingsViewModel::setBargeInThresholdMultiplier,
+                valueRange = 1f..8f,
+                steps = 13,
+            )
+
+            Text(
+                text = stringResource(
+                    R.string.voice_settings_barge_in_playback_grace,
+                    bargeInPrefs.playbackGraceMs / 1000f,
+                ),
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Text(
+                text = stringResource(R.string.voice_settings_barge_in_playback_grace_desc),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Slider(
+                value = bargeInPrefs.playbackGraceMs.toFloat(),
+                onValueChange = { settingsViewModel.setBargeInPlaybackGraceMs(it.toLong()) },
+                valueRange = 0f..2000f,
+                steps = 7,
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        stringResource(R.string.voice_settings_resume_after_interruption),
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Text(
+                        text = stringResource(R.string.voice_settings_resume_after_interruption_desc),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = bargeInPrefs.resumeAfterInterruption,
+                    onCheckedChange = {
+                        settingsViewModel.setResumeAfterInterruption(it)
+                    },
+                )
+            }
+
+
+            SettingSwitchRow(
+                title = stringResource(R.string.voice_settings_barge_in_debug),
+                detail = stringResource(R.string.voice_settings_barge_in_debug_desc),
+                checked = bargeInPrefs.debugDiagnostics,
+                onCheckedChange = settingsViewModel::setBargeInDebugDiagnostics,
+            )
+
+            Spacer(Modifier.height(8.dp))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Speech-to-Text — provider/model labels (dead language radios moved to the
+// Coming-soon expander; WP-V3).
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun SpeechToTextCard(
+    relayVoiceReady: Boolean,
+    configState: VoiceConfigUiState,
+) {
+    SectionCard(title = stringResource(R.string.voice_settings_stt_title)) {
+        if (!relayVoiceReady) {
+            Text(
+                text = stringResource(R.string.voice_settings_stt_standard_desc),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            val unavailableLabel = stringResource(R.string.voice_settings_provider_unavailable)
+            val loadingLabel = stringResource(R.string.voice_settings_loading)
+            val yesLabel = stringResource(R.string.voice_settings_yes)
+            val noLabel = stringResource(R.string.voice_settings_no)
+            ProviderRow(
+                label = stringResource(R.string.voice_settings_label_provider),
+                value = configState.voiceConfig?.stt?.provider
+                    ?: (configState.voiceConfigError?.let { unavailableLabel } ?: loadingLabel),
+            )
+            configState.voiceConfig?.stt?.let { stt ->
+                ProviderRow(label = stringResource(R.string.voice_settings_label_enabled), value = if (stt.isEnabled) yesLabel else noLabel)
+            }
+            configState.voiceConfig?.stt?.model?.let { model ->
+                ProviderRow(label = stringResource(R.string.voice_settings_label_model), value = model)
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test current engine.
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun TestCurrentEngineCard(
+    currentEngine: VoiceEngineMode,
+    relayVoiceReady: Boolean,
+    configState: VoiceConfigUiState,
+    displayProfile: Profile?,
+    voiceViewModel: VoiceViewModel,
+) {
+    val context = LocalContext.current
+    var currentEngineTestRunning by remember { mutableStateOf(false) }
+    var currentEngineTestResult by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(currentEngine) {
+        currentEngineTestRunning = false
+        currentEngineTestResult = null
+    }
+
+    val playingSampleLabel = stringResource(R.string.voice_settings_playing_output_sample)
+    val outputSuccessLabel = stringResource(R.string.voice_settings_output_test_success)
+    val playbackErrorLabel = stringResource(R.string.voice_settings_playback_error)
+    val startingSampleLabel = stringResource(R.string.voice_settings_starting_realtime_sample)
+    val realtimeSuccessLabel = stringResource(R.string.voice_settings_realtime_test_success)
+    val providerErrorLabel = stringResource(R.string.voice_settings_provider_error)
+    val loadingLabel = stringResource(R.string.voice_settings_loading)
+    val notSetLabel = stringResource(R.string.voice_settings_not_set)
+    val hermesEngineLabel = stringResource(R.string.voice_settings_engine_hermes)
+    val realtimeEngineLabel = stringResource(R.string.voice_settings_engine_realtime)
+    val hermesRouteLabel = stringResource(R.string.voice_settings_route_hermes)
+    val serverConfiguredTtsLabel = stringResource(R.string.voice_settings_server_configured_tts)
+    val outputTestFailedFmt = context.getString(R.string.voice_settings_output_test_failed_format)
+    val realtimeTestFailedFmt = context.getString(R.string.voice_settings_realtime_test_failed_format)
+
+    SectionCard(title = stringResource(R.string.voice_settings_test_engine_title)) {
+        ProviderRow(
+            label = stringResource(R.string.voice_settings_label_engine),
+            value = when (currentEngine) {
+                VoiceEngineMode.HermesVoiceOutput -> hermesEngineLabel
+                VoiceEngineMode.RealtimeAgent -> realtimeEngineLabel
+            },
+        )
+        if (currentEngine == VoiceEngineMode.HermesVoiceOutput) {
+            if (relayVoiceReady) {
+                ProviderRow(
+                    label = stringResource(R.string.voice_settings_label_profile),
+                    value = configState.voiceOutputConfig?.let { config ->
+                        voiceProfileLabel(config.profile, displayProfile)
+                    } ?: voiceProfileLabel(null, displayProfile),
+                )
+                ProviderRow(
+                    label = stringResource(R.string.voice_settings_label_voice),
+                    value = listOfNotNull(
+                        configState.voiceOutputConfig?.default_provider,
+                        configState.voiceOutputConfig?.default_model,
+                        configState.voiceOutputConfig?.default_voice,
+                    ).joinToString(" / ").ifBlank { loadingLabel },
+                )
+            } else {
+                ProviderRow(label = stringResource(R.string.voice_settings_label_route), value = hermesRouteLabel)
+                ProviderRow(label = stringResource(R.string.voice_settings_label_voice), value = serverConfiguredTtsLabel)
+            }
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+            Text(
+                text = stringResource(R.string.voice_settings_play_sample_desc),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            FilledTonalButton(
+                onClick = {
+                    currentEngineTestRunning = true
+                    currentEngineTestResult = playingSampleLabel
+                    voiceViewModel.testVoice { result ->
+                        currentEngineTestRunning = false
+                        currentEngineTestResult = if (result.isSuccess) {
+                            outputSuccessLabel
+                        } else {
+                            val msg = result.exceptionOrNull()?.message ?: playbackErrorLabel
+                            outputTestFailedFmt.format(msg)
+                        }
+                    }
+                },
+                enabled = !currentEngineTestRunning,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.PlayArrow,
+                    contentDescription = null,
+                )
+                Spacer(Modifier.size(8.dp))
+                Text(stringResource(R.string.voice_settings_play_output_test))
+            }
+        } else {
+            // Realtime: show the saved/active realtime config (the editor card
+            // holds the unsaved draft; here we report what's actually live).
+            val realtime = configState.realtimeConfig
+            ProviderRow(label = stringResource(R.string.voice_settings_label_provider), value = realtime?.default_provider?.takeIf { it.isNotBlank() } ?: notSetLabel)
+            ProviderRow(label = stringResource(R.string.voice_settings_label_model), value = realtime?.default_model?.takeIf { it.isNotBlank() } ?: notSetLabel)
+            ProviderRow(label = stringResource(R.string.voice_settings_label_voice), value = realtime?.default_voice?.takeIf { it.isNotBlank() } ?: notSetLabel)
+            ProviderRow(label = stringResource(R.string.voice_settings_label_sample_rate), value = stringResource(R.string.voice_settings_hz_value, realtime?.sample_rate ?: 0))
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+            Text(
+                text = stringResource(R.string.voice_settings_realtime_test_desc),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            FilledTonalButton(
+                onClick = {
+                    currentEngineTestRunning = true
+                    currentEngineTestResult = startingSampleLabel
+                    voiceViewModel.testRealtimeAgent { result ->
+                        currentEngineTestRunning = false
+                        currentEngineTestResult = if (result.isSuccess) {
+                            realtimeSuccessLabel
+                        } else {
+                            val msg = result.exceptionOrNull()?.message ?: providerErrorLabel
+                            realtimeTestFailedFmt.format(msg)
+                        }
+                    }
+                },
+                enabled = !currentEngineTestRunning,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.PlayArrow,
+                    contentDescription = null,
+                )
+                Spacer(Modifier.size(8.dp))
+                Text(stringResource(R.string.voice_settings_play_realtime_test))
+            }
+        }
+        currentEngineTestResult?.let { result ->
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = result,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (
+                    result == playingSampleLabel ||
+                    result == startingSampleLabel ||
+                    result == outputSuccessLabel ||
+                    result == realtimeSuccessLabel
+                ) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.error
+                },
+            )
+        }
+    }
+}
+
+// ===========================================================================
+// Standard-path server voice config editor.
+//
+// Edits the host's tts.*/stt.* config via the dashboard /api/config surface —
+// the same config.yaml the dashboard's own Audio settings write, and the same
+// values the standard (no-Relay) /api/audio/* voice path reads. Standard voice
+// follows the selected profile for audio-route catalogs; config writes retain
+// their existing explicit scope. Schema (/api/config/schema) drives rendering;
+// values (/api/config) seed current state; PUT writes the whole tree back with
+// the edited leaves merged in. Includes the ElevenLabs voice picker — the one
+// genuine desktop voice feature the app previously lacked.
+// ===========================================================================
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun StandardVoiceServerConfigCard(
+    client: DashboardApiClient,
+    profileName: String?,
+    onOpenManage: (() -> Unit)?,
+    onMessage: (String) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var loading by remember { mutableStateOf(false) }
+    var values by remember { mutableStateOf<JsonObject?>(null) }
+    var fields by remember { mutableStateOf<List<ConfigSchemaField>>(emptyList()) }
+    var elevenVoices by remember { mutableStateOf<ElevenLabsVoices?>(null) }
+    var toolsetProviders by remember { mutableStateOf(emptyList<com.hermesandroid.relay.network.upstream.TtsToolsetProvider>()) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var signInRequired by remember { mutableStateOf(false) }
+    var saving by remember { mutableStateOf(false) }
+    var edits by remember { mutableStateOf<Map<String, JsonElement>>(emptyMap()) }
+    var reloadNonce by remember { mutableStateOf(0) }
+
+    val signInToEditMsg = stringResource(R.string.voice_settings_signin_to_edit)
+    val couldNotLoadMsg = stringResource(R.string.voice_settings_could_not_load_config)
+    val voiceConfigSavedMsg = stringResource(R.string.voice_settings_voice_config_saved)
+    val saveFailedMsg = stringResource(R.string.voice_settings_save_failed)
+    val signInRequiredMsg = stringResource(R.string.voice_settings_signin_required)
+    val couldNotLoadConfigMsg = stringResource(R.string.voice_settings_could_not_load_config)
+
+    LaunchedEffect(client, profileName, reloadNonce) {
+        loading = true
+        error = null
+        signInRequired = false
+        val cfg = client.getConfig()
+        val sch = client.getConfigSchema()
+        if (cfg.isSuccess && sch.isSuccess) {
+            values = cfg.getOrNull()
+            fields = voiceConfigFields(parseConfigSchema(sch.getOrNull() ?: JsonObject(emptyMap())))
+            edits = emptyMap()
+            // Best-effort; only consulted when the TTS provider is elevenlabs.
+            elevenVoices = client.getElevenLabsVoices(profileName).getOrNull()
+            // Best-effort runtime provider registry. Newer upstream builds
+            // include command and plugin providers that the static config
+            // schema cannot enumerate.
+            toolsetProviders = client.getTtsToolsetConfig()
+                .getOrNull()
+                ?.let(::parseTtsToolsetProviders)
+                .orEmpty()
+        } else {
+            val ex = cfg.exceptionOrNull() ?: sch.exceptionOrNull()
+            val msg = ex?.message.orEmpty()
+            signInRequired = msg.contains("401") || msg.contains("403") ||
+                msg.contains("sign-in", ignoreCase = true)
+            error = if (signInRequired) {
+                signInToEditMsg
+            } else {
+                ex?.message ?: couldNotLoadMsg
+            }
+        }
+        loading = false
+    }
+
+    SectionCard(title = stringResource(R.string.voice_settings_server_config_title), badge = stringResource(R.string.voice_settings_standard_badge)) {
+        Text(
+            text = stringResource(R.string.voice_settings_server_config_desc),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        val tree = values
+        if (tree != null) {
+            // current = pending edit, else the loaded value at the dot-path.
+            fun current(key: String): JsonElement? = edits[key] ?: configValueAt(tree, key)
+            fun currentString(key: String): String =
+                (current(key) as? JsonPrimitive)?.contentOrNull.orEmpty()
+            fun setEdit(key: String, value: JsonElement) { edits = edits + (key to value) }
+
+            val ttsProvider = currentString("tts.provider")
+            val sttProvider = currentString("stt.provider")
+
+            val behaviorFields = fields.filter { field -> field.key.startsWith("voice.") }
+            if (behaviorFields.isNotEmpty()) {
+                Spacer(Modifier.height(4.dp))
+                Text(stringResource(R.string.voice_settings_host_behavior_title), style = MaterialTheme.typography.labelLarge)
+                Text(
+                    text = stringResource(R.string.voice_settings_host_behavior_body),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                behaviorFields.forEach { field ->
+                    ConfigFieldRow(field, current(field.key), null) { setEdit(field.key, it) }
+                }
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+            }
+
+            Text(stringResource(R.string.voice_settings_tts_title), style = MaterialTheme.typography.labelLarge)
+
+            fields.firstOrNull { it.key == "tts.provider" }?.let { field ->
+                val schemaChoices = field.options.map { VoiceChoice(value = it) }
+                val runtimeChoices = toolsetProviders.map { provider ->
+                    VoiceChoice(
+                        value = provider.id,
+                        label = buildString {
+                            append(provider.name)
+                            providerStatusLabel(provider.status)?.let { append(" · ").append(it) }
+                        },
+                    )
+                }
+                val runtimeChoicesById = runtimeChoices.associateBy { it.value }
+                val mergedChoices = schemaChoices.map { choice ->
+                    runtimeChoicesById[choice.value] ?: choice
+                } + runtimeChoices.filter { runtime ->
+                    schemaChoices.none { it.value == runtime.value }
+                }
+                ConfigFieldRow(
+                    field = field,
+                    current = current(field.key),
+                    overrideChoices = mergedChoices.withCurrent(ttsProvider),
+                    onEdit = { setEdit(field.key, it) },
+                )
+            }
+            if (ttsProvider.isNotBlank()) {
+                val selectedProviderFields = fields.filter { it.key.startsWith("tts.$ttsProvider.") }
+                selectedProviderFields.forEach { field ->
+                    val isElevenVoice = field.key == "tts.elevenlabs.voice_id" &&
+                        elevenVoices?.available == true
+                    ConfigFieldRow(
+                        field = field,
+                        current = current(field.key),
+                        overrideChoices = if (isElevenVoice) {
+                            elevenVoices?.voices?.map { VoiceChoice(value = it.voiceId, label = it.label) }
+                        } else {
+                            null
+                        },
+                        onEdit = { setEdit(field.key, it) },
+                    )
+                }
+                if (
+                    selectedProviderFields.isEmpty() &&
+                    toolsetProviders.any { it.id == ttsProvider }
+                ) {
+                    Text(
+                        text = "This installed provider uses its own defaults. Configure credentials and additional options in Manage.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (ttsProvider == "elevenlabs" && elevenVoices?.available == false) {
+                    Text(
+                        text = stringResource(R.string.voice_settings_no_elevenlabs_key),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+            Text(stringResource(R.string.voice_settings_stt_title), style = MaterialTheme.typography.labelLarge)
+
+            fields.firstOrNull { it.key == "stt.enabled" }?.let { field ->
+                ConfigFieldRow(field, current(field.key), null) { setEdit(field.key, it) }
+            }
+            fields.firstOrNull { it.key == "stt.echo_transcripts" }?.let { field ->
+                ConfigFieldRow(field, current(field.key), null) { setEdit(field.key, it) }
+            }
+            fields.firstOrNull { it.key == "stt.provider" }?.let { field ->
+                ConfigFieldRow(field, current(field.key), null) { setEdit(field.key, it) }
+            }
+            val sttEnabled = (current("stt.enabled") as? JsonPrimitive)?.booleanOrNull ?: false
+            if (sttEnabled && sttProvider.isNotBlank()) {
+                fields.filter { it.key.startsWith("stt.$sttProvider.") }.forEach { field ->
+                    ConfigFieldRow(field, current(field.key), null) { setEdit(field.key, it) }
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                FilledTonalButton(
+                    onClick = {
+                        val pending = edits
+                        saving = true
+                        scope.launch {
+                            // GET-merged tree -> PUT whole document (upstream
+                            // save_config overwrites; a partial PUT would drop keys).
+                            val merged = applyConfigEdits(tree, pending)
+                            val result = client.updateConfig(merged, profile = null)
+                            saving = false
+                            result.fold(
+                                onSuccess = {
+                                    values = merged
+                                    edits = emptyMap()
+                                    onMessage(voiceConfigSavedMsg)
+                                },
+                                onFailure = { onMessage(it.message ?: saveFailedMsg) },
+                            )
+                        }
+                    },
+                    enabled = edits.isNotEmpty() && !saving,
+                ) { Text(if (saving) stringResource(R.string.voice_settings_saving_ellipsis) else stringResource(R.string.voice_settings_save)) }
+
+                if (edits.isNotEmpty() && !saving) {
+                    TextButton(onClick = { edits = emptyMap() }) { Text(stringResource(R.string.voice_settings_discard)) }
+                }
+            }
+        } else if (loading) {
+            Spacer(Modifier.height(8.dp))
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        } else if (signInRequired) {
+            Text(
+                text = error ?: signInRequiredMsg,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            onOpenManage?.let { open ->
+                TextButton(onClick = open) { Text(stringResource(R.string.voice_settings_open_manage_signin)) }
+            }
+        } else {
+            Text(
+                text = error ?: couldNotLoadConfigMsg,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+            )
+            TextButton(onClick = { reloadNonce++ }) { Text(stringResource(R.string.voice_settings_retry)) }
+        }
+    }
+}
+
+/**
+ * One editable row for a [ConfigSchemaField]. [overrideChoices] forces a
+ * dropdown regardless of the field's declared type — used for the ElevenLabs
+ * voice picker, where a plain `string` schema field is upgraded to a list when
+ * voices are available. [onEdit] receives the new value as a [JsonElement] for
+ * direct merge into the config tree.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ConfigFieldRow(
+    field: ConfigSchemaField,
+    current: JsonElement?,
+    overrideChoices: List<VoiceChoice>?,
+    onEdit: (JsonElement) -> Unit,
+) {
+    val label = standardConfigFieldLabel(field.key)
+    val description = standardConfigFieldDescription(field)
+    val str = (current as? JsonPrimitive)?.contentOrNull.orEmpty()
+    when {
+        overrideChoices != null -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            VoiceChoiceDropdown(
+                label = label,
+                value = str,
+                choices = overrideChoices,
+                onValueChange = { onEdit(JsonPrimitive(it)) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            ConfigFieldDescription(description)
+        }
+
+        field.type == ConfigFieldType.Select -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            VoiceChoiceDropdown(
+                label = label,
+                value = str,
+                choices = field.options.map { VoiceChoice(value = it) }.withCurrent(str),
+                onValueChange = { onEdit(JsonPrimitive(it)) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            ConfigFieldDescription(description)
+        }
+
+        field.type == ConfigFieldType.Boolean -> {
+            val checked = (current as? JsonPrimitive)?.booleanOrNull ?: false
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(label, style = MaterialTheme.typography.bodyMedium)
+                    ConfigFieldDescription(description)
+                }
+                Switch(checked = checked, onCheckedChange = { onEdit(JsonPrimitive(it)) })
+            }
+        }
+
+        field.type == ConfigFieldType.Number -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            OutlinedTextField(
+                value = str,
+                onValueChange = { input ->
+                    val parsed = input.toLongOrNull()?.let { JsonPrimitive(it) }
+                        ?: input.toDoubleOrNull()?.let { JsonPrimitive(it) }
+                        ?: JsonPrimitive(input)
+                    onEdit(parsed)
+                },
+                label = { Text(label) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            ConfigFieldDescription(description)
+        }
+
+        else -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            OutlinedTextField(
+                value = str,
+                onValueChange = { onEdit(JsonPrimitive(it)) },
+                label = { Text(label) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            ConfigFieldDescription(description)
+        }
+    }
+}
+
+@Composable
+private fun ConfigFieldDescription(description: String?) {
+    description?.takeIf { it.isNotBlank() }?.let {
+        Text(
+            text = it,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun standardConfigFieldLabel(key: String): String = when {
+    key == "tts.provider" || key == "stt.provider" -> stringResource(R.string.voice_settings_label_provider)
+    key == "stt.enabled" -> stringResource(R.string.voice_settings_stt_title)
+    key == "voice.auto_tts" -> stringResource(R.string.voice_settings_auto_speak)
+    key.endsWith(".model") || key.endsWith(".model_id") -> stringResource(R.string.voice_settings_label_model)
+    key.endsWith(".voice") || key.endsWith(".voice_id") -> stringResource(R.string.voice_settings_label_voice)
+    key.endsWith(".language") || key.endsWith(".language_code") -> stringResource(R.string.voice_settings_label_language)
+    else -> key.substringAfterLast('.')
+        .removeSuffix("_id")
+        .split('_')
+        .joinToString(" ") { word -> word.replaceFirstChar { it.uppercase() } }
+}
+
+@Composable
+private fun standardConfigFieldDescription(field: ConfigSchemaField): String? = when {
+    field.key == "tts.provider" -> stringResource(R.string.voice_settings_provider_desc)
+    field.key == "voice.auto_tts" -> stringResource(R.string.voice_settings_auto_speak_desc)
+    field.key.startsWith("tts.") &&
+        (field.key.endsWith(".model") || field.key.endsWith(".model_id")) -> stringResource(R.string.voice_settings_model_desc)
+    field.key.endsWith(".voice") || field.key.endsWith(".voice_id") -> stringResource(R.string.voice_settings_voice_desc)
+    field.key.endsWith(".language") || field.key.endsWith(".language_code") -> stringResource(R.string.voice_settings_language_desc)
+    else -> field.description
+}
+
+private fun providerStatusLabel(status: String?): String? = when (status) {
+    "ready" -> "Ready"
+    "needs_setup" -> "Needs setup"
+    "needs_auth" -> "Sign-in required"
+    "needs_keys" -> "Key required"
+    else -> null
+}
+
+// ===========================================================================
+// Pure helpers (unchanged from the pre-refactor screen; providerOptionStatus
+// moved to VoiceSettingsViewModel with the fetch).
+// ===========================================================================
+
+@Composable
+private fun realtimeProviderList(config: RealtimeVoiceConfig): String {
+    val ids = config.providers.map { provider -> provider.id }.filter { it.isNotBlank() }
+    return ids.joinToString(", ").ifBlank { stringResource(R.string.voice_settings_none) }
+}
+
+@Composable
+private fun voiceOutputProviderList(config: VoiceOutputConfig): String {
+    val ids = config.providers.map { provider -> provider.id }.filter { it.isNotBlank() }
+    return ids.joinToString(", ").ifBlank { stringResource(R.string.voice_settings_none) }
+}
+
+@Composable
+private fun realtimeAuthLabel(config: RealtimeVoiceConfig): String {
+    val notReported = stringResource(R.string.voice_settings_auth_not_reported)
+    val auth = config.auth ?: return notReported
+    return when {
+        auth.xai_oauth -> stringResource(R.string.voice_settings_auth_hermes_xai_oauth)
+        auth.xai_env -> stringResource(R.string.voice_settings_auth_xai_env)
+        auth.openai_env -> stringResource(R.string.voice_settings_auth_openai_env)
+        else -> stringResource(R.string.voice_settings_auth_server_managed)
+    }
+}
+
+@Composable
+private fun voiceOutputAuthLabel(config: VoiceOutputConfig): String {
+    val notReported = stringResource(R.string.voice_settings_auth_not_reported)
+    val auth = config.auth ?: return notReported
+    return when {
+        auth.xai_oauth -> stringResource(R.string.voice_settings_auth_xai_oauth)
+        auth.xai_env -> stringResource(R.string.voice_settings_auth_xai_env)
+        auth.openai_env -> stringResource(R.string.voice_settings_auth_openai_env)
+        else -> stringResource(R.string.voice_settings_auth_server_managed)
+    }
+}
+
+@Composable
+private fun voiceProfileLabel(profile: String?, selectedProfile: Profile?): String {
+    val selectedName = selectedProfile?.name?.takeIf { it.isNotBlank() }
+    val selectedLabel = selectedProfile?.description?.takeIf { it.isNotBlank() }
+        ?: selectedName
+    return when {
+        !profile.isNullOrBlank() && selectedLabel != null && profile == selectedName ->
+            stringResource(R.string.voice_settings_profile_label_with_profile, selectedLabel, profile)
+        !profile.isNullOrBlank() -> profile
+        selectedLabel != null -> stringResource(R.string.voice_settings_profile_label_pending, selectedLabel)
+        else -> stringResource(R.string.voice_settings_server_default)
+    }
+}
+
+@Composable
+private fun voiceScopeLabel(scope: String?, fallbackToGlobal: Boolean): String {
+    val base = when (scope) {
+        "profile" -> stringResource(R.string.voice_settings_scope_profile_config)
+        "relay" -> stringResource(R.string.voice_settings_scope_relay_config)
+        "global" -> stringResource(R.string.voice_settings_scope_global_config)
+        else -> scope?.takeIf { it.isNotBlank() } ?: stringResource(R.string.voice_settings_server_default)
+    }
+    return if (fallbackToGlobal) stringResource(R.string.voice_settings_scope_with_fallback, base) else base
+}
+
+private data class RouteOption(
+    val route: VoiceAudioRoute,
+    val label: String,
+    val detail: String,
+    val status: String,
+    val statusOk: Boolean,
+    val badge: String? = null,
+)
+
+/**
+ * Pure coercion of a persisted [route] to a reachable one for the given
+ * [engine] / [relayVoiceReady] combination. Keeps the engine/route radios from
+ * leaving a stale invalid selection persisted (e.g. a Relay route after Relay
+ * was unpaired). Unit-testable; the composable just applies the result.
+ *
+ * - Engine == RealtimeAgent requires a paired Relay; this helper only governs
+ *   the audio route, so when relay isn't ready the route is forced to [Auto]
+ *   (the caller separately forces the engine back to HermesVoiceOutput).
+ * - [VoiceAudioRoute.Relay] is only valid when [relayVoiceReady].
+ * - [VoiceAudioRoute.Auto] is always valid (it self-resolves at runtime).
+ * - [VoiceAudioRoute.Standard] is left as-is — its reachability is a live
+ *   dashboard probe the UI dims via `statusOk`, not something we can know here.
+ */
+internal fun coerceAudioRoute(
+    engine: VoiceEngineMode,
+    route: VoiceAudioRoute,
+    relayVoiceReady: Boolean,
+): VoiceAudioRoute = when {
+    route == VoiceAudioRoute.Relay && !relayVoiceReady -> VoiceAudioRoute.Auto
+    else -> route
+}
+
+internal data class VoiceChoice(
+    val value: String,
+    val label: String = value,
+    val detail: String? = null,
+    val group: String? = null,
+    val custom: Boolean = false,
+    val recommended: Boolean = false,
+    val enabled: Boolean = true,
+)
+
+private data class VoiceSelection(
+    val model: String,
+    val voice: String,
+    val sampleRate: String,
+    val language: String,
+)
+
+@Composable
+private fun providerChoices(
+    providers: List<RealtimeProviderInfo>,
+    current: String,
+): List<VoiceChoice> {
+    return providers
+        .map { provider ->
+            VoiceChoice(
+                value = provider.id,
+                label = provider.name?.takeIf { it.isNotBlank() } ?: provider.id,
+                detail = provider.id,
+            )
+        }
+        .withCurrent(current)
+}
+
+@Composable
+private fun valueChoices(
+    values: List<String>,
+    current: String,
+    labels: Map<String, String> = emptyMap(),
+): List<VoiceChoice> =
+    values.distinct().map { value ->
+        val label = labels[value]?.takeIf { it.isNotBlank() } ?: value
+        VoiceChoice(
+            value = value,
+            label = label,
+            detail = value.takeIf { label != value },
+        )
+    }.withCurrent(current)
+
+@Composable
+private fun voiceChoices(
+    provider: RealtimeProviderInfo?,
+    current: String,
+    model: String,
+): List<VoiceChoice> {
+    val voicesFallback = stringResource(R.string.voice_settings_voices_fallback)
+    val recommendedLabel = stringResource(R.string.voice_settings_recommended)
+    val customLabel = stringResource(R.string.voice_settings_custom)
+    if (provider == null) return emptyList<VoiceChoice>().withCurrent(current)
+    val orderedValues = mutableListOf<String>()
+    val groupLabels = mutableMapOf<String, String>()
+    val groupCustom = mutableMapOf<String, Boolean>()
+    provider.voice_groups.forEach { group ->
+        val label = group.label?.takeIf { it.isNotBlank() }
+            ?: group.id?.takeIf { it.isNotBlank() }
+            ?: voicesFallback
+        group.values.forEach { value ->
+            if (value.isNotBlank()) {
+                orderedValues.add(value)
+                groupLabels[value] = label
+                groupCustom[value] = group.custom
+            }
+        }
+    }
+    provider.voices.forEach { value ->
+        if (value.isNotBlank()) orderedValues.add(value)
+    }
+
+    val compatible = voiceCompatibilityFor(provider, model)
+    val compatibleSet = compatible?.toSet()
+    val recommended = provider.recommended_voices.toSet()
+    return orderedValues
+        .distinct()
+        .filter { value -> compatibleSet == null || value in compatibleSet || value == current }
+        .map { value ->
+            val metadata = provider.voice_metadata[value]
+            val label = metadata?.label?.takeIf { it.isNotBlank() }
+                ?: provider.voice_labels[value]?.takeIf { it.isNotBlank() }
+                ?: value
+            val isCustom = metadata?.custom == true || groupCustom[value] == true
+            val isRecommended = metadata?.recommended == true || value in recommended
+            val details = buildList {
+                if (label != value) add(value)
+                if (isRecommended) add(recommendedLabel)
+                if (isCustom) add(customLabel)
+                metadata?.source?.takeIf { it.isNotBlank() }?.let { add(it) }
+            }
+            VoiceChoice(
+                value = value,
+                label = label,
+                detail = details.joinToString(" · ").takeIf { it.isNotBlank() },
+                group = groupLabels[value],
+                custom = isCustom,
+                recommended = isRecommended,
+            )
+        }
+        .withCurrent(current)
+}
+
+@Composable
+private fun intChoices(values: List<Int>, current: String): List<VoiceChoice> =
+    values.distinct().map { VoiceChoice(it.toString(), stringResource(R.string.voice_settings_hz_value, it)) }.withCurrent(current)
+
+@Composable
+private fun List<VoiceChoice>.withCurrent(current: String): List<VoiceChoice> {
+    val trimmed = current.trim()
+    if (trimmed.isBlank() || any { it.value == trimmed }) return this
+    return listOf(
+        VoiceChoice(
+            value = trimmed,
+            label = stringResource(R.string.voice_settings_current_value, trimmed),
+            detail = stringResource(R.string.voice_settings_manual_entry),
+            group = stringResource(R.string.voice_settings_manual_group),
+        )
+    ) + this
+}
+
+private fun providerFor(
+    providers: List<RealtimeProviderInfo>,
+    providerId: String,
+): RealtimeProviderInfo? = providers.firstOrNull { it.id == providerId }
+
+private fun mergedProviders(
+    base: List<RealtimeProviderInfo>,
+    overrides: Map<String, RealtimeProviderInfo>,
+): List<RealtimeProviderInfo> {
+    if (overrides.isEmpty()) return base
+    val seen = mutableSetOf<String>()
+    val merged = base.map { provider ->
+        seen.add(provider.id)
+        overrides[provider.id] ?: provider
+    }.toMutableList()
+    overrides.values
+        .filter { provider -> provider.id !in seen }
+        .forEach { provider -> merged.add(provider) }
+    return merged
+}
+
+private fun selectionWithProviderDefaults(
+    provider: RealtimeProviderInfo,
+    model: String,
+    voice: String,
+    sampleRate: String,
+    language: String?,
+): VoiceSelection {
+    val nextModel = if (provider.models.isNotEmpty() && model !in provider.models) {
+        provider.models.first()
+    } else {
+        model
+    }
+    val nextVoice = if (provider.voices.isNotEmpty() && voice !in provider.voices) {
+        provider.voices.first()
+    } else {
+        voice
+    }
+    val compatibleVoice = voiceForModel(provider, nextModel, nextVoice)
+    val currentSampleRate = sampleRate.toIntOrNull()
+    val nextSampleRate = if (
+        provider.sample_rates.isNotEmpty() &&
+        currentSampleRate?.let { it in provider.sample_rates } != true
+    ) {
+        provider.sample_rates.first().toString()
+    } else {
+        sampleRate
+    }
+    val nextLanguage = if (
+        language != null &&
+        provider.languages.isNotEmpty() &&
+        language !in provider.languages
+    ) {
+        provider.languages.first()
+    } else {
+        language.orEmpty()
+    }
+    return VoiceSelection(
+        model = nextModel,
+        voice = compatibleVoice,
+        sampleRate = nextSampleRate,
+        language = nextLanguage,
+    )
+}
+
+private fun voiceForModel(
+    provider: RealtimeProviderInfo,
+    model: String,
+    current: String,
+): String {
+    val compatible = voiceCompatibilityFor(provider, model)
+    if (compatible.isNullOrEmpty()) {
+        return if (provider.voices.isNotEmpty() && current !in provider.voices) {
+            provider.voices.first()
+        } else {
+            current
+        }
+    }
+    if (current in compatible) return current
+    return compatible.firstOrNull() ?: current
+}
+
+private fun voiceCompatibilityFor(
+    provider: RealtimeProviderInfo,
+    model: String,
+): List<String>? {
+    val trimmed = model.trim()
+    if (trimmed.isBlank()) return null
+    return provider.model_voice_compatibility[trimmed]
+}
+
+private fun compatibilityNotice(
+    provider: RealtimeProviderInfo?,
+    model: String,
+    voice: String,
+    notAdvertisedMessage: String,
+): String? {
+    provider ?: return null
+    val compatible = voiceCompatibilityFor(provider, model) ?: return null
+    if (voice.isBlank() || voice in compatible) return null
+    return notAdvertisedMessage
+}
+
+private fun validationIssue(
+    validation: VoiceProviderValidationResponse?,
+    fallbackMessage: String,
+): String? {
+    if (validation == null || validation.valid) return null
+    val message = validation.checks.firstOrNull { it.status == "error" }
+        ?.message
+        ?.takeIf { it.isNotBlank() }
+    return message ?: fallbackMessage
+}
+
+private fun validationWarning(
+    validation: VoiceProviderValidationResponse?,
+    savedWithWarningFormat: String,
+): String? {
+    validation ?: return null
+    val message = validation.checks.firstOrNull { it.status == "warning" }
+        ?.message
+        ?.takeIf { it.isNotBlank() }
+    return message?.let { savedWithWarningFormat.format(it) }
+}
+
+private fun providerOptionsStatusText(
+    loading: Boolean,
+    status: String?,
+    refreshingMessage: String,
+): String? = when {
+    loading -> refreshingMessage
+    !status.isNullOrBlank() -> status
+    else -> null
+}
+
+@Composable
+private fun commonLanguages(current: String, provider: RealtimeProviderInfo?): List<VoiceChoice> {
+    return valueChoices(provider?.languages.orEmpty(), current, provider?.language_labels.orEmpty())
+}
+
+@Composable
+private fun voiceOutputSummary(
+    profile: Profile?,
+    currentEngine: VoiceEngineMode,
+    output: VoiceOutputConfig?,
+    realtime: RealtimeVoiceConfig?,
+    realtimeModel: String = "",
+    realtimeVoice: String = "",
+): Pair<String, String> {
+    val profileLabel = profile?.description?.takeIf { it.isNotBlank() }
+        ?: profile?.name?.takeIf { it.isNotBlank() }
+        ?: stringResource(R.string.voice_settings_server_default)
+    val outputLabel = output?.let { config ->
+        val provider = config.default_provider?.takeIf { it.isNotBlank() } ?: stringResource(R.string.voice_settings_summary_provider)
+        val voice = config.default_voice?.takeIf { it.isNotBlank() } ?: stringResource(R.string.voice_settings_summary_voice)
+        val model = config.default_model?.takeIf { it.isNotBlank() }
+        if (model == null) "$provider / $voice" else "$provider / $model / $voice"
+    } ?: stringResource(R.string.voice_settings_loading_output)
+    val realtimeLabel = realtime?.let { config ->
+        val provider = config.default_provider?.takeIf { it.isNotBlank() } ?: "realtime ..."
+        val model = realtimeModel.takeIf { it.isNotBlank() }
+            ?: config.default_model?.takeIf { it.isNotBlank() }
+        val voice = realtimeVoice.takeIf { it.isNotBlank() }
+            ?: config.default_voice?.takeIf { it.isNotBlank() }
+            ?: "voice ..."
+        if (model == null) "$provider / $voice" else "$provider / $model / $voice"
+    } ?: "realtime loading..."
+    return profileLabel to when (currentEngine) {
+        VoiceEngineMode.HermesVoiceOutput -> stringResource(R.string.voice_settings_summary_hermes_engine, outputLabel)
+        VoiceEngineMode.RealtimeAgent -> stringResource(R.string.voice_settings_summary_realtime_engine, realtimeLabel)
+    }
+}
+
+@Composable
+private fun VoiceProfileSummaryCard(
+    displayProfile: Profile?,
+    currentEngine: VoiceEngineMode,
+    output: VoiceOutputConfig?,
+    realtime: RealtimeVoiceConfig?,
+    realtimeModel: String,
+    realtimeVoice: String,
+    currentAudioRoute: VoiceAudioRoute,
+    relayVoiceReady: Boolean,
+    onClick: () -> Unit,
+) {
+    val (profileLabel, voiceSummary) = voiceOutputSummary(
+        profile = displayProfile,
+        currentEngine = currentEngine,
+        output = output,
+        realtime = realtime,
+        realtimeModel = realtimeModel,
+        realtimeVoice = realtimeVoice,
+    )
+    val profileScoped = currentEngine == VoiceEngineMode.RealtimeAgent ||
+        (relayVoiceReady && currentAudioRoute != VoiceAudioRoute.Standard)
+    val displayedVoiceSummary = if (profileScoped) {
+        voiceSummary
+    } else {
+        stringResource(R.string.voice_standard_host_config)
+    }
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        shape = appearanceRoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        ),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Surface(
+                modifier = Modifier.size(44.dp),
+                shape = appearanceRoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                contentColor = MaterialTheme.colorScheme.primary,
+            ) {
+                Icon(
+                    Icons.Filled.GraphicEq,
+                    contentDescription = null,
+                    modifier = Modifier.padding(10.dp),
+                )
+            }
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = if (currentEngine == VoiceEngineMode.RealtimeAgent) {
+                        "Real-time Voice Agent"
+                    } else {
+                        "Hermes Chat + Voice Output"
+                    },
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = profileLabel,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = displayedVoiceSummary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Surface(
+                shape = RoundedCornerShape(999.dp),
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                contentColor = MaterialTheme.colorScheme.primary,
+            ) {
+                Text(
+                    text = if (profileScoped) stringResource(R.string.voice_settings_label_profile) else stringResource(R.string.voice_settings_label_host),
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                )
+            }
+            Icon(Icons.Filled.ChevronRight, contentDescription = "Change voice mode")
+        }
+    }
+}
+
+@Composable
+private fun VoiceModePickerDialog(
+    currentEngine: VoiceEngineMode,
+    currentAudioRoute: VoiceAudioRoute,
+    relayVoiceReady: Boolean,
+    onEngineChange: (VoiceEngineMode) -> Unit,
+    onRouteChange: (VoiceAudioRoute) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.settings_voice_mode)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(
+                    VoiceEngineMode.HermesVoiceOutput to ("Hermes Chat + Voice Output" to "Hermes answers with your selected TTS voice"),
+                    VoiceEngineMode.RealtimeAgent to ("Real-time Voice Agent" to "Low-latency provider-native conversation"),
+                ).forEach { (engine, copy) ->
+                    val available = engine != VoiceEngineMode.RealtimeAgent || relayVoiceReady
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(
+                                selected = currentEngine == engine,
+                                enabled = available,
+                                onClick = { onEngineChange(engine) },
+                            )
+                            .padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = currentEngine == engine, onClick = null, enabled = available)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(copy.first, style = MaterialTheme.typography.titleSmall)
+                            Text(copy.second, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+                if (currentEngine == VoiceEngineMode.HermesVoiceOutput) {
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    Text(stringResource(R.string.voice_settings_output_route_label), style = MaterialTheme.typography.labelLarge)
+                    listOf(
+                        VoiceAudioRoute.Auto to "Automatic",
+                        VoiceAudioRoute.Standard to stringResource(R.string.voice_provider_standard),
+                        VoiceAudioRoute.Relay to "Relay voice output",
+                    ).forEach { (route, label) ->
+                        val available = route != VoiceAudioRoute.Relay || relayVoiceReady
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .selectable(
+                                    selected = currentAudioRoute == route,
+                                    enabled = available,
+                                    onClick = { onRouteChange(route) },
+                                ),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(selected = currentAudioRoute == route, onClick = null, enabled = available)
+                            Text(label)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.settings_done)) } },
+    )
+}
+
+@Composable
+private fun StandardVoiceOutputOverview(
+    client: DashboardApiClient?,
+    availability: StandardVoiceAvailability,
+    onOpenManage: (() -> Unit)?,
+    voiceViewModel: VoiceViewModel,
+) {
+    val context = LocalContext.current
+    var values by remember(client) { mutableStateOf<JsonObject?>(null) }
+    var loading by remember(client) { mutableStateOf(client != null) }
+    LaunchedEffect(client) {
+        if (client == null) {
+            loading = false
+            values = null
+        } else {
+            loading = true
+            values = client.getConfig().getOrNull()
+            loading = false
+        }
+    }
+    if (loading) {
+        VoiceOutputLoadingSkeleton()
+        return
+    }
+    val provider = values
+        ?.let { configValueAt(it, "tts.provider") as? JsonPrimitive }
+        ?.contentOrNull
+        ?.takeIf { it.isNotBlank() }
+    val model = provider?.let { id ->
+        sequenceOf("tts.$id.model", "tts.$id.model_id")
+            .mapNotNull { key -> (values?.let { configValueAt(it, key) } as? JsonPrimitive)?.contentOrNull }
+            .firstOrNull { it.isNotBlank() }
+    }
+    val voice = provider?.let { id ->
+        sequenceOf("tts.$id.voice", "tts.$id.voice_id")
+            .mapNotNull { key -> (values?.let { configValueAt(it, key) } as? JsonPrimitive)?.contentOrNull }
+            .firstOrNull { it.isNotBlank() }
+    }
+    val ready = availability == StandardVoiceAvailability.Ready
+    StaticProviderCard(
+        provider = provider ?: stringResource(R.string.voice_provider_standard),
+        detail = when {
+            loading -> stringResource(R.string.voice_reading_host_config)
+            values == null -> stringResource(R.string.voice_open_manage_provider)
+            else -> stringResource(R.string.voice_uses_host_config)
+        },
+        ready = ready,
+        actionLabel = if (onOpenManage == null) null else context.getString(R.string.voice_settings_manage_provider),
+        onAction = onOpenManage,
+    )
+    StaticModelVoiceCard(
+        model = model ?: stringResource(R.string.settings_server_default),
+        voice = voice ?: stringResource(R.string.settings_server_default),
+        enabled = ready,
+        onPreview = { voiceViewModel.testVoice() },
+    )
+    LanguageQualitySummaryCard(summary = context.getString(R.string.voice_settings_host_wide_standard_desc))
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun VoiceChoiceDropdown(
+    label: String,
+    value: String,
+    choices: List<VoiceChoice>,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    var query by remember(label) { mutableStateOf("") }
+    val selected = choices.firstOrNull { it.value == value }
+    val displayValue = selected?.label ?: value
+    val searchable = choices.size > 12
+    val filteredChoices = remember(choices, query) {
+        val term = query.trim()
+        if (term.isBlank()) {
+            choices
+        } else {
+            choices.filter { choice ->
+                choice.value.contains(term, ignoreCase = true) ||
+                    choice.label.contains(term, ignoreCase = true) ||
+                    choice.detail.orEmpty().contains(term, ignoreCase = true) ||
+                    choice.group.orEmpty().contains(term, ignoreCase = true)
+            }
+        }
+    }
+    LaunchedEffect(expanded) {
+        if (!expanded) query = ""
+    }
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { if (enabled && choices.isNotEmpty()) expanded = !expanded },
+        modifier = modifier,
+    ) {
+        OutlinedTextField(
+            value = displayValue,
+            onValueChange = {},
+            readOnly = true,
+            singleLine = true,
+            enabled = enabled,
+            label = { Text(label) },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            modifier = Modifier
+                .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable, enabled)
+                .fillMaxWidth(),
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            modifier = Modifier.heightIn(max = 360.dp),
+        ) {
+            if (searchable) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    singleLine = true,
+                    label = { Text(stringResource(R.string.voice_settings_search)) },
+                )
+                HorizontalDivider()
+            }
+            var lastGroup: String? = null
+            filteredChoices.forEach { choice ->
+                val group = choice.group?.takeIf { it.isNotBlank() }
+                if (group != null && group != lastGroup) {
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = group,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        },
+                        onClick = {},
+                        enabled = false,
+                    )
+                    lastGroup = group
+                }
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(
+                                choice.label,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            choice.detail?.takeIf { it.isNotBlank() }?.let { detail ->
+                                Text(
+                                    text = detail,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    },
+                    onClick = {
+                        onValueChange(choice.value)
+                        expanded = false
+                    },
+                    enabled = choice.enabled,
+                )
+            }
+            if (filteredChoices.isEmpty()) {
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = stringResource(R.string.voice_settings_no_matches),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    },
+                    onClick = {},
+                    enabled = false,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdvancedManualToggle(
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+) {
+    TextButton(onClick = { onExpandedChange(!expanded) }) {
+        Text(if (expanded) stringResource(R.string.voice_settings_hide_advanced_manual) else stringResource(R.string.voice_settings_advanced_manual))
+    }
+}
+
+@Composable
+private fun SectionCard(
+    title: String,
+    badge: String? = null,
+    content: @Composable () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = appearanceRoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        ),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                badge?.let { ExperimentalBadge(it) }
+            }
+            Spacer(Modifier.height(8.dp))
+            content()
+        }
+    }
+}
+
+@Composable
+private fun ExperimentalBadge(text: String) {
+    val warning = text.equals("Experimental", ignoreCase = true)
+    Row(
+        modifier = Modifier
+            .background(
+                color = if (warning) {
+                    MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.72f)
+                } else {
+                    MaterialTheme.colorScheme.surfaceContainerHighest
+                },
+                shape = RoundedCornerShape(999.dp),
+            )
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        if (warning) {
+            Icon(
+                imageVector = Icons.Filled.Warning,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                modifier = Modifier.size(13.dp),
+            )
+        }
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (warning) {
+                MaterialTheme.colorScheme.onTertiaryContainer
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
+    }
+}
+
+@Composable
+private fun ProviderRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(0.38f),
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            textAlign = TextAlign.End,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(0.62f),
+        )
+    }
+}

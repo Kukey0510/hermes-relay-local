@@ -1,0 +1,187 @@
+package com.hermesandroid.relay.data
+
+/**
+ * Shared profile/personality display and request identity helpers.
+ *
+ * A null profile name is the app's explicit "Server default" state. It is
+ * intentionally distinct from a real profile whose name is literally
+ * `default`: the former follows the server's sticky default, while the latter
+ * explicitly addresses the root profile.
+ */
+object AgentDisplay {
+    const val SERVER_DEFAULT_PROFILE_KEY: String = "__server_default__"
+    private const val PROFILE_CONTEXT_SEPARATOR = "::"
+
+    data class ProfileContextIdentity(
+        val connectionId: String,
+        val profileKey: String,
+    ) {
+        /** Null means the upstream request must inherit Server Default. */
+        val requestProfileName: String?
+            get() = profileRequestName(profileKey)
+    }
+    private val GENERIC_MODEL_ALIASES = setOf(
+        "hermes-agent",
+        "hermes_agent",
+        "hermes agent",
+    )
+
+    // Only an explicit pick drives request identity. Server default is the null
+    // selection; a named `default` profile is an ordinary explicit pick.
+    @Suppress("UNUSED_PARAMETER")
+    fun effectiveProfile(
+        selectedProfile: Profile?,
+        profiles: List<Profile>,
+    ): Profile? = selectedProfile
+
+    // Display resolution never changes selection or persistence identity.
+    fun effectiveDisplayProfile(
+        selectedProfile: Profile?,
+        profiles: List<Profile>,
+        serverDefaultProfileName: String? = null,
+    ): Profile? {
+        selectedProfile?.let { return it }
+        val resolvedServerDefault = profileRequestName(serverDefaultProfileName)
+        // An absent roster row is not authority to substitute the root profile.
+        // Retain the confirmed name while its display metadata is loading.
+        return resolvedServerDefault?.let { activeName ->
+            profiles.firstOrNull { it.name == activeName }
+                ?: Profile(name = activeName, model = "")
+        }
+    }
+
+    // Match upstream Desktop: presentation-only display_name, then exact request name.
+    fun profileDisplayName(profile: Profile?): String? {
+        if (profile == null) return null
+        return profile.displayName.trim().takeIf(String::isNotEmpty)
+            ?: profile.name.trim().takeIf(String::isNotEmpty)
+    }
+
+    @Suppress("UNUSED_PARAMETER") // connectionLabel retained for source compatibility.
+    fun agentName(
+        profile: Profile?,
+        selectedPersonality: String,
+        defaultPersonality: String,
+        connectionLabel: String?,
+        localDisplayAlias: String? = null,
+    ): String {
+        localDisplayAlias(localDisplayAlias)?.let { return it }
+        profileDisplayName(profile)?.let { return it }
+
+        // "none"/"neutral" are the upstream "cleared overlay" aliases — treat
+        // them like "default" for identity: fall through to the server default
+        // identity rather than rendering the literal
+        // word as an agent name.
+        val personalityName = if (
+            isClearedPersonality(selectedPersonality) &&
+            defaultPersonality.isNotBlank()
+        ) {
+            defaultPersonality
+        } else if (isClearedPersonality(selectedPersonality)) {
+            ""
+        } else {
+            selectedPersonality
+        }
+
+        return when {
+            personalityName.isNotBlank() && personalityName != "default" ->
+                titleCase(personalityName.trim())
+            else -> "Hermes"
+        }
+    }
+
+    /** True for the upstream "clear the overlay" aliases (default == none == neutral). */
+    fun isClearedPersonality(value: String): Boolean =
+        value.trim().lowercase() in setOf("default", "none", "neutral", "")
+
+    fun personalityLabel(
+        selectedPersonality: String,
+        defaultPersonality: String,
+    ): String = when {
+        // Explicit "none" — show "None" (or the configured default name, if any)
+        // so the cleared-overlay state is legible in the picker header.
+        selectedPersonality.trim().lowercase() in setOf("none", "neutral") ->
+            if (defaultPersonality.isNotBlank()) titleCase(defaultPersonality.trim()) else "None"
+        selectedPersonality != "default" && selectedPersonality.isNotBlank() ->
+            titleCase(selectedPersonality.trim())
+        defaultPersonality.isNotBlank() -> titleCase(defaultPersonality.trim())
+        else -> "Default"
+    }
+
+    fun displayModelName(model: String?): String? =
+        model
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.takeUnless { it.lowercase() in GENERIC_MODEL_ALIASES }
+
+    /**
+     * A model string safe to SEND to the server as a model override or
+     * `config.set model=…`. Returns null for the generic agent placeholders
+     * ("hermes-agent", …) which are NOT real models — the server rejects them
+     * (HTTP 400) and falls back. Null means "send no model; use the server's
+     * configured default."
+     */
+    fun requestModelName(model: String?): String? =
+        model
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.takeUnless { it.lowercase() in GENERIC_MODEL_ALIASES }
+
+    fun normalizeSelection(profile: Profile?): Profile? = profile
+
+    fun profileRequestName(profileName: String?): String? =
+        profileName
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() && it != SERVER_DEFAULT_PROFILE_KEY }
+
+    /**
+     * The profile name that owns chat sessions for the current UI selection.
+     *
+     * [selectedProfileName] is null for the "Server default" row. That UI
+     * sentinel must remain distinct from the
+     * server's sticky active profile: a dashboard launched under the root home
+     * may still report `active=victor`, in which case upstream Gateway and
+     * dashboard session calls must explicitly target `victor`. The resolved
+     * server value deliberately keeps the literal `default` name so a dashboard
+     * launched under another profile can still address the root profile.
+     */
+    fun effectiveSessionProfileName(
+        selectedProfileName: String?,
+        serverDefaultProfileName: String?,
+    ): String? =
+        profileRequestName(selectedProfileName)
+            ?: serverDefaultProfileName?.trim()?.takeIf { it.isNotEmpty() }
+
+    fun profileSessionKey(profileName: String?): String =
+        profileRequestName(profileName) ?: SERVER_DEFAULT_PROFILE_KEY
+
+    fun profileContextKey(connectionId: String?, profileName: String?): String =
+        "${connectionId.orEmpty()}$PROFILE_CONTEXT_SEPARATOR${profileSessionKey(profileName)}"
+
+    /**
+     * Parse the canonical profile/context identity used by persisted chat state.
+     *
+     * Legacy or malformed opaque keys deliberately return null: recovery may
+     * still use the exact key for ownership, but must not invent an upstream
+     * profile override from it. The first separator is authoritative so legal
+     * profile names containing `::` remain round-trippable.
+     */
+    fun parseProfileContextKey(contextKey: String?): ProfileContextIdentity? {
+        val raw = contextKey?.trim().orEmpty()
+        val separator = raw.indexOf(PROFILE_CONTEXT_SEPARATOR)
+        if (separator <= 0 || separator + PROFILE_CONTEXT_SEPARATOR.length >= raw.length) return null
+        val connectionId = raw.substring(0, separator).trim()
+        val profileKey = raw.substring(separator + PROFILE_CONTEXT_SEPARATOR.length).trim()
+        if (connectionId.isEmpty() || profileKey.isEmpty()) return null
+        return ProfileContextIdentity(connectionId, profileKey)
+    }
+
+    fun localDisplayAlias(value: String?): String? =
+        value
+            ?.trim()
+            ?.replace(Regex("\\s+"), " ")
+            ?.takeIf { it.isNotEmpty() }
+
+    private fun titleCase(value: String): String =
+        value.replaceFirstChar { it.uppercase() }
+}

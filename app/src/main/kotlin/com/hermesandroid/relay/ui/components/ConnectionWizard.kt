@@ -1,0 +1,4288 @@
+@file:Suppress("LocalContextGetResourceValueCall")
+
+package com.hermesandroid.relay.ui.components
+
+import android.Manifest
+import android.content.ClipData
+import android.content.Intent
+import android.net.Uri
+import com.hermesandroid.relay.ui.UiMessageBus
+import androidx.annotation.StringRes
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.MenuBook
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Keyboard
+import androidx.compose.material.icons.filled.PhonelinkLock
+import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboard
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.res.stringResource
+import com.hermesandroid.relay.R
+import com.hermesandroid.relay.ui.theme.appearanceRoundedCornerShape
+import com.hermesandroid.relay.auth.AuthState
+import com.hermesandroid.relay.data.Connection
+import com.hermesandroid.relay.data.ConnectionValidation
+import com.hermesandroid.relay.data.EndpointCandidate
+import com.hermesandroid.relay.data.PairingPreferences
+import com.hermesandroid.relay.data.RelayEndpoint
+import com.hermesandroid.relay.network.shared.pluginProxyRoutesOrNull
+import com.hermesandroid.relay.data.displayLabel
+import com.hermesandroid.relay.data.hasSecureProxy
+import com.hermesandroid.relay.data.hasHermesReach
+import com.hermesandroid.relay.data.isDashboardRelayIngressUrl
+import com.hermesandroid.relay.data.presentationRouteUrl
+import com.hermesandroid.relay.data.secureLinkCoversAllServices
+import com.hermesandroid.relay.data.secureLinkServices
+import com.hermesandroid.relay.data.primaryRouteUrl
+import com.hermesandroid.relay.network.shared.HermesLanDiscovery
+import com.hermesandroid.relay.network.shared.HermesLanDiscoveryResult
+import com.hermesandroid.relay.util.ServerAddress
+import com.hermesandroid.relay.viewmodel.ConnectionViewModel
+import com.hermesandroid.relay.viewmodel.StandardVoiceAvailability
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
+import java.net.URI
+
+/**
+ * Shared Gateway wizard used by both onboarding (first run) and
+ * Settings → Gateways. Hermes setup starts with the one Dashboard address
+ * the phone can open, probes public `/api/status`, and lets advertised
+ * capabilities select authentication. A separate public sign-in URL is never
+ * universally required. Direct API, Relay pairing, and extra LAN/Tailscale
+ * routes remain explicit advanced paths.
+ *
+ * Steps:
+ *
+ *  1. **Method** — pick a setup path. Four tiles:
+ *     - **Hermes**: API URL + API key. → StandardEntry.
+ *     - **Scan QR**: standard convenience path for API URL/key QRs; Relay
+ *       plugin QRs still work and route through Confirm/Relay pair.
+ *     - **Pair Relay by code**: server already minted a code via
+ *       `hermes pair --register-code` or `/hermes-relay-pair`. → ManualEntry.
+ *     - **Show Relay code** (relay-gated): phone displays a generated
+ *       6-char code + the host command to run. → ShowCode.
+ *  2. **Path-specific middle step**:
+ *     - Standard path → **StandardEntry**: API URL + API key.
+ *       Tap Connect to persist and verify `/health` + `/api/sessions`.
+ *     - QR path → **Confirm**: shows what was scanned, transport security
+ *       badge, TTL picker, insecure note when the relay is plain `ws://`.
+ *       Tap Pair to apply the full payload (URLs, code, grants, cert pin),
+ *       or Connect for API-only QRs.
+ *     - Enter code path → **ManualEntry**: API URL + Relay URL + code
+ *       fields. Tap Pair to persist the URLs and connect with the typed
+ *       code as the server-issued code.
+ *     - Show code path → **ShowCode**: API URL + Relay URL fields, the
+ *       phone-generated code (with copy + regen), the
+ *       `hermes pair --register-code <code>` command (with copy), and a
+ *       Connect button to fire the pair once the operator has registered
+ *       the code on the host.
+ *  3. **Verify** — runs the pair, observes [AuthState], surfaces errors
+ *     with a Retry affordance. On success, calls [onComplete].
+ *
+ * The wizard is intentionally Scaffold-less so callers can embed it inside
+ * their own surface (the onboarding pager, a settings full-screen route,
+ * a dialog, etc.) without fighting nested top-app-bars.
+ *
+ * @param connectionViewModel shared VM that owns the apply-payload helpers
+ * @param onComplete called after a successful standard connect or pair lands; the caller is
+ *   responsible for navigating away (e.g. completeOnboarding + nav to chat)
+ * @param onCancel called when the user backs out before the verify step
+ *   resolves. Caller decides whether that means "stay in Settings" or
+ *   "skip onboarding and go to chat anyway"
+ * @param onManageSignIn optional navigation hook shown after a successful
+ *   Standard connect when the dashboard reports that sign-in is required.
+ * @param showSkip when true, surfaces a "Skip for now" affordance on the
+ *   first step. Onboarding sets this to true so users can defer setup;
+ *   Settings sets it to false because there's nothing to skip to.
+ */
+@Composable
+fun ConnectionWizard(
+    connectionViewModel: ConnectionViewModel,
+    onComplete: () -> Unit,
+    onCancel: () -> Unit,
+    onManageSignIn: (() -> Unit)? = null,
+    showSkip: Boolean = false,
+    modifier: Modifier = Modifier,
+    /**
+     * Deep-link into a specific pair method on first composition.
+     * Currently only `"scan"` is honored — jumps directly into camera-
+     * permission-request → scanner, skipping the Method chooser. Null
+     * keeps the default Method step so users can still pick Scan / Enter
+     * code / Show code manually. The "Add gateway" FAB sets this to
+     * `"scan"` because the single-purpose entry deserves a single-purpose
+     * flow; re-pair surfaces leave it null so the chooser stays available.
+     */
+    autoStart: String? = null,
+    setupReady: Boolean = true,
+    onConnectionTargetChanged: (String) -> Unit = {},
+    /**
+     * Optional "Try the demo" affordance shown atop the Method step. When
+     * non-null, the wizard surfaces an offline Demo / Explore entry point so a
+     * first-run user (or a Play reviewer with no server) can see the app work
+     * with zero setup. Null hides it — Settings → Gateways passes null
+     * because there's nothing to "first-run" there; onboarding + the Add Gateway
+     * screen pass a callback that enters demo and routes to Chat.
+     */
+    onTryDemo: (() -> Unit)? = null,
+) {
+    val context = LocalContext.current
+
+    val isTailscaleDetected by connectionViewModel.isTailscaleDetected.collectAsState()
+    val authState by connectionViewModel.authState.collectAsState()
+    val pairingCode by connectionViewModel.pairingCode.collectAsState()
+    val currentApiUrl by connectionViewModel.apiServerUrl.collectAsState()
+    val currentRelayUrl by connectionViewModel.relayUrl.collectAsState()
+    val currentDashboardUrl by connectionViewModel.effectiveDashboardUrl.collectAsState()
+    val activeConnection by connectionViewModel.activeConnection.collectAsState()
+    val connectionDraftId by connectionViewModel.connectionDraftId.collectAsState()
+    var wizardOwnerId by rememberSaveable { mutableStateOf(activeConnection?.id) }
+    LaunchedEffect(connectionDraftId) {
+        wizardOwnerId = resolveConnectionWizardOwner(wizardOwnerId, connectionDraftId)
+    }
+    val wizardDraftIdentity = resolveConnectionWizardOwner(wizardOwnerId, null)
+    val accessibleMotion = rememberAccessibleMotionState()
+    val animateWizardTransitions = shouldAnimateWizardTransitions(accessibleMotion)
+
+    var step by rememberSaveable(wizardDraftIdentity, stateSaver = WizardStepSaver) {
+        mutableStateOf(WizardStep.Nearby)
+    }
+    var chosenMethod by rememberSaveable(wizardDraftIdentity, stateSaver = PairMethodSaver) {
+        mutableStateOf(PairMethod.Standard)
+    }
+    var pendingPayload by remember { mutableStateOf<HermesPairingPayload?>(null) }
+    var ttlSeconds by rememberSaveable(wizardDraftIdentity) {
+        mutableStateOf(PairingPreferencesDefault)
+    }
+    var showQrScanner by remember { mutableStateOf(false) }
+    var qrScanGeneration by rememberSaveable(wizardDraftIdentity) { mutableStateOf(0) }
+    var verifyError by remember { mutableStateOf<String?>(null) }
+    var verifyAttempt by remember { mutableStateOf(0) }
+    var standardBusy by remember { mutableStateOf(false) }
+    var pairSubmissionStage by remember { mutableStateOf(PairSubmissionStage.Idle) }
+    var pairSubmissionError by remember { mutableStateOf<String?>(null) }
+    var standardError by remember { mutableStateOf<String?>(null) }
+    var standardSuccess by remember { mutableStateOf<ConnectionViewModel.StandardApiSetupResult?>(null) }
+    var nearbyBusy by remember { mutableStateOf(false) }
+    var nearbyResults by remember { mutableStateOf<List<HermesLanDiscoveryResult>>(emptyList()) }
+    var nearbyMessage by remember { mutableStateOf<String?>(null) }
+    var dashboardAddress by rememberSaveable(wizardDraftIdentity) {
+        mutableStateOf(if (connectionDraftId != null) "" else currentDashboardUrl)
+    }
+    var dashboardHttpConsentOrigin by rememberSaveable(wizardDraftIdentity) { mutableStateOf<String?>(null) }
+    var dashboardProbeBusy by remember { mutableStateOf(false) }
+    var dashboardProbeError by remember { mutableStateOf<String?>(null) }
+    var dashboardProbeResult by remember {
+        mutableStateOf<ConnectionViewModel.DashboardSetupResult?>(null)
+    }
+    var dashboardSuggestedHostname by rememberSaveable(wizardDraftIdentity) {
+        mutableStateOf<String?>(null)
+    }
+    var dashboardEntryIntent by rememberSaveable(
+        wizardDraftIdentity,
+        stateSaver = DashboardEntryIntentSaver,
+    ) { mutableStateOf(DashboardEntryIntent.Server) }
+    var pendingDashboardDraft by remember { mutableStateOf<DashboardConnectionDraft?>(null) }
+    val relayScopedFlow = autoStart == "relay"
+    val pairingHome = if (relayScopedFlow) WizardStep.RelayChoice else WizardStep.Nearby
+
+    // Pre-pair duplicate detection. When the user is about to pair to an
+    // API URL that already has a connection in the store, we stop the
+    // wizard at this prompt instead of silently creating a second entry
+    // (which would just get merged away by the post-pair dedupe in
+    // ConnectionViewModel — confusing UX, since the user's custom label
+    // on the existing entry is what "wins"). The prompt lets them
+    // explicitly opt into the re-pair, or cancel out.
+    //
+    // Held as a Connection to preserve label/id for the dialog copy;
+    // null means "no prompt active, proceed normally".
+    var duplicatePrompt by remember { mutableStateOf<Connection?>(null) }
+    // When the manual flow triggers the duplicate prompt, remember the
+    // code the user typed / was issued so the confirm branch can finish
+    // the pair without the user re-entering anything. Null for scan
+    // path (which uses [pendingPayload] instead).
+    var pendingManualCode by remember { mutableStateOf<String?>(null) }
+    var pendingStandardDraft by remember { mutableStateOf<StandardConnectionDraft?>(null) }
+    val wizardScope = rememberCoroutineScope()
+
+    // Standard API/dashboard fields. Pre-fill from the active connection.
+    var standardApiUrl by rememberSaveable(wizardDraftIdentity, currentApiUrl) {
+        mutableStateOf(currentApiUrl)
+    }
+    var standardApiKey by remember { mutableStateOf("") }
+    var standardDashboardUrl by rememberSaveable(
+        wizardDraftIdentity,
+        currentApiUrl,
+        currentDashboardUrl,
+    ) {
+        val derived = Connection.deriveDefaultDashboardUrl(currentApiUrl)
+        mutableStateOf(
+            currentDashboardUrl
+                .takeIf { it.isNotBlank() && !it.equals(derived, ignoreCase = true) }
+                .orEmpty(),
+        )
+    }
+    var standardTailscaleApiUrl by rememberSaveable(wizardDraftIdentity) { mutableStateOf("") }
+    var standardApiKeyVisible by remember { mutableStateOf(false) }
+
+    // Manual-path field state. Pre-fill from whatever the VM already knows
+    // so re-pair from Settings keeps the previously-configured URLs.
+    var manualApiUrl by rememberSaveable(wizardDraftIdentity, currentApiUrl) {
+        mutableStateOf(currentApiUrl)
+    }
+    var manualRelayUrl by rememberSaveable(wizardDraftIdentity, currentRelayUrl) {
+        mutableStateOf(currentRelayUrl)
+    }
+    var manualCode by remember { mutableStateOf("") }
+
+    // Restore only non-secret draft state. Steps that depend on a QR payload,
+    // API key, pairing code, or in-flight verification return to the nearest
+    // safe entry surface after Activity/process recreation.
+    LaunchedEffect(wizardDraftIdentity) {
+        step = restorableWizardStep(
+            saved = step,
+            method = chosenMethod,
+            relayScoped = relayScopedFlow,
+            hasPayload = pendingPayload != null,
+            verifyAttempt = verifyAttempt,
+            hasDashboardProbe = dashboardProbeResult != null,
+        )
+    }
+
+    // Camera permission gate. We don't keep the launcher result around — the
+    // showQrScanner flag is the persistent state.
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            showQrScanner = true
+        } else {
+            // Don't dead-end on denial — return to the chooser and point the
+            // user at the manual pairing paths (URL entry / 6-char code)
+            // instead of leaving them on a vanishing toast with no scanner.
+            step = WizardStep.Nearby
+            UiMessageBus.warning(context.getString(R.string.cw_camera_denied))
+        }
+    }
+
+    val launchCleanQrScan: () -> Unit = {
+        // A scan is a new transaction. Never leave a prior QR confirmation,
+        // verification result, duplicate prompt, or secret behind it.
+        val reset = resetQrScanTransaction(
+            previous = QrScanTransactionState(
+                pendingPayload = pendingPayload,
+                pendingManualCode = pendingManualCode,
+                hasPendingStandardDraft = pendingStandardDraft != null,
+                hasPendingDashboardDraft = pendingDashboardDraft != null,
+                hasDuplicatePrompt = duplicatePrompt != null,
+                hasStandardSuccess = standardSuccess != null,
+                standardError = standardError,
+                hasDashboardProbeResult = dashboardProbeResult != null,
+                dashboardProbeError = dashboardProbeError,
+                dashboardSuggestedHostname = dashboardSuggestedHostname,
+                verifyError = verifyError,
+                verifyAttempt = verifyAttempt,
+                standardApiKey = standardApiKey,
+                manualCode = manualCode,
+                ttlSeconds = ttlSeconds,
+                step = step,
+                chosenMethod = chosenMethod,
+                generation = qrScanGeneration,
+            ),
+            pairingHome = pairingHome,
+        )
+        pendingPayload = reset.pendingPayload
+        pendingManualCode = reset.pendingManualCode
+        pendingStandardDraft = pendingStandardDraft.takeIf { reset.hasPendingStandardDraft }
+        pendingDashboardDraft = pendingDashboardDraft.takeIf { reset.hasPendingDashboardDraft }
+        duplicatePrompt = duplicatePrompt.takeIf { reset.hasDuplicatePrompt }
+        standardSuccess = standardSuccess.takeIf { reset.hasStandardSuccess }
+        standardError = reset.standardError
+        dashboardProbeResult = dashboardProbeResult.takeIf { reset.hasDashboardProbeResult }
+        dashboardProbeError = reset.dashboardProbeError
+        dashboardSuggestedHostname = reset.dashboardSuggestedHostname
+        verifyError = reset.verifyError
+        verifyAttempt = reset.verifyAttempt
+        standardApiKey = reset.standardApiKey
+        manualCode = reset.manualCode
+        ttlSeconds = reset.ttlSeconds
+        step = reset.step
+        chosenMethod = reset.chosenMethod
+        qrScanGeneration = reset.generation
+        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+    }
+
+    // Deep-link: when the caller passed autoStart="scan" (currently only the
+    // "Add gateway" FAB does), fire the permission launcher on first
+    // composition. Equivalent to the user tapping the Scan tile in the
+    // Method step — sets chosenMethod and bounces through the camera
+    // permission gate into the scanner. Only runs once per wizard mount
+    // (keyed on Unit); unrecognized autoStart values fall through silently
+    // so a future build that adds more deep-link targets can ignore old
+    // args without crashing.
+    val launchNearbyScan: () -> Unit = {
+        nearbyBusy = true
+        nearbyResults = emptyList()
+        nearbyMessage = null
+        wizardScope.launch {
+            runCatching { HermesLanDiscovery.scan(context, dashboardOnly = true) }
+                .onSuccess { found ->
+                    // Dashboard/Gateway is the normal Hermes path. API-only
+                    // discoveries remain available under Other ways.
+                    nearbyResults = found.filter { it.dashboardReachable }
+                    if (nearbyResults.isEmpty()) {
+                        nearbyMessage = context.getString(R.string.cw_nearby_empty)
+                    }
+                }
+                .onFailure {
+                    nearbyMessage = context.getString(R.string.cw_nearby_failed)
+                }
+            nearbyBusy = false
+        }
+    }
+    val inspectDashboard: (String, String?) -> Unit = { address, suggestedHostname ->
+        dashboardAddress = address
+        dashboardSuggestedHostname = suggestedHostname
+        dashboardProbeError = null
+        val normalized = Connection.normalizeDashboardUrlInput(address)
+        if (com.hermesandroid.relay.data.dashboardHttpConsentRequired(normalized) &&
+            dashboardHttpConsentOrigin != com.hermesandroid.relay.data.dashboardHttpOrigin(normalized)
+        ) {
+            dashboardEntryIntent = DashboardEntryIntent.Server
+            step = WizardStep.DashboardManual
+        } else {
+            dashboardProbeBusy = true
+            connectionViewModel.probeHermesDashboard(address, dashboardHttpConsentOrigin) { result ->
+                dashboardProbeBusy = false
+                if (result.ok) {
+                    dashboardProbeResult = result
+                    dashboardAddress = result.dashboardUrl
+                    step = WizardStep.DashboardFound
+                } else {
+                    dashboardProbeError = result.message
+                }
+            }
+        }
+    }
+
+    androidx.compose.runtime.LaunchedEffect(setupReady, autoStart) {
+        if (!setupReady) return@LaunchedEffect
+        when (autoStart) {
+            "scan" -> {
+                launchCleanQrScan()
+            }
+            "relay" -> step = WizardStep.RelayChoice
+            else -> launchNearbyScan()
+        }
+    }
+
+    // Watch the auth state once verify starts. Resolves Paired → onComplete,
+    // Failed → surface error + let user retry, timeout → same. Cancelled
+    // automatically when verifyAttempt changes (re-tries are a fresh attempt).
+    //
+    // CRITICAL: snapshot the current authState at the start of the attempt
+    // and require a TRANSITION away from it before accepting Paired/Failed.
+    // Without this, a stale `AuthState.Paired(token)` left in the keystore
+    // from a previous install (or pair) races the new pair attempt and the
+    // first {} predicate matches the stale value immediately — onComplete()
+    // fires before the new WSS handshake has even started, the wizard
+    // navigates to chat, and the user lands "in app" with only the API
+    // configured. Snapshot+transition closes the race even when the
+    // synchronous authState reset in applyPairingPayload didn't run (e.g.
+    // QRs without a relay block, or relay blocks with empty code).
+    LaunchedEffect(verifyAttempt) {
+        if (verifyAttempt == 0) return@LaunchedEffect
+        verifyError = null
+        val snapshot = connectionViewModel.authState.value
+        android.util.Log.i(
+            "ConnectionWizard",
+            "verify[$verifyAttempt] snapshot=${snapshot::class.simpleName} — waiting for transition to Paired|Failed"
+        )
+        try {
+            val terminal = withTimeout(15_000) {
+                connectionViewModel.authState.first { current ->
+                    val match = current != snapshot &&
+                        (current is AuthState.Paired || current is AuthState.Failed)
+                    android.util.Log.d(
+                        "ConnectionWizard",
+                        "verify[$verifyAttempt] emission=${current::class.simpleName} " +
+                            "differs=${current != snapshot} match=$match"
+                    )
+                    match
+                }
+            }
+            when (terminal) {
+                is AuthState.Paired -> {
+                    android.util.Log.i(
+                        "ConnectionWizard",
+                        "verify[$verifyAttempt] terminal=Paired"
+                    )
+                    if (
+                        pendingPayload?.let(::shouldOfferDashboardSignInAfterRelayPair) == true &&
+                        onManageSignIn != null
+                    ) {
+                        onManageSignIn()
+                    } else {
+                        onComplete()
+                    }
+                }
+                is AuthState.Failed -> {
+                    android.util.Log.w(
+                        "ConnectionWizard",
+                        "verify[$verifyAttempt] terminal=Failed reason=${terminal.reason}"
+                    )
+                    verifyError = terminal.reason
+                }
+                else -> verifyError = context.getString(R.string.cw_pairing_did_not_complete)
+            }
+        } catch (_: TimeoutCancellationException) {
+            android.util.Log.w(
+                "ConnectionWizard",
+                "verify[$verifyAttempt] TIMEOUT after 15s (current=${connectionViewModel.authState.value::class.simpleName})"
+            )
+            // Method-aware timeout copy. The watchdog only sees authState, but
+            // it knows which pairing method the user chose — enough to name the
+            // most likely cause instead of one generic "relay timed out."
+            verifyError = when (chosenMethod) {
+                PairMethod.EnterCode, PairMethod.ShowCode ->
+                    context.getString(R.string.cw_timeout_entercode_showcode)
+                PairMethod.Scan ->
+                    context.getString(R.string.cw_timeout_scan)
+                else ->
+                    context.getString(R.string.cw_timeout_other)
+            }
+        }
+    }
+
+    // Look up an existing connection pointing at [serverUrl] — excluding
+    // the active one, which during the Add-gateway flow is the blank
+    // placeholder we pre-created in [ConnectionViewModel.beginAddConnection].
+    // Re-pair flows from Settings → Gateways switch to the target BEFORE
+    // entering the wizard, so during those the active id IS the target
+    // and the filter correctly returns null (no pointless self-prompt).
+    val findDuplicateFor:
+        (String, String, String?) -> Connection? = { apiUrl, relayUrl, dashboardUrl ->
+        val activeId = connectionViewModel.activeConnectionId.value
+        ConnectionValidation.findDuplicate(
+            connections = connectionViewModel.connectionStore.connections.value,
+            apiServerUrl = apiUrl,
+            relayUrl = relayUrl,
+            excludeId = activeId,
+            dashboardUrl = dashboardUrl,
+        )
+    }
+
+    val applyDashboardConnect: (DashboardConnectionDraft) -> Unit = { draft ->
+        standardBusy = true
+        standardError = null
+        connectionViewModel.saveDashboardConnection(
+            dashboardUrl = draft.dashboardUrl,
+            discoveredHostname = draft.discoveredHostname,
+            httpConsentOrigin = draft.httpConsentOrigin,
+        ) { saved ->
+            standardBusy = false
+            saved.fold(
+                onSuccess = {
+                    if (draft.signInRequired && onManageSignIn != null) {
+                        onManageSignIn()
+                    } else {
+                        step = WizardStep.DashboardComplete
+                    }
+                },
+                onFailure = { standardError = it.message },
+            )
+        }
+    }
+
+    val applyStandardConnect:
+        (String, String, String, String, List<EndpointCandidate>?) -> Unit = { apiUrl, apiKey, tailscaleApiUrl, dashboardUrl, routes ->
+        val trimmedApi = apiUrl.trim()
+        standardBusy = true
+        standardError = null
+        standardSuccess = null
+        pairSubmissionStage = PairSubmissionStage.Idle
+        pairSubmissionError = null
+        connectionViewModel.saveStandardApiConnection(
+            apiUrl = trimmedApi,
+            apiKey = apiKey,
+            tailscaleApiUrl = tailscaleApiUrl,
+            dashboardUrl = dashboardUrl,
+            routeCandidatesOverride = routes,
+        ) { result ->
+            standardBusy = false
+            if (result.ok) {
+                standardSuccess = result
+            } else {
+                standardError = result.message
+                step = WizardStep.StandardEntry
+            }
+        }
+    }
+
+    val launchStandardConnect:
+        (String, String, String, String, List<EndpointCandidate>?) -> Unit = { apiUrl, apiKey, tailscaleApiUrl, dashboardUrl, routes ->
+        val trimmedApi = apiUrl.trim()
+        val existing = findDuplicateFor(trimmedApi, "", dashboardUrl)
+        if (existing != null) {
+            pendingStandardDraft = StandardConnectionDraft(
+                apiUrl = trimmedApi,
+                apiKey = apiKey,
+                tailscaleApiUrl = tailscaleApiUrl,
+                dashboardUrl = dashboardUrl,
+                routeCandidates = routes,
+            )
+            duplicatePrompt = existing
+        } else {
+            applyStandardConnect(trimmedApi, apiKey, tailscaleApiUrl, dashboardUrl, routes)
+        }
+    }
+
+    // Shared launcher for the manual paths — persists URLs, applies the
+    // server-issued code, drops any stale session, and reconnects. Used by
+    // both ManualEntry (typed code) and ShowCode (phone-generated code).
+    //
+    // Runs the pre-pair duplicate check first: if another connection
+    // already has this API URL, surface the prompt and stall the wizard
+    // on Method/ManualEntry/ShowCode until the user confirms or cancels.
+    // Dialog confirm re-invokes via [applyManualPair] (below) which
+    // bypasses the check so we don't loop.
+    val launchManualPair: (String) -> Unit = { code ->
+        val trimmedApi = manualApiUrl.trim()
+        val existing = if (relayScopedFlow) {
+            null
+        } else {
+            findDuplicateFor(trimmedApi, manualRelayUrl.trim(), null)
+        }
+        if (existing != null) {
+            // Remember what to re-run when the user confirms.
+            pendingManualCode = code
+            duplicatePrompt = existing
+        } else {
+            wizardScope.launch {
+                connectionViewModel.ensureActiveConnectionForSetup(
+                    apiServerUrl = trimmedApi,
+                    relayUrl = manualRelayUrl.trim(),
+                )
+                applyManualPair(connectionViewModel, trimmedApi, manualRelayUrl.trim(), code, relayScopedFlow)
+                step = WizardStep.Verify
+                verifyAttempt += 1
+            }
+        }
+    }
+
+    if (!showQrScanner) {
+        Column(
+            modifier = modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+        if (step != WizardStep.Nearby) {
+            WizardStepIndicator(currentStep = step.indicatorIndex, method = chosenMethod, directApi = step == WizardStep.StandardEntry)
+        }
+
+        AnimatedContent(
+            targetState = step,
+            transitionSpec = {
+                if (animateWizardTransitions) {
+                    fadeIn(tween(200)) togetherWith fadeOut(tween(180))
+                } else {
+                    EnterTransition.None togetherWith ExitTransition.None
+                }
+            },
+            label = "wizard-step",
+        ) { current ->
+            when (current) {
+                WizardStep.Nearby -> NearbyHermesStep(
+                    busy = nearbyBusy || !setupReady,
+                    setupReady = setupReady,
+                    results = nearbyResults,
+                    message = nearbyMessage,
+                    onSearchAgain = launchNearbyScan,
+                    onSelect = { candidate ->
+                        candidate.dashboardUrl?.let { dashboardUrl ->
+                            inspectDashboard(dashboardUrl, candidate.hostname)
+                        }
+                    },
+                    onCloud = {
+                        dashboardEntryIntent = DashboardEntryIntent.Cloud
+                        dashboardProbeError = null
+                        dashboardAddress = ""
+                        step = WizardStep.DashboardManual
+                    },
+                    onManualServer = {
+                        dashboardEntryIntent = DashboardEntryIntent.Server
+                        dashboardProbeError = null
+                        step = WizardStep.DashboardManual
+                    },
+                    onPairRelayQr = {
+                        launchCleanQrScan()
+                    },
+                    onPairRelayCode = {
+                        chosenMethod = PairMethod.EnterCode
+                        manualCode = ""
+                        step = WizardStep.ManualEntry
+                    },
+                    onOtherWays = { step = WizardStep.Method },
+                    onSkip = if (showSkip) onCancel else null,
+                    onTryDemo = onTryDemo,
+                )
+
+                WizardStep.DashboardManual -> DashboardManualStep(
+                    intent = dashboardEntryIntent,
+                    address = dashboardAddress,
+                    onAddressChange = {
+                        dashboardAddress = it
+                        dashboardHttpConsentOrigin = null
+                        dashboardProbeError = null
+                    },
+                    httpConsentOrigin = dashboardHttpConsentOrigin,
+                    onHttpConsentChange = { dashboardHttpConsentOrigin = it },
+                    busy = dashboardProbeBusy,
+                    error = dashboardProbeError,
+                    onBack = { step = WizardStep.Nearby },
+                    onSubmit = { resolvedAddress -> inspectDashboard(resolvedAddress, null) },
+                )
+
+                WizardStep.DashboardFound -> dashboardProbeResult?.let { result ->
+                    DashboardFoundStep(
+                        result = result,
+                        saving = standardBusy,
+                        error = standardError,
+                        onBack = {
+                            standardError = null
+                            step = WizardStep.Nearby
+                        },
+                    onConnect = {
+                            val draft = DashboardConnectionDraft(
+                                dashboardUrl = result.dashboardUrl,
+                                signInRequired = result.signInRequired,
+                                discoveredHostname = dashboardSuggestedHostname,
+                                httpConsentOrigin = result.httpConsentOrigin,
+                            )
+                            val existing = findDuplicateFor("", "", result.dashboardUrl)
+                            if (existing != null) {
+                                pendingDashboardDraft = draft
+                                duplicatePrompt = existing
+                            } else {
+                                applyDashboardConnect(draft)
+                            }
+                        },
+                    )
+                }
+
+                WizardStep.DashboardComplete -> DashboardCompleteStep(
+                    onComplete = onComplete,
+                )
+
+                WizardStep.RelayChoice -> RelayChoiceStep(
+                    connectionLabel = activeConnection?.label.orEmpty(),
+                    dashboardUrl = currentDashboardUrl,
+                    onPickScan = {
+                        launchCleanQrScan()
+                    },
+                    onPickEnterCode = {
+                        chosenMethod = PairMethod.EnterCode
+                        manualCode = ""
+                        step = WizardStep.ManualEntry
+                    },
+                    onPickShowCode = {
+                        chosenMethod = PairMethod.ShowCode
+                        step = WizardStep.ShowCode
+                    },
+                )
+
+                WizardStep.Method -> MethodStep(
+                    onBack = { step = WizardStep.Nearby },
+                    onPickStandard = {
+                        chosenMethod = PairMethod.Standard
+                        standardError = null
+                        step = WizardStep.StandardEntry
+                    },
+                    onPickEnterCode = {
+                        chosenMethod = PairMethod.EnterCode
+                        manualCode = ""
+                        step = WizardStep.ManualEntry
+                    },
+                    onPickShowCode = {
+                        chosenMethod = PairMethod.ShowCode
+                        step = WizardStep.ShowCode
+                    },
+                )
+
+                WizardStep.StandardEntry -> StandardEntryStep(
+                    apiUrl = standardApiUrl,
+                    onApiUrlChange = {
+                        standardApiUrl = it
+                        standardError = null
+                        standardSuccess = null
+                    },
+                    apiKey = standardApiKey,
+                    onApiKeyChange = {
+                        standardApiKey = it
+                        standardError = null
+                        standardSuccess = null
+                    },
+                    tailscaleApiUrl = standardTailscaleApiUrl,
+                    onTailscaleApiUrlChange = {
+                        standardTailscaleApiUrl = it
+                        standardError = null
+                        standardSuccess = null
+                    },
+                    dashboardUrl = standardDashboardUrl,
+                    onDashboardUrlChange = {
+                        standardDashboardUrl = it
+                        standardError = null
+                        standardSuccess = null
+                    },
+                    apiKeyVisible = standardApiKeyVisible,
+                    onToggleApiKeyVisible = { standardApiKeyVisible = !standardApiKeyVisible },
+                    isConnecting = standardBusy,
+                    error = standardError,
+                    success = standardSuccess,
+                    onBack = { step = WizardStep.Method },
+                    onComplete = onComplete,
+                    onManageSignIn = onManageSignIn,
+                    isTailscaleDetected = isTailscaleDetected,
+                    onSubmit = {
+                        launchStandardConnect(
+                            standardApiUrl,
+                            standardApiKey,
+                            standardTailscaleApiUrl,
+                            standardDashboardUrl,
+                            null,
+                        )
+                    },
+                )
+
+                WizardStep.Confirm -> {
+                    val payload = pendingPayload
+                    if (payload == null) {
+                        // Defensive — shouldn't happen because we only enter
+                        // Confirm after a successful scan, but if it does,
+                        // bounce back to the chooser instead of crashing.
+                        LaunchedEffect(Unit) { step = pairingHome }
+                    } else {
+                        ConfirmStep(
+                            payload = payload,
+                            ttlSeconds = ttlSeconds,
+                            onTtlChange = { ttlSeconds = it },
+                            isTailscaleDetected = isTailscaleDetected,
+                            standardBusy = standardBusy,
+                            pairSubmissionStage = pairSubmissionStage,
+                            pairSubmissionError = pairSubmissionError,
+                            animateStatusChanges = animateWizardTransitions,
+                            standardSuccess = standardSuccess,
+                            onBack = {
+                                pendingPayload = null
+                                step = pairingHome
+                            },
+                            onComplete = onComplete,
+                            onManageSignIn = onManageSignIn,
+                            onConfirm = { reorderedPayload ->
+                                // Persist the reordered payload so a retry
+                                // from VerifyStep reuses the chosen preferred
+                                // role — otherwise Retry would drop the user's
+                                // "Prefer" choice on every failure.
+                                pendingPayload = reorderedPayload
+                                val dispatch = setupQrDispatch(reorderedPayload)
+                                if (dispatch == SetupQrDispatch.Relay) {
+                                    pairSubmissionStage = PairSubmissionStage.PreparingGateway
+                                    pairSubmissionError = null
+                                }
+                                when (dispatch) {
+                                    SetupQrDispatch.Dashboard -> {
+                                        // Dashboard-only setup belongs to the same
+                                        // upstream probe/auth owner as manual and LAN
+                                        // Dashboard setup. DashboardFound performs the
+                                        // existing duplicate check before persistence,
+                                        // and applyDashboardConnect launches native
+                                        // sign-in when the advertised status requires it.
+                                        // Move to the manual Dashboard surface before
+                                        // probing so a contract failure is visible and
+                                        // retryable instead of being hidden by Confirm.
+                                        dashboardEntryIntent = DashboardEntryIntent.Server
+                                        dashboardAddress = reorderedPayload.dashboardUrl.orEmpty()
+                                        step = WizardStep.DashboardManual
+                                        inspectDashboard(
+                                            reorderedPayload.dashboardUrl.orEmpty(),
+                                            null,
+                                        )
+                                    }
+                                    SetupQrDispatch.StandardApi,
+                                    SetupQrDispatch.Relay -> {
+                                        // API and Relay payloads retain their existing
+                                        // duplicate/persistence behavior unchanged.
+                                        val existing = if (relayScopedFlow) {
+                                            null
+                                        } else {
+                                            findDuplicateFor(
+                                                reorderedPayload.serverUrl,
+                                                reorderedPayload.relay?.url.orEmpty(),
+                                                reorderedPayload.dashboardUrl,
+                                            )
+                                        }
+                                        if (existing != null) {
+                                            pairSubmissionStage = PairSubmissionStage.Idle
+                                            duplicatePrompt = existing
+                                        } else if (dispatch == SetupQrDispatch.StandardApi) {
+                                            launchStandardConnect(
+                                                reorderedPayload.serverUrl,
+                                                reorderedPayload.key,
+                                                "",
+                                                reorderedPayload.dashboardUrl.orEmpty(),
+                                                reorderedPayload.endpoints,
+                                            )
+                                        } else if (
+                                            relayPairStartOrder(reorderedPayload) ==
+                                            RelayPairStartOrder.InvalidDashboardIngress
+                                        ) {
+                                            pairSubmissionStage = PairSubmissionStage.Idle
+                                            pairSubmissionError = context.getString(
+                                                R.string.cw_pairing_did_not_complete,
+                                            )
+                                        } else if (
+                                            relayPairStartOrder(reorderedPayload) ==
+                                            RelayPairStartOrder.DashboardSignInFirst
+                                        ) {
+                                            if (onManageSignIn != null) {
+                                                wizardScope.launch {
+                                                    runCatching {
+                                                        connectionViewModel.ensureActiveConnectionForSetup(
+                                                            apiServerUrl = reorderedPayload.serverUrl,
+                                                            relayUrl = reorderedPayload.relay?.url.orEmpty(),
+                                                            routeCandidates = reorderedPayload.endpoints,
+                                                        )
+                                                        connectionViewModel.stageDashboardIngressPairingForSignIn(
+                                                            reorderedPayload,
+                                                            ttlSeconds,
+                                                        )
+                                                    }.onSuccess {
+                                                        pairSubmissionStage = PairSubmissionStage.OpeningSignIn
+                                                        onManageSignIn()
+                                                    }.onFailure { error ->
+                                                        pairSubmissionStage = PairSubmissionStage.Idle
+                                                        pairSubmissionError = error.message
+                                                            ?: context.getString(R.string.cw_pairing_did_not_complete)
+                                                    }
+                                                }
+                                            } else {
+                                                verifyError = context.getString(
+                                                    R.string.cw_dashboard_sign_in_required,
+                                                )
+                                                step = WizardStep.Verify
+                                            }
+                                        } else {
+                                            wizardScope.launch {
+                                                runCatching {
+                                                    connectionViewModel.ensureActiveConnectionForSetup(
+                                                        apiServerUrl = reorderedPayload.serverUrl,
+                                                        relayUrl = reorderedPayload.relay?.url.orEmpty(),
+                                                        routeCandidates = reorderedPayload.endpoints,
+                                                    )
+                                                }.onSuccess {
+                                                    pairSubmissionStage = PairSubmissionStage.PairingRelay
+                                                    connectionViewModel.applyPairingPayload(
+                                                        reorderedPayload,
+                                                        ttlSeconds,
+                                                        preserveStandardConfig = relayScopedFlow,
+                                                    )
+                                                    step = WizardStep.Verify
+                                                    verifyAttempt += 1
+                                                }.onFailure { error ->
+                                                    pairSubmissionStage = PairSubmissionStage.Idle
+                                                    pairSubmissionError = error.message
+                                                        ?: context.getString(R.string.cw_pairing_did_not_complete)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                        )
+                    }
+                }
+
+                WizardStep.ManualEntry -> ManualEntryStep(
+                    apiUrl = manualApiUrl,
+                    onApiUrlChange = { manualApiUrl = it },
+                    relayUrl = manualRelayUrl,
+                    onRelayUrlChange = { manualRelayUrl = it },
+                    code = manualCode,
+                    onCodeChange = { manualCode = it.uppercase() },
+                    requireApi = !relayScopedFlow,
+                    onBack = { step = pairingHome },
+                    onSubmit = { launchManualPair(manualCode) },
+                )
+
+                WizardStep.ShowCode -> ShowCodeStep(
+                    apiUrl = manualApiUrl,
+                    onApiUrlChange = { manualApiUrl = it },
+                    relayUrl = manualRelayUrl,
+                    onRelayUrlChange = { manualRelayUrl = it },
+                    pairingCode = pairingCode,
+                    onRegenerate = { connectionViewModel.regeneratePairingCode() },
+                    requireApi = !relayScopedFlow,
+                    onBack = { step = pairingHome },
+                    onConnect = { launchManualPair(pairingCode) },
+                )
+
+                WizardStep.Verify -> VerifyStep(
+                    authState = authState,
+                    error = verifyError,
+                    onRetry = {
+                        verifyError = null
+                        when (chosenMethod) {
+                            PairMethod.Standard -> applyStandardConnect(
+                                standardApiUrl,
+                                standardApiKey,
+                                standardTailscaleApiUrl,
+                                standardDashboardUrl,
+                                null,
+                            )
+                            PairMethod.Scan -> pendingPayload?.let {
+                                connectionViewModel.applyPairingPayload(
+                                    it,
+                                    ttlSeconds,
+                                    preserveStandardConfig = relayScopedFlow,
+                                )
+                                verifyAttempt += 1
+                            }
+                            PairMethod.EnterCode -> launchManualPair(manualCode)
+                            PairMethod.ShowCode -> launchManualPair(pairingCode)
+                        }
+                    },
+                    onBack = {
+                        verifyError = null
+                        step = when (chosenMethod) {
+                            PairMethod.Standard -> WizardStep.StandardEntry
+                            PairMethod.Scan -> WizardStep.Confirm
+                            PairMethod.EnterCode -> WizardStep.ManualEntry
+                            PairMethod.ShowCode -> WizardStep.ShowCode
+                        }
+                    },
+                    onCancel = onCancel,
+                )
+            }
+        }
+    }
+    }
+
+    if (showQrScanner) {
+        key(qrScanGeneration) {
+            QrPairingScanner(
+                onPairingDetected = { payload ->
+                    val fingerprint = pairingPayloadFingerprint(payload)
+                    android.util.Log.i("ConnectionWizard", "QR accepted: $fingerprint")
+                    showQrScanner = false
+                    pendingPayload = payload
+                    if (payload.relay == null) {
+                        standardApiUrl = payload.serverUrl
+                        standardApiKey = payload.key
+                        standardDashboardUrl = payload.dashboardUrl.orEmpty()
+                        standardError = null
+                        standardSuccess = null
+                    }
+                    ttlSeconds = defaultTtlSeconds(
+                        qrTtlSeconds = payload.relay?.ttlSeconds,
+                        transportHint = payload.relay?.transportHint,
+                        isTailscaleDetected = isTailscaleDetected,
+                    )
+                    step = WizardStep.Confirm
+                },
+                onDismiss = {
+                    showQrScanner = false
+                    step = pairingHome
+                },
+                relayOnly = relayScopedFlow,
+            )
+        }
+    }
+
+    // Pre-pair duplicate prompt. Renders over whichever wizard step is
+    // currently visible. Confirm = switch to the existing connection,
+    // discard the placeholder [ConnectionViewModel.beginAddConnection]
+    // pre-created for this flow (if any), then re-run the pair against
+    // the existing connection so the new session replaces the old one.
+    // Dismiss = clear the prompt and return the user to the step they
+    // came from (Confirm for scan, ManualEntry/ShowCode for manual), so
+    // they can re-read the URL they just entered or scan a different QR.
+    duplicatePrompt?.let { existing ->
+        DuplicateConnectionDialog(
+            existing = existing,
+            onUpdate = {
+                val prompt = existing
+                duplicatePrompt = null
+                // Authorize the route's exact target handoff before the
+                // active-id emission changes. This keeps the wizard composed
+                // without turning readiness into an unscoped boolean latch.
+                onConnectionTargetChanged(prompt.id)
+                wizardScope.launch {
+                    // Snapshot the placeholder id before we switch away —
+                    // after switchConnection returns, activeConnectionId
+                    // points at the EXISTING connection and we'd lose the
+                    // reference to the blank placeholder we need to delete.
+                    val placeholderId = connectionViewModel.activeConnectionId.value
+                        ?.takeIf { it != prompt.id }
+
+                    // 1. Switch to the existing connection so all subsequent
+                    //    applyPairingPayload / applyServerIssuedCodeAndReset
+                    //    calls land in ITS auth store, not the placeholder's.
+                    //    join() ensures the AuthManager swap has finished
+                    //    before we apply the payload.
+                    connectionViewModel.switchConnection(prompt.id).join()
+
+                    // 2. Remove the placeholder we pre-created. Safe no-op
+                    //    if it was never a placeholder (pairedAt != null)
+                    //    thanks to discardPlaceholderConnection's own
+                    //    guard. Also safe if placeholderId is null (which
+                    //    would mean the user entered the wizard from a
+                    //    re-pair flow on the target itself — no cleanup
+                    //    needed).
+                    if (placeholderId != null) {
+                        connectionViewModel.discardPlaceholderConnection(placeholderId)
+                    }
+
+                    // 3. Apply the connect/pair, now targeting the existing
+                    //    connection's auth store. Standard paths save API
+                    //    settings only; Relay paths apply the pairing code.
+                    val dashboardDraft = pendingDashboardDraft
+                    if (dashboardDraft != null) {
+                        pendingDashboardDraft = null
+                        // The discovery probe ran while the temporary add-flow
+                        // connection was active. Probe again after switching so
+                        // auth/sign-in is evaluated with the existing
+                        // connection's Dashboard cookie store.
+                        connectionViewModel.probeHermesDashboard(
+                            dashboardDraft.dashboardUrl,
+                        ) { refreshed ->
+                            applyDashboardConnect(
+                                if (refreshed.ok) {
+                                    dashboardDraft.copy(
+                                        dashboardUrl = refreshed.dashboardUrl,
+                                        signInRequired = refreshed.signInRequired,
+                                    )
+                                } else {
+                                    dashboardDraft
+                                },
+                            )
+                        }
+                    } else when (chosenMethod) {
+                        PairMethod.Standard -> {
+                            val draft = pendingStandardDraft
+                            if (draft != null) {
+                                pendingStandardDraft = null
+                                applyStandardConnect(
+                                    draft.apiUrl,
+                                    draft.apiKey,
+                                    draft.tailscaleApiUrl,
+                                    draft.dashboardUrl,
+                                    draft.routeCandidates,
+                                )
+                            }
+                        }
+                        PairMethod.Scan -> {
+                            val payload = pendingPayload
+                            if (payload != null) {
+                                if (payload.relay == null) {
+                                    applyStandardConnect(
+                                        payload.serverUrl,
+                                        payload.key,
+                                        "",
+                                        payload.dashboardUrl.orEmpty(),
+                                        payload.endpoints,
+                                    )
+                                } else {
+                                    connectionViewModel.applyPairingPayload(
+                                        payload,
+                                        ttlSeconds,
+                                    )
+                                    step = WizardStep.Verify
+                                    verifyAttempt += 1
+                                }
+                            }
+                        }
+                        PairMethod.EnterCode, PairMethod.ShowCode -> {
+                            val code = pendingManualCode
+                            if (code != null) {
+                                applyManualPair(
+                                    connectionViewModel,
+                                    manualApiUrl.trim(),
+                                    manualRelayUrl.trim(),
+                                    code,
+                                    relayScopedFlow,
+                                )
+                                pendingManualCode = null
+                                step = WizardStep.Verify
+                                verifyAttempt += 1
+                            }
+                        }
+                    }
+                }
+            },
+            onDismiss = {
+                duplicatePrompt = null
+                pendingManualCode = null
+                pendingStandardDraft = null
+                pendingDashboardDraft = null
+                // Scan path: kick back to the Confirm step so the user
+                // can either re-confirm (which will re-trigger the prompt)
+                // or hit Back to scan a different QR. Manual paths: the
+                // user is still on ManualEntry/ShowCode, the step hasn't
+                // advanced, so no navigation change needed.
+            },
+        )
+    }
+}
+
+/**
+ * Bypass version of the manual pair launcher — does NOT run the duplicate
+ * check. Called from two sites:
+ *  - [launchManualPair] inside [ConnectionWizard] when no duplicate is
+ *    found (the common happy path).
+ *  - The duplicate-prompt confirm handler, which has already switched to
+ *    the existing connection and explicitly wants to apply the pairing
+ *    there.
+ */
+private fun applyManualPair(
+    vm: ConnectionViewModel,
+    apiUrl: String,
+    relayUrl: String,
+    code: String,
+    relayOnly: Boolean,
+) {
+    if (relayOnly) {
+        vm.applyPairingPayload(
+            relayOnlyCodePayload(relayUrl, code, vm.activeConnection.value?.routeCandidates.orEmpty()),
+            PairingPreferences.DEFAULT_TTL_SECONDS,
+            preserveStandardConfig = true,
+        )
+        return
+    }
+    if (apiUrl.isNotBlank()) vm.updateApiServerUrl(apiUrl)
+    vm.updateRelayUrl(relayUrl)
+    vm.authManager.applyServerIssuedCodeAndReset(code.trim().uppercase())
+    vm.disconnectRelay()
+    vm.connectRelay(relayUrl)
+}
+
+/** Keep operator-approved trust for the exact selected Relay route. */
+internal fun relayOnlyCodePayload(
+    relayUrl: String,
+    code: String,
+    routes: List<EndpointCandidate>,
+): HermesPairingPayload {
+    val url = relayUrl.trim()
+    val matching = routes.filter {
+        it.relay?.url == url || it.pluginProxyRoutesOrNull()?.relayWebSocketUrl == url
+    }
+    val relayRoutes = matching.ifEmpty {
+        listOf(EndpointCandidate(role = "manual", relay = RelayEndpoint(url = url)))
+    }
+    return HermesPairingPayload(
+        relay = RelayPairing(url = url, code = code.trim().uppercase()),
+        endpoints = relayRoutes,
+    )
+}
+
+/**
+ * Two-button confirmation dialog shown by [ConnectionWizard] when the user
+ * is about to pair against an API URL that already matches an existing
+ * [Connection] in the store. Prevents the "two cards to the same server"
+ * class of bug at the wizard layer — the post-pair dedupe in
+ * [ConnectionViewModel] is still there as a safety net, but this prompt
+ * lets the user understand what's about to happen and carry their custom
+ * label forward without a silent merge.
+ */
+@Composable
+private fun DuplicateConnectionDialog(
+    existing: Connection,
+    onUpdate: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.cw_update_existing_title)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = stringResource(R.string.cw_update_existing_body),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    text = existing.label,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = existing.primaryEndpointUrl,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontFamily = FontFamily.Monospace,
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = stringResource(R.string.cw_update_existing_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = onUpdate) { Text(stringResource(R.string.cw_update_button)) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.cw_cancel)) }
+        },
+    )
+}
+
+private val PairingPreferencesDefault: Long =
+    com.hermesandroid.relay.data.PairingPreferences.DEFAULT_TTL_SECONDS
+
+internal enum class WizardStep {
+    Nearby,
+    DashboardManual,
+    DashboardFound,
+    DashboardComplete,
+    RelayChoice,
+    Method,
+    StandardEntry,
+    Confirm,
+    ManualEntry,
+    ShowCode,
+    Verify;
+
+    /** Slot index in the 3-dot indicator regardless of which path is active. */
+    val indicatorIndex: Int
+        get() = when (this) {
+            Nearby, RelayChoice, Method -> 0
+            DashboardManual, DashboardFound, StandardEntry, Confirm, ManualEntry, ShowCode -> 1
+            DashboardComplete, Verify -> 2
+        }
+}
+
+internal enum class PairMethod { Standard, Scan, EnterCode, ShowCode }
+
+private const val NewConnectionWizardOwner = "new-dashboard-connection"
+
+/** A setup session keeps one owner while its transient draft becomes active. */
+internal fun resolveConnectionWizardOwner(
+    latchedOwnerId: String?,
+    pendingDraftId: String?,
+): String = pendingDraftId ?: latchedOwnerId ?: NewConnectionWizardOwner
+
+internal data class QrScanTransactionState(
+    val pendingPayload: HermesPairingPayload?,
+    val pendingManualCode: String?,
+    val hasPendingStandardDraft: Boolean,
+    val hasPendingDashboardDraft: Boolean,
+    val hasDuplicatePrompt: Boolean,
+    val hasStandardSuccess: Boolean,
+    val standardError: String?,
+    val hasDashboardProbeResult: Boolean,
+    val dashboardProbeError: String?,
+    val dashboardSuggestedHostname: String?,
+    val verifyError: String?,
+    val verifyAttempt: Int,
+    val standardApiKey: String,
+    val manualCode: String,
+    val ttlSeconds: Long,
+    val step: WizardStep,
+    val chosenMethod: PairMethod,
+    val generation: Int,
+)
+
+/** Invalidates every transient value that can make a new scan reuse an old confirmation. */
+internal fun resetQrScanTransaction(
+    previous: QrScanTransactionState,
+    pairingHome: WizardStep,
+): QrScanTransactionState = previous.copy(
+    pendingPayload = null,
+    pendingManualCode = null,
+    hasPendingStandardDraft = false,
+    hasPendingDashboardDraft = false,
+    hasDuplicatePrompt = false,
+    hasStandardSuccess = false,
+    standardError = null,
+    hasDashboardProbeResult = false,
+    dashboardProbeError = null,
+    dashboardSuggestedHostname = null,
+    verifyError = null,
+    verifyAttempt = 0,
+    standardApiKey = "",
+    manualCode = "",
+    ttlSeconds = PairingPreferencesDefault,
+    step = pairingHome,
+    chosenMethod = PairMethod.Scan,
+    generation = previous.generation + 1,
+)
+
+private enum class DashboardEntryIntent { Cloud, Server }
+
+private val WizardStepSaver = Saver<WizardStep, String>(
+    save = { it.name },
+    restore = { saved -> WizardStep.entries.firstOrNull { it.name == saved } },
+)
+
+private val PairMethodSaver = Saver<PairMethod, String>(
+    save = { it.name },
+    restore = { saved -> PairMethod.entries.firstOrNull { it.name == saved } },
+)
+
+private val DashboardEntryIntentSaver = Saver<DashboardEntryIntent, String>(
+    save = { it.name },
+    restore = { saved -> DashboardEntryIntent.entries.firstOrNull { it.name == saved } },
+)
+
+/** Never restore a step whose required credential or probe state was intentionally not saved. */
+internal fun restorableWizardStep(
+    saved: WizardStep,
+    method: PairMethod,
+    relayScoped: Boolean,
+    hasPayload: Boolean,
+    verifyAttempt: Int,
+    hasDashboardProbe: Boolean,
+): WizardStep = when {
+    saved == WizardStep.DashboardFound && !hasDashboardProbe -> WizardStep.DashboardManual
+    saved == WizardStep.Confirm && !hasPayload -> {
+        if (relayScoped) WizardStep.RelayChoice else WizardStep.Nearby
+    }
+    saved == WizardStep.Verify && verifyAttempt == 0 -> when (method) {
+        PairMethod.Standard -> WizardStep.StandardEntry
+        PairMethod.EnterCode -> WizardStep.ManualEntry
+        PairMethod.Scan, PairMethod.ShowCode -> {
+            if (relayScoped) WizardStep.RelayChoice else WizardStep.Nearby
+        }
+    }
+    else -> saved
+}
+
+internal enum class SetupQrDispatch { Dashboard, StandardApi, Relay }
+
+/** Keep setup QR routing aligned with the surface that owns its credentials. */
+internal fun setupQrDispatch(payload: HermesPairingPayload): SetupQrDispatch = when {
+    payload.relay != null -> SetupQrDispatch.Relay
+    !payload.hasApiServer && !payload.dashboardUrl.isNullOrBlank() -> SetupQrDispatch.Dashboard
+    else -> SetupQrDispatch.StandardApi
+}
+
+internal enum class RelayPairStartOrder {
+    DashboardSignInFirst,
+    PairFirst,
+    InvalidDashboardIngress,
+}
+
+/**
+ * Bind one-time Relay credentials to the ingress route owned by the selected
+ * Dashboard origin. Endpoint topology supplies URL/transport identity; the
+ * top-level Relay block supplies only the one-time secret and grant policy.
+ */
+internal fun resolvedDashboardIngressPairingPayload(
+    payload: HermesPairingPayload,
+): HermesPairingPayload? {
+    val dashboardUrl = payload.dashboardUrl?.trim()?.takeIf(String::isNotBlank)
+        ?: return null
+    val credentials = payload.relay ?: return null
+    val matchingCandidates = payload.endpoints.orEmpty().filter { candidate ->
+        val candidateDashboardUrl = candidate.dashboard?.url ?: return@filter false
+        val candidateRelay = candidate.relay ?: return@filter false
+        sameGatewayRouteBase(dashboardUrl, candidateDashboardUrl) &&
+            isDashboardRelayIngressUrl(candidateRelay.url)
+    }
+    val matchingRelay = matchingCandidates.singleOrNull()?.relay ?: return null
+    return payload.copy(
+        relay = RelayPairing(
+            url = matchingRelay.url,
+            code = credentials.code,
+            ttlSeconds = credentials.ttlSeconds,
+            grants = credentials.grants,
+            transportHint = matchingRelay.transportHint,
+        ),
+    )
+}
+
+/** Dashboard ingress needs Dashboard admission before its Relay socket can open. */
+internal fun relayPairStartOrder(payload: HermesPairingPayload): RelayPairStartOrder {
+    if (payload.dashboardUrl.isNullOrBlank()) return RelayPairStartOrder.PairFirst
+    val carriesDashboardIngress = isDashboardRelayIngressUrl(payload.relay?.url) ||
+        payload.endpoints.orEmpty().any { isDashboardRelayIngressUrl(it.relay?.url) }
+    if (!carriesDashboardIngress) return RelayPairStartOrder.PairFirst
+    return if (resolvedDashboardIngressPairingPayload(payload) != null) {
+        RelayPairStartOrder.DashboardSignInFirst
+    } else {
+        RelayPairStartOrder.InvalidDashboardIngress
+    }
+}
+
+/** Direct Relay can pair first, but a composite setup still completes Dashboard auth next. */
+internal fun shouldOfferDashboardSignInAfterRelayPair(payload: HermesPairingPayload): Boolean =
+    relayPairStartOrder(payload) == RelayPairStartOrder.PairFirst &&
+        !payload.dashboardUrl.isNullOrBlank()
+
+/** Secret-free evidence that a newly accepted QR replaced the prior scan. */
+internal fun pairingPayloadFingerprint(payload: HermesPairingPayload): String {
+    fun port(url: String?): Int? {
+        val uri = runCatching { URI(url) }.getOrNull() ?: return null
+        return uri.port.takeIf { it > 0 } ?: when (uri.scheme?.lowercase()) {
+            "https", "wss" -> 443
+            "http", "ws" -> 80
+            else -> null
+        }
+    }
+    fun safeRole(role: String): String = when (role.lowercase()) {
+        "https", "tailscale", "lan" -> role.lowercase()
+        else -> "other"
+    }
+    val endpoints = payload.endpoints.orEmpty()
+    return buildString {
+        append("hermes=").append(payload.hermes)
+        append(" relay=").append(payload.relay != null)
+        append(" api=").append(payload.hasApiServer)
+        append(" sig=").append(payload.sig?.take(8) ?: "none")
+        append(" roles=").append(endpoints.joinToString(",") { safeRole(it.role) })
+        append(" dashboardPorts=").append(endpoints.joinToString(",") { port(it.dashboard?.url).toString() })
+        append(" relayPorts=").append(endpoints.joinToString(",") { port(it.relay?.url).toString() })
+    }
+}
+
+/** Wizard motion follows the shared OS-animation and touch-exploration policy. */
+internal fun shouldAnimateWizardTransitions(state: AccessibleMotionState): Boolean =
+    state.osAnimations && !state.touchExploration
+
+private const val NOUS_CLOUD_HOST_SUFFIX = ".agents.nousresearch.com"
+private val NOUS_CLOUD_SLUG = Regex("^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
+internal fun resolveNousCloudDashboardAddress(value: String): String {
+    val trimmed = value.trim()
+    if (trimmed.contains("://")) return trimmed
+    val slug = trimmed.removeSuffix(NOUS_CLOUD_HOST_SUFFIX)
+    return if (NOUS_CLOUD_SLUG.matches(slug)) {
+        "https://$slug$NOUS_CLOUD_HOST_SUFFIX"
+    } else {
+        trimmed
+    }
+}
+
+internal fun isValidNousCloudSlug(value: String): Boolean =
+    NOUS_CLOUD_SLUG.matches(value.trim())
+
+internal fun isValidNousCloudAddressInput(value: String): Boolean {
+    val trimmed = value.trim()
+    if (trimmed.contains("://")) return false
+    return isValidNousCloudSlug(trimmed.removeSuffix(NOUS_CLOUD_HOST_SUFFIX))
+}
+
+private data class StandardConnectionDraft(
+    val apiUrl: String,
+    val apiKey: String,
+    val tailscaleApiUrl: String = "",
+    val dashboardUrl: String = "",
+    val routeCandidates: List<EndpointCandidate>? = null,
+)
+
+private data class DashboardConnectionDraft(
+    val dashboardUrl: String,
+    val signInRequired: Boolean,
+    val discoveredHostname: String? = null,
+    val httpConsentOrigin: String? = null,
+)
+
+private const val SetupGuideUrl = "https://hermes-relay.dev/docs/guide/getting-started"
+private const val RelaySetupDocsUrl = "https://hermes-relay.dev/docs/reference/relay-server"
+private const val HermesApiDocsUrl = "https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server"
+
+private fun openExternalUrl(context: android.content.Context, url: String) {
+    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+}
+
+@Composable
+private fun WizardStepIndicator(currentStep: Int, method: PairMethod, directApi: Boolean = false) {
+    val totalSteps = 3
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        repeat(totalSteps) { index ->
+            val isCompleted = index < currentStep
+            val isActive = index == currentStep
+            val bg = when {
+                isCompleted -> MaterialTheme.colorScheme.primary
+                isActive -> MaterialTheme.colorScheme.primary
+                else -> MaterialTheme.colorScheme.surfaceVariant
+            }
+            val fg = when {
+                isCompleted || isActive -> MaterialTheme.colorScheme.onPrimary
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            }
+            Box(
+                modifier = Modifier
+                    .size(28.dp)
+                    .clip(CircleShape)
+                    .background(bg),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (isCompleted) {
+                    Icon(
+                        imageVector = Icons.Filled.Check,
+                        contentDescription = null,
+                        tint = fg,
+                        modifier = Modifier.size(16.dp),
+                    )
+                } else {
+                    Text(
+                        text = "${index + 1}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = fg,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+            if (index < totalSteps - 1) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(2.dp)
+                        .background(
+                            if (isCompleted) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.surfaceVariant
+                        )
+                )
+            }
+        }
+    }
+    Spacer(Modifier.height(4.dp))
+    Text(
+        text = when (currentStep) {
+            0 -> stringResource(R.string.cw_step_1_3)
+            1 -> when (method) {
+                PairMethod.Standard -> stringResource(if (directApi) R.string.cw_hermes_label else R.string.cw_step_2_3_standard)
+                PairMethod.Scan -> stringResource(R.string.cw_step_2_3_scan)
+                PairMethod.EnterCode -> stringResource(R.string.cw_step_2_3_enter_code)
+                PairMethod.ShowCode -> stringResource(R.string.cw_step_2_3_show_code)
+            }
+            else -> stringResource(R.string.cw_step_3_3)
+        },
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+@Composable
+private fun NearbyHermesStep(
+    busy: Boolean,
+    setupReady: Boolean,
+    results: List<HermesLanDiscoveryResult>,
+    message: String?,
+    onSearchAgain: () -> Unit,
+    onSelect: (HermesLanDiscoveryResult) -> Unit,
+    onCloud: () -> Unit,
+    onManualServer: () -> Unit,
+    onPairRelayQr: () -> Unit,
+    onPairRelayCode: () -> Unit,
+    onOtherWays: () -> Unit,
+    onSkip: (() -> Unit)?,
+    onTryDemo: (() -> Unit)?,
+) {
+    NewNearbyHermesStep(
+        busy = busy,
+        setupReady = setupReady,
+        results = results,
+        message = message,
+        onSearchAgain = onSearchAgain,
+        onSelect = onSelect,
+        onCloud = onCloud,
+        onManualServer = onManualServer,
+        onScanQr = onPairRelayQr,
+        onAdvanced = onOtherWays,
+        onSkip = onSkip,
+        onTryDemo = onTryDemo,
+    )
+}
+
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun NewNearbyHermesStep(
+    busy: Boolean,
+    setupReady: Boolean,
+    results: List<HermesLanDiscoveryResult>,
+    message: String?,
+    onSearchAgain: () -> Unit,
+    onSelect: (HermesLanDiscoveryResult) -> Unit,
+    onCloud: () -> Unit,
+    onManualServer: () -> Unit,
+    onScanQr: () -> Unit,
+    onAdvanced: () -> Unit,
+    onSkip: (() -> Unit)?,
+    onTryDemo: (() -> Unit)?,
+) {
+    val context = LocalContext.current
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Text(
+            text = stringResource(R.string.cw_connect_to_hermes),
+            style = MaterialTheme.typography.headlineSmall,
+            modifier = Modifier.semantics { heading() },
+        )
+        Text(
+            text = stringResource(R.string.cw_connection_chooser_description),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Text(
+            text = stringResource(R.string.cw_other_ways_to_connect),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.semantics { heading() },
+        )
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.58f),
+            shape = appearanceRoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                if (results.isNotEmpty()) {
+                    results.forEachIndexed { index, candidate ->
+                        if (index > 0) {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        }
+                        GatewayChooserRow(
+                            icon = Icons.Filled.Wifi,
+                            title = stringResource(R.string.cw_nearby_heading),
+                            subtitle = candidate.dashboardUrl.orEmpty(),
+                            onClick = { onSelect(candidate) },
+                            enabled = setupReady,
+                            status = stringResource(R.string.cw_ready),
+                        )
+                    }
+                } else {
+                    GatewayChooserRow(
+                        icon = Icons.Filled.Wifi,
+                        title = stringResource(R.string.cw_nearby_heading),
+                        subtitle = when {
+                            busy -> stringResource(R.string.cw_nearby_searching)
+                            !message.isNullOrBlank() -> message
+                            else -> stringResource(R.string.cw_nearby_empty_hint)
+                        },
+                        onClick = onSearchAgain,
+                        enabled = setupReady && !busy,
+                        showProgress = busy,
+                    )
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                GatewayChooserRow(
+                    icon = Icons.Filled.Cloud,
+                    title = stringResource(R.string.cw_cloud_title),
+                    subtitle = stringResource(R.string.cw_cloud_subtitle),
+                    onClick = onCloud,
+                    enabled = setupReady,
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                GatewayChooserRow(
+                    icon = Icons.Filled.Dns,
+                    title = stringResource(R.string.cw_server_vps_title),
+                    subtitle = stringResource(R.string.cw_server_vps_subtitle),
+                    onClick = onManualServer,
+                    enabled = setupReady,
+                )
+            }
+        }
+
+        Text(
+            text = stringResource(R.string.cw_relay_optional_note),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.58f),
+            shape = appearanceRoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            GatewayChooserRow(
+                icon = Icons.Filled.QrCodeScanner,
+                title = stringResource(R.string.cw_scan_setup_qr_title),
+                subtitle = stringResource(R.string.cw_scan_setup_qr_subtitle),
+                onClick = onScanQr,
+                enabled = setupReady,
+            )
+        }
+
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center,
+        ) {
+            TextButton(onClick = { openExternalUrl(context, SetupGuideUrl) }) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Outlined.MenuBook,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(Modifier.size(6.dp))
+                Text(stringResource(R.string.cw_setup_guide))
+            }
+            TextButton(onClick = onAdvanced, enabled = setupReady) {
+                Text(stringResource(R.string.cw_advanced))
+            }
+        }
+        if (onTryDemo != null) {
+            TextButton(onClick = onTryDemo, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(R.string.cw_try_demo))
+            }
+        }
+        if (onSkip != null) {
+            TextButton(onClick = onSkip, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(R.string.cw_skip_for_now))
+            }
+        }
+    }
+}
+
+@Composable
+private fun GatewayChooserRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+    enabled: Boolean,
+    status: String? = null,
+    showProgress: Boolean = false,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Surface(
+            color = MaterialTheme.colorScheme.surface,
+            shape = appearanceRoundedCornerShape(12.dp),
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(10.dp).size(24.dp),
+            )
+        }
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+            )
+        }
+        status?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        if (showProgress) {
+            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+        } else {
+            Icon(Icons.Filled.ChevronRight, contentDescription = null)
+        }
+    }
+}
+
+@Composable
+private fun NearbyHermesResult(
+    candidate: HermesLanDiscoveryResult,
+    onClick: () -> Unit,
+) {
+    val address = candidate.dashboardUrl.orEmpty()
+    val availableState = stringResource(R.string.cw_semantics_hermes_available)
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 64.dp)
+            .clickable(role = Role.Button, onClick = onClick)
+            .semantics { stateDescription = availableState },
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(Icons.Filled.Check, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = candidate.displayHost,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+                Text(
+                    text = if (candidate.hostname != null) {
+                        "${candidate.host} · $address"
+                    } else {
+                        address
+                    },
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.82f),
+                )
+            }
+            Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
+        }
+    }
+}
+
+@Composable
+private fun DashboardManualStep(
+    intent: DashboardEntryIntent,
+    address: String,
+    onAddressChange: (String) -> Unit,
+    httpConsentOrigin: String?,
+    onHttpConsentChange: (String?) -> Unit,
+    busy: Boolean,
+    error: String?,
+    onBack: () -> Unit,
+    onSubmit: (String) -> Unit,
+) {
+    val context = LocalContext.current
+    var useCustomAddress by rememberSaveable(intent) { mutableStateOf(false) }
+    val cloudSlugMode = intent == DashboardEntryIntent.Cloud && !useCustomAddress
+    val fieldError = if (cloudSlugMode) {
+        when {
+            address.isBlank() -> null
+            !isValidNousCloudAddressInput(address) -> context.getString(R.string.cw_cloud_slug_error)
+            else -> null
+        }
+    } else {
+        optionalHttpUrlError(address, context)
+    }
+    val resolvedAddress = if (cloudSlugMode) resolveNousCloudDashboardAddress(address) else address.trim()
+    val normalizedAddress = Connection.normalizeDashboardUrlInput(resolvedAddress)
+    val httpAccepted = !com.hermesandroid.relay.data.dashboardHttpConsentRequired(normalizedAddress) ||
+        httpConsentOrigin == com.hermesandroid.relay.data.dashboardHttpOrigin(normalizedAddress)
+    Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Text(
+            text = stringResource(
+                if (intent == DashboardEntryIntent.Cloud) R.string.cw_cloud_entry_title
+                else R.string.cw_manual_hermes_title,
+            ),
+            style = MaterialTheme.typography.headlineSmall,
+            modifier = Modifier.semantics { heading() },
+        )
+        Text(
+            text = stringResource(
+                if (intent == DashboardEntryIntent.Cloud) R.string.cw_cloud_entry_description
+                else R.string.cw_manual_hermes_description,
+            ),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedTextField(
+            value = address,
+            onValueChange = { updated ->
+                if (cloudSlugMode && (updated.contains("://") || updated.contains('/'))) {
+                    useCustomAddress = true
+                }
+                onAddressChange(updated)
+            },
+            label = {
+                Text(
+                    stringResource(
+                        if (cloudSlugMode) R.string.cw_cloud_agent_name
+                        else R.string.cw_hermes_address,
+                    )
+                )
+            },
+            placeholder = {
+                Text(
+                    stringResource(
+                        if (cloudSlugMode) R.string.cw_cloud_slug_placeholder
+                        else if (intent == DashboardEntryIntent.Cloud) R.string.cw_cloud_address_placeholder
+                        else R.string.cw_hermes_address_placeholder,
+                    )
+                )
+            },
+            supportingText = {
+                Text(
+                    fieldError ?: stringResource(
+                        if (cloudSlugMode) R.string.cw_cloud_slug_hint
+                        else if (intent == DashboardEntryIntent.Cloud) R.string.cw_cloud_address_hint
+                        else R.string.cw_hermes_address_hint,
+                    )
+                )
+            },
+            isError = fieldError != null || error != null,
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go, autoCorrectEnabled = false),
+            keyboardActions = KeyboardActions(onGo = {
+                if (address.isNotBlank() && fieldError == null && !busy && httpAccepted) onSubmit(resolvedAddress)
+            }),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        if (intent == DashboardEntryIntent.Cloud) {
+            TextButton(
+                onClick = {
+                    useCustomAddress = !useCustomAddress
+                    onAddressChange("")
+                },
+                enabled = !busy,
+                modifier = Modifier.align(Alignment.End),
+            ) {
+                Text(
+                    stringResource(
+                        if (useCustomAddress) R.string.cw_cloud_use_nous_address
+                        else R.string.cw_cloud_use_custom_address,
+                    )
+                )
+            }
+        }
+        error?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        DashboardHttpConsentControl(normalizedAddress, httpConsentOrigin, onHttpConsentChange, enabled = !busy)
+        TextButton(onClick = { openExternalUrl(context, SetupGuideUrl) }) {
+            Text(stringResource(R.string.cw_setup_guide))
+        }
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onBack, enabled = !busy, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
+                Text(stringResource(R.string.cw_back))
+            }
+            Button(
+                onClick = { onSubmit(resolvedAddress) },
+                enabled = address.isNotBlank() && fieldError == null && !busy && httpAccepted,
+                modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+            ) {
+                if (busy) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                else Text(stringResource(R.string.cw_find_hermes))
+            }
+        }
+    }
+}
+
+@Composable
+private fun DashboardFoundStep(
+    result: ConnectionViewModel.DashboardSetupResult,
+    saving: Boolean,
+    error: String?,
+    onBack: () -> Unit,
+    onConnect: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Text(
+            text = stringResource(R.string.cw_hermes_found),
+            style = MaterialTheme.typography.headlineSmall,
+            modifier = Modifier.semantics { heading() },
+        )
+        Surface(
+            color = MaterialTheme.colorScheme.primaryContainer,
+            shape = appearanceRoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = Connection.extractDefaultLabel(result.dashboardUrl),
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+                Text(
+                    text = result.dashboardUrl,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
+                )
+                Text(
+                    text = stringResource(R.string.cw_ready_to_connect),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+        }
+        FoundCapabilityLine(
+            label = stringResource(R.string.cw_chat),
+            value = if (result.signInRequired) stringResource(R.string.cw_available_after_signin) else stringResource(R.string.cw_chat_checked_on_open),
+            ready = false,
+        )
+        FoundCapabilityLine(
+            label = stringResource(R.string.cw_manage),
+            value = if (result.signInRequired) stringResource(R.string.cw_available_after_signin) else stringResource(R.string.cw_auth_verified),
+            ready = !result.signInRequired,
+        )
+        FoundCapabilityLine(
+            label = stringResource(R.string.cw_voice),
+            value = when (result.voiceAvailability) {
+                StandardVoiceAvailability.Ready -> stringResource(R.string.cw_ready)
+                StandardVoiceAvailability.SignInRequired -> stringResource(R.string.cw_available_after_signin)
+                StandardVoiceAvailability.Unsupported -> stringResource(R.string.cw_unavailable_server)
+                StandardVoiceAvailability.Unreachable,
+                StandardVoiceAvailability.Unknown -> stringResource(R.string.cw_could_not_verify)
+            },
+            ready = result.voiceAvailability == StandardVoiceAvailability.Ready,
+        )
+        error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onBack, enabled = !saving, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
+                Text(stringResource(R.string.cw_choose_another))
+            }
+            Button(onClick = onConnect, enabled = !saving, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
+                if (saving) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                else Text(if (result.signInRequired) stringResource(R.string.cw_sign_in_to_hermes) else stringResource(R.string.cw_connect_button))
+            }
+        }
+    }
+}
+
+@Composable
+private fun DashboardCompleteStep(onComplete: () -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Surface(
+            color = MaterialTheme.colorScheme.primaryContainer,
+            shape = CircleShape,
+            modifier = Modifier.size(64.dp),
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = Icons.Filled.Check,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.size(34.dp),
+                )
+            }
+        }
+        Text(
+            text = stringResource(R.string.cw_dashboard_connected_title),
+            style = MaterialTheme.typography.headlineSmall,
+            modifier = Modifier.semantics { heading() },
+        )
+        Text(
+            text = stringResource(R.string.cw_dashboard_connected_body),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        ConnectionSetupTimeline(
+            steps = listOf(
+                ConnectionSetupTimelineStep(
+                    stringResource(R.string.cw_timeline_discovered),
+                    stringResource(R.string.cw_timeline_discovered_detail),
+                ),
+                ConnectionSetupTimelineStep(
+                    stringResource(R.string.cw_timeline_access),
+                    stringResource(R.string.cw_timeline_access_ready),
+                ),
+                ConnectionSetupTimelineStep(
+                    stringResource(R.string.cw_timeline_ready),
+                    stringResource(R.string.cw_timeline_ready_detail),
+                ),
+            ),
+        )
+        Button(
+            onClick = onComplete,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+        ) {
+            Text(stringResource(R.string.cw_continue))
+        }
+    }
+}
+
+@Composable
+private fun FoundCapabilityLine(label: String, value: String, ready: Boolean) {
+    val capabilityState = stringResource(R.string.cw_semantics_capability, label, value)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics { stateDescription = capabilityState }
+            .padding(horizontal = 4.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Icon(
+            imageVector = if (ready) Icons.Filled.Check else Icons.Filled.ChevronRight,
+            contentDescription = null,
+            tint = if (ready) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(label, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+        Text(value, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun RelayChoiceStep(
+    connectionLabel: String,
+    dashboardUrl: String,
+    onPickScan: () -> Unit,
+    onPickEnterCode: () -> Unit,
+    onPickShowCode: () -> Unit,
+) {
+    val context = LocalContext.current
+    Column(
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text(
+            text = stringResource(
+                R.string.cw_pair_relay_for,
+                connectionLabel.ifBlank { stringResource(R.string.cw_current_connection) },
+            ),
+            style = MaterialTheme.typography.headlineSmall,
+            modifier = Modifier.semantics { heading() },
+        )
+        Text(
+            text = stringResource(R.string.cw_pair_relay_scoped_desc),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shape = appearanceRoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.cw_current_hermes_connection),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    text = connectionLabel.ifBlank { stringResource(R.string.cw_current_connection) },
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                if (dashboardUrl.isNotBlank()) {
+                    Text(
+                        text = dashboardUrl,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(
+                    text = stringResource(R.string.cw_existing_connection_unchanged),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        MethodTile(
+            icon = Icons.Filled.QrCodeScanner,
+            title = stringResource(R.string.cw_relay_pair_qr),
+            subtitle = stringResource(R.string.cw_relay_pair_qr_desc),
+            onClick = onPickScan,
+            isPrimary = true,
+        )
+        MethodTile(
+            icon = Icons.Filled.Keyboard,
+            title = stringResource(R.string.cw_method_pair_code_title),
+            subtitle = stringResource(R.string.cw_method_pair_code_subtitle),
+            onClick = onPickEnterCode,
+        )
+        MethodTile(
+            icon = Icons.Filled.PhonelinkLock,
+            title = stringResource(R.string.cw_method_show_code_title),
+            subtitle = stringResource(R.string.cw_method_show_code_subtitle),
+            onClick = onPickShowCode,
+        )
+        TextButton(
+            onClick = { openExternalUrl(context, RelaySetupDocsUrl) },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Outlined.MenuBook,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+            )
+            Spacer(Modifier.size(6.dp))
+            Text(stringResource(R.string.cw_relay_docs))
+        }
+    }
+}
+
+@Composable
+private fun MethodStep(
+    onBack: () -> Unit,
+    onPickStandard: () -> Unit,
+    onPickEnterCode: () -> Unit,
+    onPickShowCode: () -> Unit,
+) {
+    val context = LocalContext.current
+    Column(
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text(
+            text = stringResource(R.string.cw_other_connection_methods),
+            style = MaterialTheme.typography.headlineSmall,
+        )
+        Text(
+            text = stringResource(R.string.cw_connect_description),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(
+                onClick = { openExternalUrl(context, SetupGuideUrl) },
+                modifier = Modifier.weight(1f),
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Outlined.MenuBook,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(Modifier.size(6.dp))
+                Text(stringResource(R.string.cw_setup_guide))
+            }
+            OutlinedButton(
+                onClick = { openExternalUrl(context, HermesApiDocsUrl) },
+                modifier = Modifier.weight(1f),
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Outlined.MenuBook,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(Modifier.size(6.dp))
+                Text(stringResource(R.string.cw_hermes_api))
+            }
+        }
+
+        MethodTile(
+            icon = Icons.Filled.Check,
+            title = stringResource(R.string.cw_method_hermes_title),
+            subtitle = stringResource(R.string.cw_method_hermes_subtitle),
+            onClick = onPickStandard,
+            isPrimary = true,
+        )
+
+        HorizontalDivider(modifier = Modifier.padding(top = 4.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = stringResource(R.string.cw_advanced_relay_pairing),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = stringResource(R.string.cw_advanced_relay_pairing_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            TextButton(onClick = { openExternalUrl(context, RelaySetupDocsUrl) }) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Outlined.MenuBook,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(Modifier.size(6.dp))
+                Text(stringResource(R.string.cw_relay_docs))
+            }
+        }
+
+        MethodTile(
+            icon = Icons.Filled.Keyboard,
+            title = stringResource(R.string.cw_method_pair_code_title),
+            subtitle = stringResource(R.string.cw_method_pair_code_subtitle),
+            onClick = onPickEnterCode,
+        )
+
+        MethodTile(
+            icon = Icons.Filled.PhonelinkLock,
+            title = stringResource(R.string.cw_method_show_code_title),
+            subtitle = stringResource(R.string.cw_method_show_code_subtitle),
+            onClick = onPickShowCode,
+        )
+
+        TextButton(
+            onClick = onBack,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(stringResource(R.string.cw_back))
+        }
+    }
+}
+
+@Composable
+private fun MethodTile(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+    isPrimary: Boolean = false,
+    enabled: Boolean = true,
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = enabled, onClick = onClick),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isPrimary) {
+                MaterialTheme.colorScheme.primaryContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceVariant
+            },
+        ),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (isPrimary) {
+                    MaterialTheme.colorScheme.onPrimaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                modifier = Modifier.size(28.dp),
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (isPrimary) {
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (isPrimary) {
+                        MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+            }
+            Icon(
+                imageVector = Icons.Filled.ChevronRight,
+                contentDescription = null,
+                tint = if (isPrimary) {
+                    MaterialTheme.colorScheme.onPrimaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+        }
+    }
+}
+
+/**
+ * Returns an error message when [url] looks like a relay URL (ws/wss) in an
+ * API-server field, or null when the scheme is fine or the field is empty.
+ * The API server is HTTP/SSE; the relay is WSS — mixing them silently used
+ * to land in the Confirm preview as a mislabeled line.
+ */
+private fun apiUrlSchemeError(url: String, context: android.content.Context): String? {
+    val trimmed = url.trim()
+    if (trimmed.isEmpty()) return null
+    // Wrong-scheme paste gets a precise message first…
+    if (trimmed.startsWith("ws://", ignoreCase = true) ||
+        trimmed.startsWith("wss://", ignoreCase = true)
+    ) {
+        return context.getString(R.string.cw_api_url_scheme_error)
+    }
+    // …then reject anything that won't actually parse as a host/URL. Without
+    // this, a non-address such as "Manage sign-in and admin screens" passed
+    // validation, was normalized to http://<spaces> at save, and crashed the
+    // app when okhttp's url(String) threw on the malformed host (issue #131).
+    return ServerAddress.fieldError(trimmed, context.getString(R.string.cw_field_api_url))
+}
+
+private fun optionalHttpUrlError(
+    url: String,
+    context: android.content.Context,
+): String? {
+    val trimmed = url.trim()
+    if (trimmed.isEmpty()) return null
+    // Bare hosts/IPs are fine — save paths run them through
+    // [Connection.normalizeApiUrlInput], which assumes http://. An explicit
+    // non-http scheme is an error (it would be preserved verbatim and dropped
+    // at candidate-build time)…
+    val scheme = Regex("^([A-Za-z][A-Za-z0-9+.-]*)://").find(trimmed)
+        ?.groupValues?.get(1)?.lowercase()
+    if (scheme != null && scheme != "http" && scheme != "https") {
+        return context.getString(
+            R.string.cw_http_url_scheme_error,
+            context.getString(R.string.cw_http_url_field_label),
+        )
+    }
+    // …and a value that won't parse as a real http(s) host (spaces, junk) is
+    // rejected here rather than reaching a request builder that throws (#131).
+    return ServerAddress.fieldError(trimmed, context.getString(R.string.cw_http_url_field_label))
+}
+
+/** Mirror of [apiUrlSchemeError] for the relay field. */
+private fun relayUrlSchemeError(url: String, context: android.content.Context): String? {
+    val trimmed = url.trim()
+    if (trimmed.isEmpty()) return null
+    return if (ConnectionValidation.validateOptionalRelayUrl(trimmed) == null) {
+        null
+    } else {
+        context.getString(R.string.cw_relay_url_scheme_error)
+    }
+}
+
+@Composable
+private fun StandardEntryStep(
+    apiUrl: String,
+    onApiUrlChange: (String) -> Unit,
+    apiKey: String,
+    onApiKeyChange: (String) -> Unit,
+    tailscaleApiUrl: String,
+    onTailscaleApiUrlChange: (String) -> Unit,
+    dashboardUrl: String,
+    onDashboardUrlChange: (String) -> Unit,
+    apiKeyVisible: Boolean,
+    onToggleApiKeyVisible: () -> Unit,
+    isConnecting: Boolean,
+    error: String?,
+    success: ConnectionViewModel.StandardApiSetupResult?,
+    onBack: () -> Unit,
+    onComplete: () -> Unit,
+    onManageSignIn: (() -> Unit)?,
+    isTailscaleDetected: Boolean = false,
+    onSubmit: () -> Unit,
+) {
+    val context = LocalContext.current
+    val scanScope = rememberCoroutineScope()
+    val apiError = apiUrlSchemeError(apiUrl, context)
+    val tailscaleError = optionalHttpUrlError(tailscaleApiUrl, context)
+    val dashboardError = optionalHttpUrlError(dashboardUrl, context)
+    val apiKeyError = if (apiKey.trim(' ', '\t').any { it < '!' || it > '~' }) {
+        stringResource(R.string.api_credential_single_line_error)
+    } else {
+        null
+    }
+    var advancedExpanded by remember { mutableStateOf(false) }
+    var scanBusy by remember { mutableStateOf(false) }
+    var scanResults by remember { mutableStateOf<List<HermesLanDiscoveryResult>>(emptyList()) }
+    var scanMessage by remember { mutableStateOf<String?>(null) }
+    var scanApiPort by remember { mutableStateOf("8642") }
+    var scanDashboardPort by remember {
+        mutableStateOf(Connection.DEFAULT_DASHBOARD_PORT.toString())
+    }
+    val parsedScanApiPort = scanApiPort.toIntOrNull()?.takeIf { it in 1..65_535 }
+    val parsedScanDashboardPort = scanDashboardPort.toIntOrNull()?.takeIf { it in 1..65_535 }
+    val canSubmit = apiUrl.isNotBlank() &&
+        apiError == null &&
+        tailscaleError == null &&
+        dashboardError == null &&
+        apiKeyError == null &&
+        !isConnecting
+    val defaultDashboardUrl = Connection.deriveDefaultDashboardUrl(apiUrl)
+    val effectiveDashboardUrl = dashboardUrl
+        .trim()
+        .trimEnd('/')
+        .takeIf { it.isNotBlank() }
+        ?: defaultDashboardUrl
+
+    Column(
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text(
+            text = stringResource(R.string.cw_hermes_label),
+            style = MaterialTheme.typography.headlineSmall,
+        )
+        Text(
+            text = stringResource(R.string.cw_hermes_label_desc),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        OutlinedTextField(
+            value = apiUrl,
+            onValueChange = onApiUrlChange,
+            label = { Text(stringResource(R.string.cw_api_url_label)) },
+            placeholder = { Text(stringResource(R.string.cw_api_url_placeholder)) },
+            singleLine = true,
+            isError = apiError != null,
+            supportingText = {
+                Text(
+                    apiError ?: stringResource(R.string.cw_api_url_supporting),
+                )
+            },
+            keyboardOptions = KeyboardOptions(
+                imeAction = ImeAction.Next,
+                autoCorrectEnabled = false,
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        OutlinedButton(
+            onClick = {
+                val apiPort = parsedScanApiPort ?: 8642
+                val dashboardPort = parsedScanDashboardPort ?: Connection.DEFAULT_DASHBOARD_PORT
+                scanBusy = true
+                scanResults = emptyList()
+                scanMessage = context.getString(R.string.cw_scan_message)
+                scanScope.launch {
+                    val results = runCatching {
+                        HermesLanDiscovery.scan(
+                            context = context,
+                            apiPort = apiPort,
+                            dashboardPort = dashboardPort,
+                        )
+                    }
+                    results.onSuccess { found ->
+                        scanResults = found
+                        scanMessage = scanSummary(found, context)
+                    }.onFailure { failure ->
+                        scanResults = emptyList()
+                        scanMessage = context.getString(R.string.cw_scan_failed) + ": ${failure.message ?: failure.javaClass.simpleName}"
+                    }
+                    scanBusy = false
+                }
+            },
+            enabled = !isConnecting &&
+                !scanBusy &&
+                parsedScanApiPort != null &&
+                parsedScanDashboardPort != null,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            if (scanBusy) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Filled.Refresh,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+            Spacer(Modifier.size(8.dp))
+            Text(if (scanBusy) stringResource(R.string.cw_scanning_lan) else stringResource(R.string.cw_scan_lan))
+        }
+
+        scanMessage?.let { message ->
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        scanResults.forEach { candidate ->
+            LanDiscoveryResultRow(
+                candidate = candidate,
+                onUse = {
+                    onApiUrlChange(candidate.apiUrl)
+                    val derivedDashboard = Connection.deriveDefaultDashboardUrl(candidate.apiUrl)
+                    val detectedDashboard = candidate.dashboardUrl.orEmpty()
+                    onDashboardUrlChange(
+                        detectedDashboard
+                            .takeIf {
+                                it.isNotBlank() &&
+                                    !it.equals(derivedDashboard, ignoreCase = true)
+                            }
+                            .orEmpty(),
+                    )
+                    scanMessage = when {
+                        candidate.apiReachable && candidate.dashboardReachable ->
+                            context.getString(
+                                R.string.cw_scan_result_api_dashboard,
+                                candidate.host,
+                            )
+                        candidate.apiReachable ->
+                            context.getString(
+                                R.string.cw_scan_result_api_only,
+                                candidate.host,
+                                parsedScanDashboardPort ?: Connection.DEFAULT_DASHBOARD_PORT,
+                            )
+                        candidate.dashboardReachable ->
+                            context.getString(
+                                R.string.cw_scan_result_dashboard_only,
+                                candidate.host,
+                                parsedScanApiPort ?: 8642,
+                            )
+                        else -> context.getString(
+                            R.string.cw_scan_result_unknown,
+                            candidate.host,
+                        )
+                    }
+                },
+            )
+        }
+
+        OutlinedTextField(
+            value = apiKey,
+            onValueChange = onApiKeyChange,
+            label = { Text(stringResource(R.string.cw_api_key_label)) },
+            placeholder = { Text(stringResource(R.string.cw_api_key_placeholder)) },
+            singleLine = true,
+            isError = apiKeyError != null,
+            supportingText = {
+                Text(apiKeyError ?: stringResource(R.string.cw_api_key_hint))
+            },
+            visualTransformation = if (apiKeyVisible) {
+                VisualTransformation.None
+            } else {
+                PasswordVisualTransformation()
+            },
+            trailingIcon = {
+                IconButton(onClick = onToggleApiKeyVisible) {
+                    Icon(
+                        imageVector = if (apiKeyVisible) {
+                            Icons.Filled.VisibilityOff
+                        } else {
+                            Icons.Filled.Visibility
+                        },
+                        contentDescription = if (apiKeyVisible) {
+                            stringResource(R.string.cw_hide_api_key)
+                        } else {
+                            stringResource(R.string.cw_show_api_key)
+                        },
+                    )
+                }
+            },
+            keyboardOptions = KeyboardOptions(
+                imeAction = ImeAction.Go,
+                autoCorrectEnabled = false,
+            ),
+            keyboardActions = KeyboardActions(
+                onGo = { if (canSubmit) onSubmit() },
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        // Remote access is part of the main form, not Advanced: the one URL
+        // that decides whether the app works outside the house shouldn't be
+        // an easter egg. Optional — blank simply means LAN-only for now.
+        OutlinedTextField(
+            value = tailscaleApiUrl,
+            onValueChange = onTailscaleApiUrlChange,
+            label = { Text(stringResource(R.string.cw_tailscale_label)) },
+            placeholder = { Text(stringResource(R.string.cw_tailscale_placeholder)) },
+            singleLine = true,
+            isError = tailscaleError != null,
+            supportingText = {
+                Text(
+                    tailscaleError ?: if (isTailscaleDetected) {
+                        stringResource(R.string.cw_tailscale_supporting_detected)
+                    } else {
+                        stringResource(R.string.cw_tailscale_supporting_other)
+                    },
+                )
+            },
+            keyboardOptions = KeyboardOptions(
+                imeAction = ImeAction.Next,
+                autoCorrectEnabled = false,
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.cw_dashboard),
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Text(
+                    text = effectiveDashboardUrl ?: stringResource(R.string.cw_dashboard_derived),
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = if (dashboardUrl.isBlank()) {
+                        stringResource(R.string.cw_dashboard_blank_hint, Connection.DEFAULT_DASHBOARD_PORT)
+                    } else {
+                        stringResource(R.string.cw_dashboard_custom_hint)
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (tailscaleApiUrl.isNotBlank()) {
+                    Text(
+                        text = stringResource(R.string.cw_dashboard_routes_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        TextButton(
+            onClick = { advancedExpanded = !advancedExpanded },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(if (advancedExpanded) stringResource(R.string.cw_advanced_urls_hide) else stringResource(R.string.cw_advanced_urls_show))
+            Spacer(Modifier.size(4.dp))
+            Icon(
+                imageVector = Icons.Filled.ArrowDropDown,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+
+        if (advancedExpanded) {
+            OutlinedTextField(
+                value = dashboardUrl,
+                onValueChange = onDashboardUrlChange,
+                label = { Text(stringResource(R.string.cw_dashboard_url_override)) },
+                placeholder = { Text(stringResource(R.string.cw_dashboard_url_placeholder, Connection.DEFAULT_DASHBOARD_PORT)) },
+                singleLine = true,
+                isError = dashboardError != null,
+                supportingText = {
+                    Text(
+                        text = dashboardError ?: stringResource(R.string.cw_dashboard_url_supporting)
+                    )
+                },
+                keyboardOptions = KeyboardOptions(
+                    imeAction = ImeAction.Next,
+                    autoCorrectEnabled = false,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                OutlinedTextField(
+                    value = scanApiPort,
+                    onValueChange = { scanApiPort = it.filter(Char::isDigit).take(5) },
+                    label = { Text(stringResource(R.string.cw_api_port)) },
+                    singleLine = true,
+                    isError = parsedScanApiPort == null,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Number,
+                        imeAction = ImeAction.Next,
+                    ),
+                    modifier = Modifier.weight(1f),
+                )
+                OutlinedTextField(
+                    value = scanDashboardPort,
+                    onValueChange = { scanDashboardPort = it.filter(Char::isDigit).take(5) },
+                    label = { Text(stringResource(R.string.cw_dashboard_port)) },
+                    singleLine = true,
+                    isError = parsedScanDashboardPort == null,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Number,
+                        imeAction = ImeAction.Done,
+                    ),
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Text(
+                text = stringResource(R.string.cw_port_scan_hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        if (error != null) {
+            Text(
+                text = error,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        } else if (success != null) {
+            StandardSetupResultCard(
+                result = success,
+                onContinue = onComplete,
+                onManageSignIn = onManageSignIn,
+            )
+        }
+
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            OutlinedButton(
+                onClick = onBack,
+                enabled = !isConnecting,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(stringResource(R.string.cw_back))
+            }
+            Button(
+                onClick = onSubmit,
+                enabled = canSubmit,
+                modifier = Modifier.weight(1f),
+            ) {
+                if (isConnecting) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                    )
+                } else {
+                    Text(stringResource(R.string.cw_connect_button))
+                }
+            }
+        }
+    }
+}
+
+private fun scanSummary(
+    found: List<HermesLanDiscoveryResult>,
+    context: android.content.Context,
+): String {
+    if (found.isEmpty()) {
+        return context.getString(R.string.cw_scan_summary_empty)
+    }
+    val both = found.count { it.apiReachable && it.dashboardReachable }
+    val apiOnly = found.count { it.apiReachable && !it.dashboardReachable }
+    val dashboardOnly = found.count { !it.apiReachable && it.dashboardReachable }
+    return buildList {
+        add(
+            context.resources.getQuantityString(
+                R.plurals.cw_scan_summary_hosts,
+                found.size,
+                found.size,
+            )
+        )
+        if (both > 0) add(context.resources.getQuantityString(R.plurals.cw_scan_summary_both, both, both))
+        if (apiOnly > 0) add(context.resources.getQuantityString(R.plurals.cw_scan_summary_api_only, apiOnly, apiOnly))
+        if (dashboardOnly > 0) add(context.resources.getQuantityString(R.plurals.cw_scan_summary_dashboard_only, dashboardOnly, dashboardOnly))
+    }.joinToString(". ") + "."
+}
+
+@Composable
+private fun StandardSetupResultCard(
+    result: ConnectionViewModel.StandardApiSetupResult,
+    onContinue: () -> Unit,
+    onManageSignIn: (() -> Unit)? = null,
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+        ),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(
+                text = stringResource(R.string.cw_hermes_connected),
+                style = MaterialTheme.typography.titleMedium,
+            )
+            ReadinessLine(
+                label = stringResource(R.string.cw_chat),
+                detail = if (result.apiReachable) {
+                    stringResource(R.string.cw_api_server_ready)
+                } else {
+                    stringResource(R.string.cw_api_server_not_reachable)
+                },
+                ok = result.apiReachable,
+            )
+            ReadinessLine(
+                label = stringResource(R.string.cw_manage),
+                detail = when {
+                    result.dashboardAuthenticated == true -> stringResource(R.string.cw_dashboard_signed_in)
+                    result.dashboardSignInRequired -> stringResource(R.string.cw_dashboard_sign_in_required)
+                    result.dashboardReachable == true -> stringResource(R.string.cw_dashboard_available)
+                    result.dashboardReachable == false -> stringResource(R.string.cw_dashboard_not_reachable)
+                    else -> stringResource(R.string.cw_dashboard_will_check)
+                },
+                ok = result.dashboardAuthenticated == true ||
+                    result.dashboardReachable == true && !result.dashboardSignInRequired,
+            )
+            ReadinessLine(
+                label = stringResource(R.string.cw_voice),
+                detail = when (result.voiceAvailability) {
+                    StandardVoiceAvailability.Ready -> stringResource(R.string.cw_voice_ready)
+                    StandardVoiceAvailability.SignInRequired -> stringResource(R.string.cw_voice_sign_in_to_unlock)
+                    StandardVoiceAvailability.Unsupported ->
+                        stringResource(R.string.cw_voice_no_routes)
+                    StandardVoiceAvailability.Unreachable -> stringResource(R.string.cw_voice_after_dashboard)
+                    StandardVoiceAvailability.Unknown -> stringResource(R.string.cw_voice_after_connect)
+                },
+                ok = result.voiceAvailability == StandardVoiceAvailability.Ready,
+                neutralWhenFalse = true,
+            )
+            ReadinessLine(
+                label = stringResource(R.string.cw_remote),
+                detail = if (result.remoteRouteConfigured) {
+                    stringResource(R.string.cw_remote_fallback_ready)
+                } else {
+                    stringResource(R.string.cw_remote_lan_only)
+                },
+                ok = result.remoteRouteConfigured,
+                neutralWhenFalse = true,
+            )
+            ReadinessLine(
+                label = stringResource(R.string.cw_relay),
+                detail = if (result.relayPaired) {
+                    stringResource(R.string.cw_relay_paired)
+                } else {
+                    stringResource(R.string.cw_relay_optional)
+                },
+                ok = result.relayPaired,
+                neutralWhenFalse = true,
+            )
+            Text(
+                text = result.message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Button(
+                onClick = onContinue,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(stringResource(R.string.cw_start_chat))
+            }
+            if (result.dashboardSignInRequired && onManageSignIn != null) {
+                OutlinedButton(
+                    onClick = onManageSignIn,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(stringResource(R.string.cw_sign_in_to_manage))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReadinessLine(
+    label: String,
+    detail: String,
+    ok: Boolean,
+    neutralWhenFalse: Boolean = false,
+) {
+    val tint = when {
+        ok -> Color(0xFF2E7D32)
+        neutralWhenFalse -> MaterialTheme.colorScheme.onSurfaceVariant
+        else -> MaterialTheme.colorScheme.error
+    }
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Icon(
+            imageVector = when {
+                ok -> Icons.Filled.Check
+                neutralWhenFalse -> Icons.Filled.ChevronRight
+                else -> Icons.Filled.ErrorOutline
+            },
+            contentDescription = null,
+            tint = tint,
+            modifier = Modifier.size(18.dp),
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Text(
+                text = detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun LanDiscoveryResultRow(
+    candidate: HermesLanDiscoveryResult,
+    onUse: () -> Unit,
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onUse),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface,
+        ),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Check,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(22.dp),
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = candidate.host,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = when {
+                        candidate.apiReachable && candidate.dashboardReachable ->
+                            stringResource(R.string.cw_lan_api_dashboard)
+                        candidate.apiReachable ->
+                            stringResource(R.string.cw_lan_api_only)
+                        candidate.dashboardReachable ->
+                            stringResource(R.string.cw_lan_dashboard_only)
+                        else -> stringResource(R.string.cw_lan_unknown)
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (candidate.apiReachable) {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    } else {
+                        MaterialTheme.colorScheme.error
+                    },
+                )
+                Text(
+                    text = candidate.dashboardUrl ?: candidate.apiUrl,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Icon(
+                imageVector = Icons.Filled.ChevronRight,
+                contentDescription = stringResource(R.string.endpoints_use_now),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ManualEntryStep(
+    apiUrl: String,
+    onApiUrlChange: (String) -> Unit,
+    relayUrl: String,
+    onRelayUrlChange: (String) -> Unit,
+    code: String,
+    onCodeChange: (String) -> Unit,
+    requireApi: Boolean,
+    onBack: () -> Unit,
+    onSubmit: () -> Unit,
+) {
+    val trimmedCode = code.trim().uppercase()
+    val codeValid = trimmedCode.length in 4..12 && trimmedCode.all { it.isLetterOrDigit() }
+    val context = LocalContext.current
+    val apiError = if (requireApi) apiUrlSchemeError(apiUrl, context) else null
+    val relayError = relayUrlSchemeError(relayUrl, context)
+    val canSubmit = codeValid &&
+        relayUrl.isNotBlank() && (!requireApi || apiUrl.isNotBlank()) &&
+        apiError == null && relayError == null
+
+    Column(
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text(
+            text = stringResource(R.string.cw_method_pair_code_title),
+            style = MaterialTheme.typography.headlineSmall,
+        )
+        Text(
+            text = stringResource(R.string.cw_pair_code_subtitle),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        if (requireApi) {
+            OutlinedTextField(
+                value = apiUrl,
+                onValueChange = onApiUrlChange,
+                label = { Text(stringResource(R.string.cw_api_url_label_field)) },
+                placeholder = { Text(stringResource(R.string.cw_api_url_field_placeholder)) },
+                singleLine = true,
+                isError = apiError != null,
+                supportingText = {
+                    Text(apiError ?: stringResource(R.string.cw_api_url_field_supporting))
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+
+        OutlinedTextField(
+            value = relayUrl,
+            onValueChange = onRelayUrlChange,
+            label = { Text(stringResource(R.string.cw_relay_url_label)) },
+            placeholder = { Text(stringResource(R.string.cw_relay_url_placeholder)) },
+            singleLine = true,
+            isError = relayError != null,
+            supportingText = {
+                Text(relayError ?: stringResource(R.string.cw_relay_url_supporting))
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        OutlinedTextField(
+            value = code,
+            onValueChange = onCodeChange,
+            label = { Text(stringResource(R.string.cw_pairing_code_label)) },
+            placeholder = { Text(stringResource(R.string.cw_pairing_code_placeholder)) },
+            singleLine = true,
+            textStyle = MaterialTheme.typography.bodyLarge.copy(
+                fontFamily = FontFamily.Monospace,
+            ),
+            keyboardOptions = KeyboardOptions(
+                imeAction = ImeAction.Go,
+                autoCorrectEnabled = false,
+            ),
+            keyboardActions = KeyboardActions(
+                onGo = { if (canSubmit) onSubmit() },
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            OutlinedButton(
+                onClick = onBack,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(stringResource(R.string.cw_back))
+            }
+            Button(
+                onClick = onSubmit,
+                enabled = canSubmit,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(stringResource(R.string.cw_pair_button))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ShowCodeStep(
+    apiUrl: String,
+    onApiUrlChange: (String) -> Unit,
+    relayUrl: String,
+    onRelayUrlChange: (String) -> Unit,
+    pairingCode: String,
+    onRegenerate: () -> Unit,
+    requireApi: Boolean,
+    onBack: () -> Unit,
+    onConnect: () -> Unit,
+) {
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val apiError = if (requireApi) apiUrlSchemeError(apiUrl, context) else null
+    val relayError = relayUrlSchemeError(relayUrl, context)
+    val canConnect = pairingCode.isNotBlank() &&
+        relayUrl.isNotBlank() && (!requireApi || apiUrl.isNotBlank()) &&
+        apiError == null && relayError == null
+
+    Column(
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text(
+            text = stringResource(R.string.cw_method_show_code_title),
+            style = MaterialTheme.typography.headlineSmall,
+        )
+        Text(
+            text = stringResource(R.string.cw_show_code_subtitle),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        if (requireApi) {
+            OutlinedTextField(
+                value = apiUrl,
+                onValueChange = onApiUrlChange,
+                label = { Text(stringResource(R.string.cw_api_url_label_field)) },
+                placeholder = { Text(stringResource(R.string.cw_api_url_field_placeholder)) },
+                singleLine = true,
+                isError = apiError != null,
+                supportingText = {
+                    Text(apiError ?: stringResource(R.string.cw_api_url_field_supporting))
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+
+        OutlinedTextField(
+            value = relayUrl,
+            onValueChange = onRelayUrlChange,
+            label = { Text(stringResource(R.string.cw_relay_url_label)) },
+            placeholder = { Text(stringResource(R.string.cw_relay_url_placeholder)) },
+            singleLine = true,
+            isError = relayError != null,
+            supportingText = {
+                Text(relayError ?: stringResource(R.string.cw_relay_url_supporting))
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        HorizontalDivider()
+
+        // Step 1 — show the code
+        Text(
+            text = stringResource(R.string.cw_step_copy_code),
+            style = MaterialTheme.typography.titleSmall,
+        )
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+            ) {
+                Text(
+                    text = pairingCode.ifBlank { "------" },
+                    style = MaterialTheme.typography.headlineMedium.copy(
+                        fontFamily = FontFamily.Monospace,
+                        letterSpacing = MaterialTheme.typography.headlineMedium.fontSize * 0.15,
+                    ),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(onClick = {
+                    if (pairingCode.isNotBlank()) {
+                        scope.launch {
+                            clipboard.setClipEntry(
+                                ClipEntry(
+                                    ClipData.newPlainText("Pairing code", pairingCode)
+                                )
+                            )
+                        }
+                    }
+                }) {
+                    Icon(
+                        imageVector = Icons.Filled.ContentCopy,
+                        contentDescription = stringResource(R.string.cw_copy_pairing_code),
+                    )
+                }
+                IconButton(onClick = onRegenerate) {
+                    Icon(
+                        imageVector = Icons.Filled.Refresh,
+                        contentDescription = stringResource(R.string.cw_generate_new_code),
+                    )
+                }
+            }
+        }
+
+        // Step 2 — register on host
+        Text(
+            text = stringResource(R.string.cw_step_register_code),
+            style = MaterialTheme.typography.titleSmall,
+        )
+        Surface(
+            color = MaterialTheme.colorScheme.surface,
+            shape = appearanceRoundedCornerShape(6.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            ) {
+                Text(
+                    text = "hermes pair --register-code ${pairingCode.ifBlank { "<code>" }}",
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                    ),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(
+                    onClick = {
+                        if (pairingCode.isNotBlank()) {
+                            val cmd = "hermes pair --register-code $pairingCode"
+                            scope.launch {
+                                clipboard.setClipEntry(
+                                    ClipEntry(
+                                        ClipData.newPlainText("hermes pair command", cmd)
+                                    )
+                                )
+                            }
+                        }
+                    },
+                    modifier = Modifier.size(32.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.ContentCopy,
+                        contentDescription = stringResource(R.string.cw_copy_command),
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            }
+        }
+
+        // Step 3 — connect
+        Text(
+            text = stringResource(R.string.cw_step_connect),
+            style = MaterialTheme.typography.titleSmall,
+        )
+
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            OutlinedButton(
+                onClick = onBack,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(stringResource(R.string.cw_back))
+            }
+            Button(
+                onClick = onConnect,
+                enabled = canConnect,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(stringResource(R.string.cw_connect_button))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConfirmStep(
+    payload: HermesPairingPayload,
+    ttlSeconds: Long,
+    onTtlChange: (Long) -> Unit,
+    isTailscaleDetected: Boolean,
+    standardBusy: Boolean,
+    pairSubmissionStage: PairSubmissionStage,
+    pairSubmissionError: String?,
+    animateStatusChanges: Boolean,
+    standardSuccess: ConnectionViewModel.StandardApiSetupResult?,
+    onBack: () -> Unit,
+    onComplete: () -> Unit,
+    onManageSignIn: (() -> Unit)?,
+    onConfirm: (HermesPairingPayload) -> Unit,
+) {
+    val context = LocalContext.current
+    val confirmScope = rememberCoroutineScope()
+    // Per-install acknowledgment for the AllInsecure pair gate
+    // ([PairingPreferences.allInsecurePairAckSeen]). Once true, the
+    // checkbox below is not rendered at all on subsequent pairings —
+    // the user has consented to plain-text pairs and shouldn't keep
+    // seeing friction for an already-made choice.
+    val allInsecureAckSeen by com.hermesandroid.relay.data.PairingPreferences
+        .allInsecurePairAckSeen(context)
+        .collectAsState(initial = false)
+    // Transient, per-pair tick. Resets every time ConfirmStep is composed
+    // for a fresh payload — we don't want a stale tick from a previous
+    // scan to carry forward.
+    var ackThisPair by remember(payload) { mutableStateOf(false) }
+
+    val transportHint = payload.relay?.transportHint
+    val relayUrl = payload.relay?.url
+    val isInsecureRelay = relayUrl?.startsWith("ws://") == true
+
+    // Endpoints preview + prefer-role control (ADR 24). `endpoints` is
+    // always non-null + non-empty after parseHermesPairingQr, but we still
+    // null-safe on the orEmpty() path for defense in depth.
+    val endpoints = payload.endpoints.orEmpty()
+
+    // Tri-state security posture across the full endpoint set. A multi-
+    // endpoint QR with LAN (ws://) + Tailscale (wss://) is *Mixed* — the
+    // app auto-falls back to the secure one, so a blanket "Insecure (dev)"
+    // badge from endpoint[0] alone would lie to the user.
+    val anySecure = endpoints.any { c ->
+        c.hasSecureProxy() || c.relay?.url?.startsWith("wss://") == true || c.api?.tls == true ||
+            c.relay?.transportHint.equals("wss", ignoreCase = true) ||
+            c.dashboard?.url?.startsWith("https://", ignoreCase = true) == true
+    }
+    val anyInsecure = endpoints.any { c ->
+        c.relay?.url?.startsWith("ws://") == true || c.api?.tls == false ||
+            c.relay?.transportHint.equals("ws", ignoreCase = true) ||
+            c.dashboard?.url?.startsWith("http://", ignoreCase = true) == true
+    }
+    val securityState = when {
+        endpoints.isEmpty() ->
+            if (isInsecureRelay) TransportSecurityState.AllInsecure
+            else TransportSecurityState.AllSecure
+        anySecure && anyInsecure -> TransportSecurityState.Mixed
+        anySecure -> TransportSecurityState.AllSecure
+        else -> TransportSecurityState.AllInsecure
+    }
+    // Pick the first secure endpoint's label for user-facing copy in the
+    // Mixed case ("Tailscale is encrypted..." vs "Public is encrypted...").
+    val firstSecureLabel = endpoints
+        .firstOrNull { c ->
+            c.hasSecureProxy() || c.relay?.url?.startsWith("wss://") == true || c.api?.tls == true ||
+                c.relay?.transportHint.equals("wss", ignoreCase = true) ||
+                c.dashboard?.url?.startsWith("https://", ignoreCase = true) == true
+        }?.displayLabel()
+    val firstInsecureLabel = endpoints
+        .firstOrNull { c ->
+            c.relay?.url?.startsWith("ws://") == true ||
+                c.relay?.transportHint.equals("ws", ignoreCase = true) ||
+                c.dashboard?.url?.startsWith("http://", ignoreCase = true) == true
+        }?.displayLabel()
+    val distinctRoles = endpoints.map { it.role }.distinct()
+    var preferRole by remember(payload) { mutableStateOf<String?>(null) }
+    var preferMenuOpen by remember { mutableStateOf(false) }
+    val secureLink = endpoints.firstOrNull { it.hasSecureProxy() }
+
+    Column(
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text(
+            text = if (relayUrl == null) {
+                stringResource(R.string.cw_confirm_title_hermes)
+            } else {
+                stringResource(R.string.cw_confirm_title_relay)
+            },
+            style = MaterialTheme.typography.headlineSmall,
+        )
+        Text(
+            text = if (relayUrl == null) {
+                stringResource(R.string.cw_confirm_desc_hermes)
+            } else {
+                stringResource(R.string.cw_confirm_desc_relay)
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        // What got scanned
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (payload.hasApiServer) {
+                    LabeledLine(
+                        label = stringResource(R.string.cw_label_api_server),
+                        value = payload.serverUrl,
+                        hint = stringResource(R.string.cw_hint_chat),
+                    )
+                }
+                if (relayUrl == null) {
+                    LabeledLine(
+                        label = stringResource(R.string.cw_label_dashboard),
+                        value = payload.dashboardUrl
+                            ?.trim()
+                            ?.takeIf { it.isNotBlank() }
+                            ?: Connection.deriveDefaultDashboardUrl(payload.serverUrl)
+                            ?: stringResource(R.string.cw_value_derived),
+                        hint = stringResource(R.string.cw_hint_manage),
+                    )
+                    if (payload.hasApiServer) {
+                        LabeledLine(
+                            label = stringResource(R.string.cw_label_api_key),
+                            value = if (payload.key.isBlank()) {
+                                stringResource(R.string.cw_value_not_included)
+                            } else {
+                                stringResource(R.string.cw_value_included)
+                            },
+                        )
+                    }
+                }
+                if (relayUrl != null) {
+                    LabeledLine(
+                        label = stringResource(R.string.cw_label_relay),
+                        value = relayUrl,
+                        hint = stringResource(R.string.cw_hint_bridge),
+                    )
+                }
+                if (payload.relay?.grants?.isNotEmpty() == true) {
+                    LabeledLine(
+                        label = stringResource(R.string.cw_label_grants),
+                        value = payload.relay.grants.keys.sorted().joinToString(", "),
+                    )
+                }
+                Spacer(Modifier.height(2.dp))
+                if (relayUrl != null) {
+                    TransportSecurityBadge(
+                        state = securityState,
+                        size = TransportSecuritySize.Row,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        }
+
+        // Endpoints preview (ADR 24) — always shown so v1/v2 pairings that
+        // synthesize a single candidate still get a "what will connect"
+        // summary row. v3 QRs with multiple candidates expose the full list
+        // + a Prefer dropdown that promotes the chosen role to priority 0.
+        if (relayUrl != null && endpoints.isNotEmpty()) {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.cw_routes_count, endpoints.size),
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Text(
+                        text = stringResource(R.string.cw_routes_desc),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    secureLink?.let { route ->
+                        SecureLinkPairingSummary(
+                            services = route.secureLinkServices(),
+                            complete = route.secureLinkCoversAllServices(),
+                            hasFallback = endpoints.size > 1,
+                            usesReach = route.hasHermesReach(),
+                        )
+                        HorizontalDivider()
+                    }
+                    endpoints.forEachIndexed { index, candidate ->
+                        if (index > 0) HorizontalDivider()
+                        EndpointPreviewRow(
+                            candidate = candidate,
+                            index = index,
+                            isPreferred = preferRole?.equals(
+                                candidate.role,
+                                ignoreCase = true,
+                            ) == true,
+                        )
+                    }
+                    // Only expose the Prefer control when the QR carried
+                    // more than one distinct role — single-endpoint payloads
+                    // have nothing to reorder.
+                    if (distinctRoles.size > 1) {
+                        HorizontalDivider()
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                text = stringResource(R.string.cw_prefer_label),
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.padding(end = 8.dp),
+                            )
+                            Box {
+                                TextButton(onClick = { preferMenuOpen = true }) {
+                                    Text(
+                                        text = preferRole?.let { roleLabel(it) }
+                                            ?: stringResource(R.string.cw_natural_order),
+                                    )
+                                    Icon(
+                                        imageVector = Icons.Filled.ArrowDropDown,
+                                        contentDescription = null,
+                                    )
+                                }
+                                DropdownMenu(
+                                    expanded = preferMenuOpen,
+                                    onDismissRequest = { preferMenuOpen = false },
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.cw_natural_order)) },
+                                        onClick = {
+                                            preferRole = null
+                                            preferMenuOpen = false
+                                        },
+                                    )
+                                    distinctRoles.forEach { role ->
+                                        DropdownMenuItem(
+                                            text = { Text(roleLabel(role)) },
+                                            onClick = {
+                                                preferRole = role
+                                                preferMenuOpen = false
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (relayUrl != null) {
+            // TTL picker — flat radio list, no nested dialog
+            Text(
+                text = stringResource(R.string.cw_keep_pairing_for),
+                style = MaterialTheme.typography.titleSmall,
+            )
+            val transportLabelRes = when {
+                isTailscaleDetected -> R.string.cw_transport_tailscale
+                transportHint.equals("wss", ignoreCase = true) -> R.string.cw_transport_tls
+                transportHint.equals("ws", ignoreCase = true) -> R.string.cw_transport_plain
+                else -> null
+            }
+            if (transportLabelRes != null) {
+                Text(
+                    text = stringResource(transportLabelRes),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+
+            Column {
+                ttlPickerOptions().forEach { option ->
+                    val selected = option.seconds == ttlSeconds
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(
+                                selected = selected,
+                                onClick = { onTtlChange(option.seconds) },
+                                role = Role.RadioButton,
+                            )
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = selected,
+                            onClick = { onTtlChange(option.seconds) },
+                        )
+                        Text(
+                            text = stringResource(option.labelRes),
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(start = 8.dp),
+                        )
+                    }
+                }
+            }
+
+            when (securityState) {
+                TransportSecurityState.AllInsecure -> {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer
+                                .copy(alpha = 0.4f),
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text(
+                                text = stringResource(R.string.cw_insecure_relay_warning),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                            )
+                            Text(
+                                text = stringResource(R.string.cw_insecure_relay_trust),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                            )
+                        }
+                    }
+                    // Per-install Tier-1 gate: only render the checkbox when the
+                    // user has never acknowledged an AllInsecure pair on this
+                    // install. Once they have, we never show it again — the
+                    // warning card above stays, but the gate is lifted.
+                    if (!allInsecureAckSeen) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Checkbox(
+                                checked = ackThisPair,
+                                onCheckedChange = { ackThisPair = it },
+                            )
+                            Text(
+                                text = stringResource(R.string.cw_insecure_ack),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(start = 4.dp),
+                            )
+                        }
+                    }
+                }
+                TransportSecurityState.Mixed -> {
+                    // Amber-tinted informational card. The secure route is the
+                    // safety net — spell that out explicitly so users stop
+                    // reading "some plain" as "all plain".
+                    val plainLabel = firstInsecureLabel ?: stringResource(R.string.cw_role_lan)
+                    val secureLabel = firstSecureLabel ?: stringResource(R.string.cw_role_tailscale)
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = Color(0xFFF9A825).copy(alpha = 0.12f),
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text(
+                                text = stringResource(R.string.cw_mixed_route_plain, plainLabel),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Text(
+                                text = stringResource(R.string.cw_mixed_route_secure, secureLabel),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Text(
+                                text = stringResource(R.string.cw_mixed_safe),
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
+                    }
+                }
+                TransportSecurityState.AllSecure -> {
+                    // No warning block — every route is TLS.
+                }
+            }
+        }
+
+        if (relayUrl == null && standardBusy) {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(
+                    modifier = Modifier.padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(22.dp),
+                        strokeWidth = 2.dp,
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = stringResource(R.string.cw_connecting_to_hermes),
+                            style = MaterialTheme.typography.titleSmall,
+                        )
+                        Text(
+                            text = stringResource(R.string.cw_connecting_detail),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+
+        if (relayUrl == null && standardSuccess != null) {
+            StandardSetupResultCard(
+                result = standardSuccess,
+                onContinue = onComplete,
+                onManageSignIn = onManageSignIn,
+            )
+        }
+
+        // Gate for the absolute-boundary AllInsecure case only. Mixed and
+        // AllSecure stay one-tap. Satisfied when either (a) the user has
+        // previously ack'd an AllInsecure pair on this install (per-install,
+        // never expires), or (b) they've ticked the checkbox for this pair.
+        val gateIsSatisfied = relayUrl == null || when (securityState) {
+            TransportSecurityState.AllInsecure -> allInsecureAckSeen || ackThisPair
+            else -> true
+        }
+
+        if (standardSuccess == null) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                OutlinedButton(
+                    onClick = onBack,
+                    enabled = !standardBusy && !pairSubmissionStage.inProgress,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(stringResource(R.string.cw_back))
+                }
+                Button(
+                    onClick = {
+                        // Persist the per-install ack the first time an
+                        // AllInsecure pair goes through via the checkbox path.
+                        // Future AllInsecure pairs skip the checkbox entirely.
+                        if (securityState == TransportSecurityState.AllInsecure &&
+                            ackThisPair &&
+                            !allInsecureAckSeen
+                        ) {
+                            confirmScope.launch {
+                                com.hermesandroid.relay.data.PairingPreferences
+                                    .setAllInsecurePairAckSeen(context, true)
+                            }
+                        }
+                        val effective = preferRole
+                            ?.let { reorderByPreferredRole(payload, it) }
+                            ?: payload
+                        onConfirm(effective)
+                    },
+                    enabled = gateIsSatisfied && !standardBusy && !pairSubmissionStage.inProgress,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    if (standardBusy || pairSubmissionStage.inProgress) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                        )
+                        Spacer(Modifier.size(8.dp))
+                        Text(stringResource(R.string.cw_pair_in_progress))
+                    } else {
+                        Text(if (relayUrl == null) stringResource(R.string.cw_connect_button) else stringResource(R.string.cw_pair_button))
+                    }
+                }
+            }
+            if (relayUrl != null && pairSubmissionStage.inProgress) {
+                val pairStatusDescription = stringResource(pairSubmissionStage.statusTextRes)
+                AnimatedContent(
+                    targetState = pairSubmissionStage,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .semantics {
+                            liveRegion = LiveRegionMode.Polite
+                            stateDescription = pairStatusDescription
+                        },
+                    transitionSpec = {
+                        if (animateStatusChanges) {
+                            loadedContentTransform()
+                        } else {
+                            EnterTransition.None togetherWith ExitTransition.None
+                        }
+                    },
+                    label = "pairSubmissionStatus",
+                ) { stage ->
+                    Text(
+                        text = stringResource(stage.statusTextRes),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
+            if (!pairSubmissionError.isNullOrBlank()) {
+                Text(
+                    text = pairSubmissionError,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .semantics { liveRegion = LiveRegionMode.Polite },
+                    textAlign = TextAlign.Center,
+                )
+            }
+        }
+    }
+}
+
+internal enum class PairSubmissionStage(@StringRes val statusTextRes: Int) {
+    Idle(R.string.cw_pair_button),
+    PreparingGateway(R.string.cw_pair_status_preparing_gateway),
+    OpeningSignIn(R.string.cw_pair_status_opening_sign_in),
+    PairingRelay(R.string.cw_pair_status_pairing_relay),
+    ;
+
+    val inProgress: Boolean get() = this != Idle
+}
+
+@Composable
+private fun VerifyStep(
+    authState: AuthState,
+    error: String?,
+    onRetry: () -> Unit,
+    onBack: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = if (error == null) stringResource(R.string.cw_pairing_title) else stringResource(R.string.cw_pairing_failed),
+            style = MaterialTheme.typography.headlineSmall,
+        )
+
+        if (error == null) {
+            CircularProgressIndicator()
+            Text(
+                text = when (authState) {
+                    is AuthState.Pairing -> stringResource(R.string.cw_negotiating_relay)
+                    is AuthState.Paired -> stringResource(R.string.cw_paired_opening_chat)
+                    else -> stringResource(R.string.cw_connecting_to_relay)
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Icon(
+                imageVector = Icons.Filled.ErrorOutline,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(40.dp),
+            )
+            Text(
+                text = error,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                OutlinedButton(
+                    onClick = onBack,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(stringResource(R.string.cw_back))
+                }
+                Button(
+                    onClick = onRetry,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(stringResource(R.string.cw_retry))
+                }
+            }
+            TextButton(
+                onClick = onCancel,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(stringResource(R.string.cw_cancel_button))
+            }
+        }
+    }
+}
+
+@Composable
+private fun LabeledLine(label: String, value: String, hint: String? = null) {
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (hint != null) {
+                Text(
+                    text = " · $hint",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
+
+/**
+ * One row of the ConfirmStep's Endpoints preview — role label, host:port,
+ * priority, optional "Preferred" chip when the user promoted it.
+ *
+ * Intentionally NOT the shared `EndpointsCard` component: that one carries
+ * probe status, 3-dot actions, and TOFU pin viewer — none of which apply
+ * pre-pair. Here we only need a lightweight visual summary.
+ */
+@Composable
+private fun EndpointPreviewRow(
+    candidate: EndpointCandidate,
+    index: Int,
+    isPreferred: Boolean,
+) {
+    // Per-row security derived from the same three signals as the overall
+    // securityState computation — scheme, tls flag, transportHint.
+    val isSecure = candidate.hasSecureProxy() || candidate.relay?.url?.startsWith("wss://") == true ||
+        candidate.api?.tls == true ||
+        candidate.relay?.transportHint.equals("wss", ignoreCase = true) ||
+        candidate.dashboard?.url?.startsWith("https://", ignoreCase = true) == true
+    val ordinalLabel = when (index) {
+        0 -> stringResource(R.string.cw_ordinal_first)
+        1 -> stringResource(R.string.cw_ordinal_fallback)
+        else -> stringResource(R.string.cw_ordinal_fallback_n, index)
+    }
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    text = candidate.displayLabel(),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                SoftPill(
+                    text = if (isSecure) stringResource(R.string.cw_secure_label) else stringResource(R.string.cw_plain_label),
+                    fg = if (isSecure) Color(0xFF2E7D32) else Color(0xFFF9A825),
+                )
+                if (isPreferred) {
+                    SoftPill(
+                        text = stringResource(R.string.cw_preferred_label),
+                        fg = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+            Text(
+                text = candidate.presentationRouteUrl().orEmpty() +
+                    (candidate.relay?.transportHint?.let { " \u00b7 $it" } ?: ""),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontFamily = FontFamily.Monospace,
+            )
+        }
+        // Ordinal chip pinned to the right — "1st choice" / "Fallback" /
+        // "Fallback N" replaces the raw `p0/p1/p2` from the old UI.
+        SoftPill(
+            text = ordinalLabel,
+            fg = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun SecureLinkPairingSummary(
+    services: List<String>,
+    complete: Boolean,
+    hasFallback: Boolean,
+    usesReach: Boolean,
+) {
+    val relayLabel = stringResource(R.string.secure_link_service_relay)
+    val apiLabel = stringResource(R.string.secure_link_service_api)
+    val dashboardLabel = stringResource(R.string.secure_link_service_dashboard)
+    val serviceText = services.map { service ->
+        when (service) {
+            "relay" -> relayLabel
+            "api" -> apiLabel
+            "dashboard" -> dashboardLabel
+            else -> service
+        }
+    }.joinToString(" · ")
+    Surface(
+        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+        shape = appearanceRoundedCornerShape(12.dp),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                stringResource(if (usesReach) R.string.hermes_reach_title else R.string.secure_link_title),
+                style = MaterialTheme.typography.titleSmall,
+            )
+            if (usesReach) {
+                Text(
+                    stringResource(R.string.hermes_reach_summary),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                stringResource(R.string.secure_link_pinned_tls),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Text(
+                if (serviceText.isBlank()) stringResource(R.string.secure_link_no_services)
+                else stringResource(R.string.secure_link_protects, serviceText),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            if (!complete) {
+                Text(
+                    stringResource(R.string.secure_link_partial_warning),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.tertiary,
+                )
+            }
+            Text(
+                if (hasFallback) stringResource(R.string.secure_link_fallback_ready)
+                else stringResource(R.string.secure_link_no_fallback),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                stringResource(R.string.secure_link_auth_note),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * Compact pill used by [EndpointPreviewRow] — matches the "Preferred" soft
+ * chip style so the row reads as a row of related chips rather than a mix
+ * of primary + secondary visual weights.
+ */
+@Composable
+private fun SoftPill(
+    text: String,
+    fg: Color,
+) {
+    Surface(
+        shape = appearanceRoundedCornerShape(8.dp),
+        color = fg.copy(alpha = 0.14f),
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            color = fg,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+        )
+    }
+}
+
+/**
+ * Reorder the endpoints array so the chosen role lands at priority 0.
+ * Priority values are renumbered to match the new order — this matters at
+ * persist time because `setDeviceEndpoints` stores the list verbatim and
+ * downstream [com.hermesandroid.relay.network.shared.EndpointResolver] trusts the
+ * `priority` field (see ADR 24 "strict priority").
+ *
+ * No-op when the preferred role is already at index 0, or when the role
+ * isn't present in the candidates list.
+ */
+private fun reorderByPreferredRole(
+    payload: HermesPairingPayload,
+    preferRole: String,
+): HermesPairingPayload {
+    val list = payload.endpoints.orEmpty().toMutableList()
+    val idx = list.indexOfFirst { it.role.equals(preferRole, ignoreCase = true) }
+    if (idx <= 0) return payload
+    val promoted = list.removeAt(idx)
+    list.add(0, promoted)
+    val renumbered = list.mapIndexed { i, c -> c.copy(priority = i) }
+    return payload.copy(endpoints = renumbered)
+}
+
+/** Role → user-facing label used inside the Prefer dropdown menu. */
+@Composable
+private fun roleLabel(role: String): String = when (role.lowercase()) {
+    "lan" -> stringResource(R.string.cw_role_lan)
+    "tailscale" -> stringResource(R.string.cw_role_tailscale)
+    "public" -> stringResource(R.string.cw_role_public)
+    else -> role
+}

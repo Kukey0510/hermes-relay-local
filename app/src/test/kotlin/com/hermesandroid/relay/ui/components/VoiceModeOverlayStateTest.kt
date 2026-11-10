@@ -1,0 +1,336 @@
+package com.hermesandroid.relay.ui.components
+
+import com.hermesandroid.relay.data.ChatMessage
+import com.hermesandroid.relay.data.Attachment
+import com.hermesandroid.relay.data.MessageRole
+import com.hermesandroid.relay.viewmodel.InteractionMode
+import com.hermesandroid.relay.viewmodel.BackgroundRunState
+import com.hermesandroid.relay.viewmodel.BackgroundRunPhase
+import com.hermesandroid.relay.viewmodel.HermesConfirmationState
+import com.hermesandroid.relay.viewmodel.VoiceHandoffStatus
+import com.hermesandroid.relay.viewmodel.VoiceState
+import com.hermesandroid.relay.viewmodel.VoiceUiState
+import com.hermesandroid.relay.viewmodel.backgroundRunAfterCancelRequest
+import com.hermesandroid.relay.viewmodel.preserveRealtimeTurnOnStop
+import com.hermesandroid.relay.viewmodel.realtimeTranscriptState
+import com.hermesandroid.relay.viewmodel.realtimeTurnActiveAfterPromotion
+import com.hermesandroid.relay.viewmodel.voiceSessionExitState
+import com.hermesandroid.relay.viewmodel.shouldArmVoiceSilenceWatchdog
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
+import org.junit.Test
+
+class VoiceModeOverlayStateTest {
+
+    @Test
+    fun voiceRouteParts_deduplicatePunctuationAliases() {
+        assertEquals(
+            listOf("xai_tts", "leo"),
+            distinctVoiceRouteParts(listOf("xai_tts", "xai-tts", "leo")),
+        )
+        assertEquals("xAI TTS", voiceRouteDisplayLabel("xai_tts"))
+        assertEquals("Leo", voiceRouteDisplayLabel("leo"))
+    }
+
+    @Test
+    fun richResultLabel_identifiesOnlyActualImagesAsImages() {
+        val image = ChatMessage(
+            id = "image",
+            role = MessageRole.ASSISTANT,
+            content = "",
+            timestamp = 1L,
+            attachments = listOf(Attachment("image/png", "")),
+        )
+        val pdf = ChatMessage(
+            id = "pdf",
+            role = MessageRole.ASSISTANT,
+            content = "",
+            timestamp = 1L,
+            attachments = listOf(Attachment("application/pdf", "")),
+        )
+        val unknown = ChatMessage(
+            id = "unknown",
+            role = MessageRole.ASSISTANT,
+            content = "",
+            timestamp = 1L,
+            attachments = listOf(Attachment("application/octet-stream", "")),
+        )
+
+        assertEquals(true, voiceRichResultUsesImageLabel(image, inlineImageCount = 0))
+        assertEquals(true, voiceRichResultUsesImageLabel(image.copy(attachments = emptyList()), inlineImageCount = 1))
+        assertEquals(false, voiceRichResultUsesImageLabel(pdf, inlineImageCount = 0))
+        assertEquals(false, voiceRichResultUsesImageLabel(unknown, inlineImageCount = 0))
+        assertEquals(false, voiceRichResultUsesImageLabel(image, inlineImageCount = 1))
+    }
+
+    @Test
+    fun transcriptKey_staysStableAcrossServerIdAdoption() {
+        val serverId = "7c4af8b7-1bb2-4830-a4e5-0332d5ddcd1f"
+        val live = ChatMessage(
+            id = "client-assistant-id",
+            role = MessageRole.ASSISTANT,
+            content = "Earlier snapshot",
+            timestamp = 1L,
+        )
+        val reconciled = live.copy(id = serverId, content = "Reconciled snapshot")
+
+        assertEquals(voiceTranscriptItemKey(live), voiceTranscriptItemKey(reconciled))
+        assertEquals("message:client-assistant-id", voiceTranscriptItemKey(reconciled))
+        assertNotEquals("aux:pending-voice-transcript", voiceTranscriptItemKey(reconciled))
+    }
+
+    @Test
+    fun providerTranscript_isTranscribingAfterMicrophoneCaptureStops() {
+        assertEquals(VoiceState.Transcribing, realtimeTranscriptState(micCaptureActive = false))
+        assertEquals(VoiceState.Listening, realtimeTranscriptState(micCaptureActive = true))
+    }
+
+    @Test
+    fun promotion_keepsForegroundBusyOnlyForSpokenHandoff() {
+        assertEquals(false, realtimeTurnActiveAfterPromotion(spokenHandoff = false))
+        assertEquals(true, realtimeTurnActiveAfterPromotion(spokenHandoff = true))
+        assertEquals(true, realtimeTurnActiveAfterPromotion(spokenHandoff = null))
+    }
+
+    @Test
+    fun stop_preservesSharedTurnWhileBackgroundSummaryCanStillArrive() {
+        assertEquals(true, preserveRealtimeTurnOnStop(BackgroundRunPhase.RUNNING))
+        assertEquals(true, preserveRealtimeTurnOnStop(BackgroundRunPhase.RECONNECTING))
+        assertEquals(true, preserveRealtimeTurnOnStop(BackgroundRunPhase.DELIVERING))
+        assertEquals(false, preserveRealtimeTurnOnStop(BackgroundRunPhase.DONE))
+        assertEquals(false, preserveRealtimeTurnOnStop(null))
+    }
+
+    @Test
+    fun voiceExit_clearsDetachedReconnectStateBeforeNextEntry() {
+        val exited = voiceSessionExitState(
+            VoiceUiState(
+                voiceMode = true,
+                state = VoiceState.Thinking,
+                handoffStatus = VoiceHandoffStatus(title = "Waiting for route"),
+                hermesConfirmation = HermesConfirmationState(
+                    confirmationId = "confirmation-orphaned",
+                    message = "Approve this action?",
+                ),
+                backgroundRun = BackgroundRunState(
+                    runId = "run-orphaned",
+                    phase = BackgroundRunPhase.RECONNECTING,
+                ),
+            )
+        )
+
+        assertEquals(false, exited.voiceMode)
+        assertEquals(VoiceState.Idle, exited.state)
+        assertNull(exited.handoffStatus)
+        assertNull(exited.backgroundRun)
+        assertNull(exited.hermesConfirmation)
+    }
+
+    @Test
+    fun backgroundCancel_clearsChipWhenSocketRejectsRequest() {
+        val run = BackgroundRunState(
+            runId = "run-offline",
+            phase = BackgroundRunPhase.RECONNECTING,
+        )
+
+        assertNull(backgroundRunAfterCancelRequest(run, cancelSent = false))
+        assertEquals(
+            "Cancelling…",
+            backgroundRunAfterCancelRequest(run, cancelSent = true)?.message,
+        )
+    }
+
+    @Test
+    fun pendingTranscript_showsWhileThinkingBeforeChatHistoryCatchesUp() {
+        val text = pendingVoiceTranscriptText(
+            uiState = VoiceUiState(
+                state = VoiceState.Thinking,
+                transcribedText = "What did you hear?",
+            ),
+            visibleTranscriptMessages = emptyList(),
+        )
+
+        assertEquals("What did you hear?", text)
+    }
+
+    @Test
+    fun pendingTranscript_hidesWhenSameUserMessageIsAlreadyInChatHistory() {
+        val text = pendingVoiceTranscriptText(
+            uiState = VoiceUiState(
+                state = VoiceState.Thinking,
+                transcribedText = "Open settings",
+            ),
+            visibleTranscriptMessages = listOf(
+                ChatMessage(
+                    id = "user-1",
+                    role = MessageRole.USER,
+                    content = "Open settings",
+                    timestamp = 1L,
+                ),
+            ),
+        )
+
+        assertNull(text)
+    }
+
+    @Test
+    fun pendingTranscript_hidesWhenAssistantPlaceholderFollowsSameUserMessage() {
+        val text = pendingVoiceTranscriptText(
+            uiState = VoiceUiState(
+                state = VoiceState.Thinking,
+                transcribedText = "Open settings",
+            ),
+            visibleTranscriptMessages = listOf(
+                ChatMessage(
+                    id = "user-1",
+                    role = MessageRole.USER,
+                    content = "Open settings",
+                    timestamp = 1L,
+                ),
+                ChatMessage(
+                    id = "assistant-1",
+                    role = MessageRole.ASSISTANT,
+                    content = "",
+                    timestamp = 2L,
+                    isStreaming = true,
+                ),
+            ),
+        )
+
+        assertNull(text)
+    }
+
+    @Test
+    fun pendingTranscript_doesNotDeduplicateAgainstOlderMatchingTurn() {
+        val text = pendingVoiceTranscriptText(
+            uiState = VoiceUiState(
+                state = VoiceState.Thinking,
+                transcribedText = "Open settings",
+            ),
+            visibleTranscriptMessages = listOf(
+                ChatMessage(
+                    id = "user-1",
+                    role = MessageRole.USER,
+                    content = "Open settings",
+                    timestamp = 1L,
+                ),
+                ChatMessage(
+                    id = "assistant-1",
+                    role = MessageRole.ASSISTANT,
+                    content = "Settings are open.",
+                    timestamp = 2L,
+                ),
+            ),
+        )
+
+        assertEquals("Open settings", text)
+    }
+
+    @Test
+    fun pendingTranscript_hidesOutsideWaitingState() {
+        val text = pendingVoiceTranscriptText(
+            uiState = VoiceUiState(
+                state = VoiceState.Speaking,
+                transcribedText = "Tell me a joke",
+            ),
+            visibleTranscriptMessages = emptyList(),
+        )
+
+        assertNull(text)
+    }
+
+    @Test
+    fun micTap_interruptsBusyNonContinuousTurns() {
+        val calls = mutableListOf<String>()
+
+        dispatchVoiceMicTap(
+            uiState = VoiceUiState(
+                state = VoiceState.Thinking,
+                interactionMode = InteractionMode.TapToTalk,
+            ),
+            onStartListening = { calls += "start" },
+            onStopListening = { calls += "stop" },
+            onInterrupt = { calls += "interrupt" },
+            onPauseAutoMode = { calls += "pause" },
+        )
+
+        assertEquals(listOf("interrupt"), calls)
+    }
+
+    @Test
+    fun micTap_pausesContinuousBusyTurns() {
+        val calls = mutableListOf<String>()
+
+        dispatchVoiceMicTap(
+            uiState = VoiceUiState(
+                state = VoiceState.Thinking,
+                interactionMode = InteractionMode.Continuous,
+            ),
+            onStartListening = { calls += "start" },
+            onStopListening = { calls += "stop" },
+            onInterrupt = { calls += "interrupt" },
+            onPauseAutoMode = { calls += "pause" },
+        )
+
+        assertEquals(listOf("pause"), calls)
+    }
+
+    @Test
+    fun holdPress_bargesInFromSpeaking() {
+        val calls = mutableListOf<String>()
+
+        dispatchVoiceMicHoldPress(
+            uiState = VoiceUiState(
+                state = VoiceState.Speaking,
+                interactionMode = InteractionMode.HoldToTalk,
+            ),
+            onStartListening = { calls += "start" },
+            onInterruptAndStart = {
+                calls += "interrupt"
+                calls += "start"
+            },
+        )
+
+        assertEquals(listOf("interrupt", "start"), calls)
+    }
+
+    @Test
+    fun holdPress_interruptsAndCapturesSteeringAcrossBusyTurnStates() {
+        listOf(VoiceState.Transcribing, VoiceState.Thinking, VoiceState.Speaking).forEach { state ->
+            val calls = mutableListOf<String>()
+
+            dispatchVoiceMicHoldPress(
+                uiState = VoiceUiState(
+                    state = state,
+                    interactionMode = InteractionMode.HoldToTalk,
+                ),
+                onStartListening = { calls += "start" },
+                onInterruptAndStart = {
+                    calls += "interrupt"
+                    calls += "start"
+                },
+            )
+
+            assertEquals("Hold-to-talk dispatch for $state", listOf("interrupt", "start"), calls)
+        }
+    }
+
+    @Test
+    fun bargeInCaptureAlwaysArmsSilenceCompletion() {
+        InteractionMode.values().forEach { mode ->
+            assertEquals(
+                "Barge-in capture for $mode must auto-complete without a physical release",
+                true,
+                shouldArmVoiceSilenceWatchdog(mode, bargeInCapture = true),
+            )
+        }
+        assertEquals(
+            false,
+            shouldArmVoiceSilenceWatchdog(
+                InteractionMode.HoldToTalk,
+                bargeInCapture = false,
+            ),
+        )
+    }
+}

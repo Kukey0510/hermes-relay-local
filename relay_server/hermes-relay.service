@@ -1,0 +1,50 @@
+[Unit]
+Description=Hermes-Relay Server (WSS bridge for Android app)
+Documentation=https://github.com/Codename-11/hermes-relay/blob/main/docs/relay-server.md
+After=network.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+# User service — install with:
+#   mkdir -p ~/.config/systemd/user
+#   cp hermes-relay.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now hermes-relay.service
+#
+# Or just run `install.sh` — step [6/6] drops this file into place
+# automatically on any host with a systemd user session.
+#
+# Environment: the relay loads ~/.hermes/.env at Python import time (see
+# plugin/relay/_env_bootstrap.py), mirroring how hermes-gateway handles
+# API keys. There is NO EnvironmentFile= directive here on purpose — any
+# restart of this service via `systemctl --user restart hermes-relay`
+# will pick up fresh key values from ~/.hermes/.env automatically.
+#
+# Surviving logout:
+#   loginctl enable-linger $USER
+# ...otherwise the service stops when your last shell session ends.
+
+[Service]
+Type=simple
+# The %h/.hermes/hermes-agent/venv paths below are the CLASSIC (pip/git) venv
+# layout — the default template. install.sh rewrites every
+# "%h/.hermes/hermes-agent/venv" occurrence in the copy it drops at
+# ~/.config/systemd/user/hermes-relay.service to the venv it actually detected
+# (uv-managed ".venv", a HERMES_VENV_PY override, etc.) so ExecStart / PATH /
+# VIRTUAL_ENV always point at a real interpreter instead of failing 203/EXEC.
+# Copying this file by hand keeps the classic paths — edit them to match.
+ExecStart=%h/.hermes/hermes-agent/venv/bin/python -m plugin.relay --no-ssl --log-level INFO
+WorkingDirectory=%h/.hermes/hermes-relay
+Environment="PATH=%h/.hermes/hermes-agent/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="VIRTUAL_ENV=%h/.hermes/hermes-agent/venv"
+Environment="HERMES_HOME=%h/.hermes"
+Restart=on-failure
+RestartSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=60
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,44 @@
+{
+  "name": "clarify_normalized_single",
+  "live_session_id": "fixture-live-clarify",
+  "stored_session_id": "fixture-stored-clarify",
+  "profile": "default",
+  "contract_requirements": [
+    "gateway.server_requests"
+  ],
+  "turns": [
+    {
+      "steps": [
+        {
+          "op": "event",
+          "type": "message.start"
+        },
+        {
+          "op": "server_request",
+          "payload": {
+            "questions": [
+              {
+                "qid": "route/a",
+                "question": "Which deployment?",
+                "choices": [
+                  "Canary",
+                  "Immediate"
+                ],
+                "multi_select": false
+              }
+            ]
+          },
+          "id": "clarify-one",
+          "method": "clarify"
+        },
+        {
+          "op": "event",
+          "type": "message.complete",
+          "payload": {
+            "text": "Clarification complete."
+          }
+        }
+      ]
+    }
+  ]
+}

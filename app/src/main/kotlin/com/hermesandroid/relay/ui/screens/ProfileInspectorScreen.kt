@@ -1,0 +1,2036 @@
+package com.hermesandroid.relay.ui.screens
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.TextFields
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.PrimaryTabRow
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Tab
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import com.hermesandroid.relay.R
+import com.hermesandroid.relay.ui.theme.appearanceRoundedCornerShape
+import com.hermesandroid.relay.data.ProfileConfigResponse
+import com.hermesandroid.relay.data.ProfileMemoryEntry
+import com.hermesandroid.relay.data.ProfileSkillEntry
+import com.hermesandroid.relay.data.GatewayProfileToolset
+import com.hermesandroid.relay.ui.LocalSnackbarHost
+import com.hermesandroid.relay.viewmodel.InspectorSection
+import com.hermesandroid.relay.viewmodel.LoadState
+import com.hermesandroid.relay.viewmodel.ProfileInspectorViewModel
+import com.hermesandroid.relay.viewmodel.ProfileInspectorSource
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+
+/**
+ * Full-screen Profile Inspector — four tabs (Config / SOUL / Memory /
+ * Skills) showing the read-only per-profile views the relay exposes via
+ * `GET /api/profiles/{name}/{section}`.
+ *
+ * Navigation entry point lives on the Settings tab (see
+ * [com.hermesandroid.relay.ui.components.ProfileInspectorCard]). A
+ * single top-bar refresh icon re-fetches the currently-visible tab plus
+ * every other tab the user has already visited — kicked via the VM's
+ * `loadAll()`.
+ *
+ * Each pane is lazy-loaded — the ViewModel starts in [LoadState.Idle]
+ * and we call `loadAll()` in a [LaunchedEffect] tied to the profile
+ * name so the fetch fires exactly once per screen entry.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ProfileInspectorScreen(
+    viewModel: ProfileInspectorViewModel,
+    profileModel: String?,
+    onBack: () -> Unit,
+    /**
+     * Which tab to open on entry. One of "config" | "soul" | "memory"
+     * | "skills". Defaults to "config" — matches the pre-deep-link
+     * behaviour for all existing callers that don't pass a section.
+     * Set from the nav-graph `section` query arg (see
+     * [com.hermesandroid.relay.ui.Screen.ProfileInspector.route]).
+     */
+    initialSection: String = "config",
+) {
+    val profileName = viewModel.profileName
+
+    val configState by viewModel.configState.collectAsState()
+    val soulState by viewModel.soulState.collectAsState()
+    val memoryState by viewModel.memoryState.collectAsState()
+    val skillsState by viewModel.skillsState.collectAsState()
+    val source by viewModel.source.collectAsState()
+    val gatewayDescription by viewModel.gatewayDescription.collectAsState()
+    val gatewayWritable by viewModel.gatewayWritable.collectAsState()
+
+    // Lazy first-load on screen entry. Keyed on the profile name so a
+    // re-entry for a different profile (unlikely but possible via deep
+    // link) triggers a fresh fetch.
+    LaunchedEffect(profileName) {
+        if (profileName.isNotBlank()) {
+            viewModel.loadAll()
+        }
+    }
+
+    // Surface edit-save events (success + error) through the global
+    // snackbar host. Keeps the pane composables free of snackbar
+    // plumbing — all save outcomes funnel through one sink.
+    val snackbarHost = LocalSnackbarHost.current
+    LaunchedEffect(viewModel) {
+        viewModel.editEvents.collect { event ->
+            when (event) {
+                is ProfileInspectorViewModel.EditEvent.Saved ->
+                    snackbarHost.showSnackbar(event.message)
+                is ProfileInspectorViewModel.EditEvent.Error ->
+                    snackbarHost.showSnackbar(event.message)
+            }
+        }
+    }
+
+    // Skill-toggle capability probe — fire once on screen open so the
+    // Skills tab can render its Switches in the correct state before
+    // the user even gets there. Keyed on profileName so a fresh
+    // profile triggers a fresh probe (relay capability is server-wide
+    // so the answer shouldn't change, but we're defensive).
+    LaunchedEffect(profileName) {
+        if (profileName.isNotBlank()) {
+            viewModel.probeSkillToggleSupport()
+        }
+    }
+
+    val configLabel = stringResource(R.string.profile_inspector_tab_config)
+    val soulLabel = stringResource(R.string.profile_inspector_tab_soul)
+    val memoryLabel = stringResource(R.string.profile_inspector_tab_memory)
+    val skillsLabel = stringResource(R.string.profile_inspector_tab_skills)
+    val tabs = remember(configLabel, soulLabel, memoryLabel, skillsLabel) {
+        listOf(
+            InspectorTab(configLabel, InspectorSection.Config),
+            InspectorTab(soulLabel, InspectorSection.Soul),
+            InspectorTab(memoryLabel, InspectorSection.Memory),
+            InspectorTab(skillsLabel, InspectorSection.Skills),
+        )
+    }
+    // Resolve the incoming deep-link section arg to a tab index. An
+    // unknown / unrecognized section value falls back to Config (0).
+    val initialTabIndex = remember(initialSection) {
+        when (initialSection.lowercase()) {
+            "config" -> 0
+            "soul" -> 1
+            "memory" -> 2
+            "skills" -> 3
+            else -> 0
+        }
+    }
+    var selectedTab by remember(initialTabIndex) { mutableStateOf(initialTabIndex) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
+                        Text(
+                            text = stringResource(R.string.profile_inspector_title, profileName),
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        if (!profileModel.isNullOrBlank()) {
+                            Text(
+                                text = profileModel,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = stringResource(R.string.profile_inspector_back),
+                        )
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { viewModel.loadAll() }) {
+                        Icon(
+                            imageVector = Icons.Filled.Refresh,
+                            contentDescription = stringResource(R.string.profile_inspector_refresh_all),
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                ),
+            )
+        },
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding),
+        ) {
+            PrimaryTabRow(selectedTabIndex = selectedTab) {
+                tabs.forEachIndexed { index, tab ->
+                    Tab(
+                        selected = selectedTab == index,
+                        onClick = { selectedTab = index },
+                        text = { Text(tab.label) },
+                    )
+                }
+            }
+
+            Box(modifier = Modifier.weight(1f)) {
+                when (tabs[selectedTab].section) {
+                    InspectorSection.Config -> ConfigPane(
+                        state = configState,
+                        onRetry = { viewModel.refreshSection(InspectorSection.Config) },
+                        gatewayEditable = source == ProfileInspectorSource.Gateway && gatewayWritable,
+                        editing = viewModel.configEditing.collectAsState().value,
+                        descriptionDraft = viewModel.configDescriptionDraft.collectAsState().value,
+                        providerDraft = viewModel.configProviderDraft.collectAsState().value,
+                        modelDraft = viewModel.configModelDraft.collectAsState().value,
+                        saving = viewModel.configSaving.collectAsState().value,
+                        onBeginEdit = viewModel::beginConfigEdit,
+                        onDescriptionChange = viewModel::updateConfigDescriptionDraft,
+                        onProviderChange = viewModel::updateConfigProviderDraft,
+                        onModelChange = viewModel::updateConfigModelDraft,
+                        onSave = viewModel::saveConfigEdit,
+                        onCancel = viewModel::cancelConfigEdit,
+                    )
+                    InspectorSection.Soul -> SoulPane(
+                        state = soulState,
+                        onRetry = { viewModel.refreshSection(InspectorSection.Soul) },
+                        rawView = viewModel.soulRawView.collectAsState().value,
+                        onToggleRawView = { viewModel.toggleSoulRawView() },
+                        editing = viewModel.soulEditing.collectAsState().value,
+                        draft = viewModel.soulDraft.collectAsState().value,
+                        saving = viewModel.soulSaving.collectAsState().value,
+                        onBeginEdit = { viewModel.beginSoulEdit() },
+                        onDraftChange = { viewModel.updateSoulDraft(it) },
+                        onSave = { viewModel.saveSoulEdit() },
+                        onCancelEdit = { viewModel.cancelSoulEdit() },
+                        editable = source != ProfileInspectorSource.Gateway || gatewayWritable,
+                    )
+                    InspectorSection.Memory -> MemoryPane(
+                        state = memoryState,
+                        onRetry = { viewModel.refreshSection(InspectorSection.Memory) },
+                        editingFilename = viewModel.memoryEditingFilename.collectAsState().value,
+                        draft = viewModel.memoryDraft.collectAsState().value,
+                        saving = viewModel.memorySaving.collectAsState().value,
+                        onBeginEdit = { entry ->
+                            viewModel.beginMemoryEdit(entry.filename, entry.content)
+                        },
+                        onDraftChange = { viewModel.updateMemoryDraft(it) },
+                        onSave = { viewModel.saveMemoryEdit() },
+                        onCancelEdit = { viewModel.cancelMemoryEdit() },
+                        onNewEntry = { filename ->
+                            viewModel.beginMemoryEdit(filename, "")
+                        },
+                        validateFilename = { viewModel.validateMemoryFilename(it) },
+                    )
+                    InspectorSection.Skills -> SkillsPane(
+                        state = skillsState,
+                        onRetry = { viewModel.refreshSection(InspectorSection.Skills) },
+                        toggleSupported = viewModel.skillToggleSupported.collectAsState().value,
+                        onToggleSkill = { name, enabled ->
+                            viewModel.toggleSkill(name, enabled)
+                        },
+                        gatewayNative = source == ProfileInspectorSource.Gateway && gatewayWritable,
+                        skillDrafts = viewModel.skillDrafts.collectAsState().value,
+                        toolsets = gatewayDescription?.toolsets.orEmpty(),
+                        toolsetDrafts = viewModel.toolsetDrafts.collectAsState().value,
+                        saving = viewModel.skillsSaving.collectAsState().value,
+                        onToggleToolset = viewModel::toggleToolset,
+                        onSaveDrafts = viewModel::saveSkillEdits,
+                    )
+                }
+            }
+        }
+    }
+}
+
+private data class InspectorTab(val label: String, val section: InspectorSection)
+
+internal fun profileConfigSaveEnabled(provider: String, model: String, saving: Boolean): Boolean =
+    provider.isNotBlank() && model.isNotBlank() && !saving
+
+internal fun gatewayDraftSaveVisible(
+    skillDrafts: Map<String, Boolean>,
+    toolsetDrafts: Map<String, Boolean>,
+): Boolean = skillDrafts.isNotEmpty() || toolsetDrafts.isNotEmpty()
+
+// ---------------------------------------------------------------
+// Config pane — JSON tree with collapsible nested objects.
+// ---------------------------------------------------------------
+
+@Composable
+private fun ConfigPane(
+    state: LoadState<ProfileConfigResponse>,
+    onRetry: () -> Unit,
+    gatewayEditable: Boolean,
+    editing: Boolean,
+    descriptionDraft: String,
+    providerDraft: String,
+    modelDraft: String,
+    saving: Boolean,
+    onBeginEdit: () -> Unit,
+    onDescriptionChange: (String) -> Unit,
+    onProviderChange: (String) -> Unit,
+    onModelChange: (String) -> Unit,
+    onSave: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    PaneShell(state = state, onRetry = onRetry) { response ->
+        var showRawConfig by remember(response.profile, response.config) {
+            mutableStateOf(false)
+        }
+        val rawConfigStateDescription = stringResource(
+            if (showRawConfig) {
+                R.string.profile_inspector_expanded_state
+            } else {
+                R.string.profile_inspector_collapsed_state
+            },
+        )
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            if (gatewayEditable) {
+                GatewayConfigEditor(
+                    editing = editing,
+                    description = descriptionDraft,
+                    provider = providerDraft,
+                    model = modelDraft,
+                    saving = saving,
+                    onBeginEdit = onBeginEdit,
+                    onDescriptionChange = onDescriptionChange,
+                    onProviderChange = onProviderChange,
+                    onModelChange = onModelChange,
+                    onSave = onSave,
+                    onCancel = onCancel,
+                )
+            }
+            ConfigSummaryCard(response)
+
+            OutlinedButton(
+                onClick = { showRawConfig = !showRawConfig },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics {
+                        stateDescription = rawConfigStateDescription
+                    },
+            ) {
+                Icon(
+                    imageVector = if (showRawConfig) {
+                        Icons.Filled.ExpandLess
+                    } else {
+                        Icons.Filled.ExpandMore
+                    },
+                    contentDescription = null,
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = stringResource(
+                        if (showRawConfig) {
+                            R.string.profile_inspector_hide_raw_config
+                        } else {
+                            R.string.profile_inspector_show_raw_config
+                        },
+                    ),
+                )
+            }
+
+            if (showRawConfig) {
+                PathCaption(
+                    label = stringResource(R.string.profile_inspector_config_file),
+                    path = response.path,
+                )
+                if (response.config.isEmpty()) {
+                    EmptyStateRow(stringResource(R.string.profile_inspector_empty_config))
+                } else {
+                    JsonObjectTree(obj = response.config, depth = 0)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GatewayConfigEditor(
+    editing: Boolean,
+    description: String,
+    provider: String,
+    model: String,
+    saving: Boolean,
+    onBeginEdit: () -> Unit,
+    onDescriptionChange: (String) -> Unit,
+    onProviderChange: (String) -> Unit,
+    onModelChange: (String) -> Unit,
+    onSave: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(stringResource(R.string.profile_inspector_gateway_settings), fontWeight = FontWeight.SemiBold)
+                    Text(
+                        stringResource(R.string.profile_inspector_gateway_settings_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (!editing) {
+                    IconButton(onClick = onBeginEdit) {
+                        Icon(Icons.Filled.Edit, stringResource(R.string.profile_inspector_edit_config))
+                    }
+                }
+            }
+            if (editing) {
+                OutlinedTextField(
+                    value = description,
+                    onValueChange = onDescriptionChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(stringResource(R.string.profile_inspector_description)) },
+                )
+                OutlinedTextField(
+                    value = provider,
+                    onValueChange = onProviderChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text(stringResource(R.string.profile_inspector_provider)) },
+                )
+                OutlinedTextField(
+                    value = model,
+                    onValueChange = onModelChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text(stringResource(R.string.profile_inspector_model)) },
+                )
+                EditorBottomBar(
+                    saving = saving,
+                    canSave = profileConfigSaveEnabled(provider, model, saving),
+                    onSave = onSave,
+                    onCancel = onCancel,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConfigSummaryCard(response: ProfileConfigResponse) {
+    val topLevelCount = response.config.size
+    val totalFieldCount = countJsonFields(response.config)
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+        ),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = stringResource(R.string.profile_inspector_config_summary),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = stringResource(R.string.profile_inspector_config_summary_description),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+            ConfigSummaryRow(
+                label = stringResource(R.string.profile_inspector_profile),
+                value = response.profile,
+            )
+            ConfigSummaryRow(
+                label = stringResource(R.string.profile_inspector_access),
+                value = stringResource(
+                    if (response.readonly) {
+                        R.string.profile_inspector_read_only_value
+                    } else {
+                        R.string.profile_inspector_inspector_view_value
+                    },
+                ),
+            )
+            ConfigSummaryRow(
+                label = stringResource(R.string.profile_inspector_fields),
+                value = stringResource(
+                    R.string.profile_inspector_config_field_summary,
+                    topLevelCount,
+                    totalFieldCount,
+                ),
+            )
+            if (response.config.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(
+                        text = stringResource(R.string.profile_inspector_configured_sections),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = response.config.keys.joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            } else {
+                Text(
+                    text = stringResource(R.string.profile_inspector_empty_config_summary),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConfigSummaryRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1.6f),
+        )
+    }
+}
+
+private fun countJsonFields(element: JsonElement): Int = when (element) {
+    is JsonObject -> element.size + element.values.sumOf(::countJsonFields)
+    is JsonArray -> element.sumOf(::countJsonFields)
+    else -> 0
+}
+
+/**
+ * Recursive JSON tree renderer. Nested [JsonObject] entries render a
+ * click-to-collapse header; primitives and arrays render as a single
+ * key-value row with monospace values. Depth adds left indentation so
+ * the hierarchy is visually obvious without drawing explicit connector
+ * lines.
+ *
+ * [revealed] is a shared map of fully-qualified paths (e.g.
+ * `providers.openai.api_key`) to their current reveal state. Tree is a
+ * recursive composable, so a single map threaded from [ConfigPane]
+ * keeps the session-scoped reveal state out of the VM (it's strictly
+ * transient — wipes on leaving the screen) and outside any nested
+ * JsonObject's remember { } scope.
+ */
+@Composable
+private fun JsonObjectTree(
+    obj: JsonObject,
+    depth: Int,
+    pathPrefix: String = "",
+    revealed: androidx.compose.runtime.snapshots.SnapshotStateMap<String, Boolean> =
+        remember { mutableStateMapOf() },
+) {
+    // Per-key expanded state — collapsed by default so big configs don't
+    // blow up the initial screen. Users tap to drill in.
+    val expanded = remember(obj) { mutableStateMapOf<String, Boolean>() }
+    val indent = (depth * 12).dp
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        for ((key, value) in obj.entries) {
+            val childPath = if (pathPrefix.isEmpty()) key else "$pathPrefix.$key"
+            when (value) {
+                is JsonObject -> {
+                    val isOpen = expanded[key] == true
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { expanded[key] = !isOpen }
+                            .padding(start = indent, top = 4.dp, bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = if (isOpen) {
+                                Icons.Filled.ExpandLess
+                            } else {
+                                Icons.Filled.ExpandMore
+                            },
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = key,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = stringResource(
+                                if (value.size == 1) {
+                                    R.string.profile_inspector_field_count_single
+                                } else {
+                                    R.string.profile_inspector_field_count
+                                },
+                                value.size,
+                            ),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (isOpen) {
+                        JsonObjectTree(
+                            obj = value,
+                            depth = depth + 1,
+                            pathPrefix = childPath,
+                            revealed = revealed,
+                        )
+                    }
+                }
+
+                is JsonArray -> {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = indent, top = 4.dp, bottom = 4.dp),
+                    ) {
+                        Text(
+                            text = "$key:",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = renderJsonValue(value),
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+
+                is JsonPrimitive, JsonNull -> {
+                    // Masking applies only to string primitives whose key
+                    // name matches the secret regex. Numbers, booleans, and
+                    // nulls render verbatim — there's no API key pretending
+                    // to be an int. The mask is applied inside renderMaskedValue
+                    // so the raw string never reaches the text buffer until
+                    // the user actively taps the eye icon.
+                    val isSecret = value is JsonPrimitive &&
+                        value.isString &&
+                        isSecretKey(key)
+                    val isRevealed = isSecret && revealed[childPath] == true
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = indent, top = 4.dp, bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "$key:",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (isSecret) {
+                                renderMaskedValue(
+                                    value as JsonPrimitive,
+                                    reveal = isRevealed,
+                                )
+                            } else {
+                                renderJsonValue(value)
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        if (isSecret) {
+                            IconButton(
+                                onClick = {
+                                    revealed[childPath] = !isRevealed
+                                },
+                                modifier = Modifier.size(28.dp),
+                            ) {
+                                Icon(
+                                    imageVector = if (isRevealed) {
+                                        Icons.Filled.VisibilityOff
+                                    } else {
+                                        Icons.Filled.Visibility
+                                    },
+                                    contentDescription = if (isRevealed) {
+                                        stringResource(R.string.profile_inspector_hide_value)
+                                    } else {
+                                        stringResource(R.string.profile_inspector_reveal_value)
+                                    },
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Key-name heuristic for masking sensitive config values. Matches anything
+ * containing (case-insensitive) "key", "token", "secret", "password", or
+ * "credential" — same sentinel vocabulary the upstream Hermes config
+ * loader uses for its own `_redact_secrets` sweep.
+ *
+ * False positives like "keymap" or "keyframes" are acceptable — a spurious
+ * mask is always safer than a leak, and the user can still reveal
+ * with a tap.
+ */
+private val SECRET_KEY_REGEX = Regex(
+    "(?i).*(key|token|secret|password|credential).*"
+)
+
+private fun isSecretKey(key: String): Boolean = SECRET_KEY_REGEX.matches(key)
+
+/**
+ * Mask a string primitive while still leaving enough shape for the user
+ * to confirm "what key is set". Short values (< 12 chars) render as a
+ * full `"********"` mask so we don't leak prefix/suffix for tokens that
+ * would be trivially guessable in-full.
+ *
+ * 12 chars is the threshold because most real provider keys are well
+ * above that (sk-ant-* runs ~100, OpenAI ~50, etc.) — anything shorter
+ * is probably a placeholder or a tiny shared secret where even 8 chars
+ * of prefix/suffix reveal too much.
+ */
+private fun renderMaskedValue(primitive: JsonPrimitive, reveal: Boolean): String {
+    val raw = primitive.content
+    if (reveal) return "\"$raw\""
+    val trimmed = raw
+    return if (trimmed.length < 12) {
+        "\"********\""
+    } else {
+        "\"${trimmed.take(4)}...${trimmed.takeLast(4)}\""
+    }
+}
+
+/**
+ * Compact one-line rendering of a JSON value for the tree-leaf rows.
+ * Arrays become `[v1, v2, v3]`, strings get literal quotes, numbers
+ * and booleans pass through. Truncated at 120 chars to avoid blowing
+ * out the row height.
+ */
+private fun renderJsonValue(value: JsonElement): String {
+    val raw = when (value) {
+        is JsonPrimitive -> {
+            if (value.isString) "\"${value.content}\"" else value.content
+        }
+        is JsonNull -> "null"
+        is JsonArray -> value.joinToString(prefix = "[", postfix = "]") { renderJsonValue(it) }
+        is JsonObject -> "{…}"
+    }
+    return if (raw.length > 120) raw.take(117) + "…" else raw
+}
+
+// ---------------------------------------------------------------
+// SOUL pane
+// ---------------------------------------------------------------
+
+@Composable
+private fun SoulPane(
+    state: LoadState<com.hermesandroid.relay.data.ProfileSoulResponse>,
+    onRetry: () -> Unit,
+    rawView: Boolean,
+    onToggleRawView: () -> Unit,
+    editing: Boolean,
+    draft: String,
+    saving: Boolean,
+    onBeginEdit: () -> Unit,
+    onDraftChange: (String) -> Unit,
+    onSave: () -> Unit,
+    onCancelEdit: () -> Unit,
+    editable: Boolean,
+) {
+    PaneShell(state = state, onRetry = onRetry) { response ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            if (response.exists && response.truncated) {
+                TruncatedBanner()
+            }
+
+            // Pane header row — path + size on the left, action icons on
+            // the right. In view-mode we show the render-mode toggle and
+            // a pencil; in edit-mode, only the pencil is swapped for a
+            // close-X so the user has a clear "abort" affordance.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    PathCaption(
+                        label = if (response.exists) stringResource(R.string.profile_inspector_soul_file)
+                        else stringResource(R.string.profile_inspector_soul_file_not_created),
+                        path = response.path,
+                    )
+                    if (response.exists) {
+                        Text(
+                            text = stringResource(R.string.profile_inspector_bytes, response.sizeBytes),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                if (!editing) {
+                    // Raw-view toggle only makes sense outside edit mode
+                    // — the editor is always monospace source.
+                    IconButton(onClick = onToggleRawView) {
+                        Icon(
+                            imageVector = if (rawView) {
+                                Icons.Filled.TextFields
+                            } else {
+                                Icons.Filled.Code
+                            },
+                            contentDescription = if (rawView) {
+                                stringResource(R.string.profile_inspector_show_rendered)
+                            } else {
+                                stringResource(R.string.profile_inspector_show_raw)
+                            },
+                        )
+                    }
+                    if (editable) {
+                        IconButton(onClick = onBeginEdit) {
+                            Icon(
+                                imageVector = Icons.Filled.Edit,
+                                contentDescription = stringResource(R.string.profile_inspector_edit_soul),
+                            )
+                        }
+                    }
+                } else {
+                    IconButton(
+                        onClick = onCancelEdit,
+                        enabled = !saving,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = stringResource(R.string.profile_inspector_cancel_edit),
+                        )
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+
+            if (editing) {
+                MonospaceEditor(
+                    content = draft,
+                    onContentChange = onDraftChange,
+                    enabled = editable && !saving,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                )
+                EditorBottomBar(
+                    saving = saving,
+                    canSave = editable,
+                    onSave = onSave,
+                    onCancel = onCancelEdit,
+                )
+            } else if (!response.exists) {
+                // Empty state — profile has no SOUL.md. Offer to create
+                // one via the same edit flow.
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.profile_inspector_no_soul),
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        text = stringResource(R.string.profile_inspector_no_soul_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .background(
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = appearanceRoundedCornerShape(8.dp),
+                        )
+                        .padding(12.dp),
+                ) {
+                    if (rawView) {
+                        Text(
+                            text = response.content,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .verticalScroll(rememberScrollState()),
+                        )
+                    } else {
+                        // Rendered markdown — same library the chat bubbles
+                        // use (mikepenz multiplatform-markdown-renderer m3),
+                        // wrapped in our project-local [MarkdownContent]
+                        // composable so code blocks get the same highlight
+                        // + copy-button treatment chat does.
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .verticalScroll(rememberScrollState()),
+                        ) {
+                            com.hermesandroid.relay.ui.components.MarkdownContent(
+                                content = response.content,
+                                textColor = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Monospace editor with a line-numbered gutter on the left. No heavy
+ * CodeMirror wrapper — just a [BasicTextField] in a Row next to a
+ * computed gutter column.
+ *
+ * Line numbers recompute on every content change. For typical SOUL /
+ * memory sizes (a few KB at most) this is trivial; if we ever host
+ * truly large files we'd swap to a virtualized editor.
+ */
+@Composable
+private fun MonospaceEditor(
+    content: String,
+    onContentChange: (String) -> Unit,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    // Scroll state shared by both gutter and editor so line numbers
+    // stay aligned with their rows during vertical scroll.
+    val scroll = rememberScrollState()
+    val lines = remember(content) { content.count { it == '\n' } + 1 }
+    Row(
+        modifier = modifier
+            .background(
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                shape = appearanceRoundedCornerShape(8.dp),
+            )
+            .padding(8.dp),
+    ) {
+        // Line-number gutter — rendered via a single joined Text so
+        // the per-line positions match the editor's natural wrapping.
+        // A BasicTextField does not wrap newlines, so each \n in the
+        // content starts a new visible line, keeping the 1:1 mapping.
+        val gutter = remember(lines) {
+            (1..lines).joinToString("\n") { it.toString() }
+        }
+        Text(
+            text = gutter,
+            style = MaterialTheme.typography.bodySmall,
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .padding(end = 8.dp)
+                .verticalScroll(scroll),
+        )
+        HorizontalDivider(
+            modifier = Modifier
+                .fillMaxWidth(fraction = 0.01f),
+            thickness = 1.dp,
+            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+        )
+        androidx.compose.foundation.text.BasicTextField(
+            value = content,
+            onValueChange = { if (enabled) onContentChange(it) },
+            textStyle = MaterialTheme.typography.bodySmall.copy(
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurface,
+            ),
+            enabled = enabled,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .verticalScroll(scroll)
+                .padding(start = 8.dp),
+            cursorBrush = androidx.compose.ui.graphics.SolidColor(
+                MaterialTheme.colorScheme.primary,
+            ),
+        )
+    }
+}
+
+@Composable
+private fun EditorBottomBar(
+    saving: Boolean,
+    canSave: Boolean,
+    onSave: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        OutlinedButton(
+            onClick = onCancel,
+            enabled = !saving,
+            modifier = Modifier.weight(1f),
+        ) {
+            Text(stringResource(R.string.profile_inspector_cancel))
+        }
+        FilledTonalButton(
+            onClick = onSave,
+            enabled = !saving && canSave,
+            modifier = Modifier.weight(1f),
+        ) {
+            if (saving) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(stringResource(R.string.profile_inspector_saving))
+            } else {
+                Text(stringResource(R.string.profile_inspector_save))
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------
+// Memory pane — expandable cards per entry.
+// ---------------------------------------------------------------
+
+@Composable
+private fun MemoryPane(
+    state: LoadState<com.hermesandroid.relay.data.ProfileMemoryResponse>,
+    onRetry: () -> Unit,
+    editingFilename: String?,
+    draft: String,
+    saving: Boolean,
+    onBeginEdit: (ProfileMemoryEntry) -> Unit,
+    onDraftChange: (String) -> Unit,
+    onSave: () -> Unit,
+    onCancelEdit: () -> Unit,
+    onNewEntry: (String) -> Unit,
+    validateFilename: (String) -> String?,
+) {
+    PaneShell(state = state, onRetry = onRetry) { response ->
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Expansion state by filename — kept in a mutableStateMap so
+            // the list recomposition doesn't drop open-cards when other
+            // state updates.
+            val expanded = remember { mutableStateMapOf<String, Boolean>() }
+
+            // "New entry" dialog — shown when the user taps the FAB-like
+            // button at the bottom of the pane. Local state (not hoisted
+            // to the VM) because the dialog's content is ephemeral input
+            // that becomes an edit session once accepted.
+            var showNewDialog by remember { mutableStateOf(false) }
+
+            // When the user created a new (not-yet-persisted) entry via
+            // the "+ New entry" dialog, its filename is in
+            // [editingFilename] but has no matching ProfileMemoryEntry
+            // in [response.entries]. Synthesize a placeholder card at
+            // the top of the list so the editor has somewhere to render.
+            val newEntryFilename = editingFilename?.takeIf { name ->
+                response.entries.none { it.filename == name }
+            }
+
+            if (response.entries.isEmpty() && editingFilename == null) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(horizontal = 16.dp, vertical = 24.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.profile_inspector_no_memory),
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        text = stringResource(R.string.profile_inspector_memories_dir),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = response.memoriesDir,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                        horizontal = 16.dp,
+                        vertical = 12.dp,
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    // Synthetic "new entry" card — rendered first when
+                    // the user is editing a filename not yet in the
+                    // persisted list. Sizes/paths are empty until the
+                    // save round-trip completes and the pane reloads.
+                    if (newEntryFilename != null) {
+                        item(key = "__new__:$newEntryFilename") {
+                            val placeholder = ProfileMemoryEntry(
+                                name = newEntryFilename.removeSuffix(".md"),
+                                filename = newEntryFilename,
+                                path = stringResource(R.string.profile_inspector_pending_save),
+                                content = "",
+                                sizeBytes = 0L,
+                                truncated = false,
+                            )
+                            MemoryEntryCard(
+                                entry = placeholder,
+                                expanded = true,
+                                onToggle = { },
+                                editing = true,
+                                draft = draft,
+                                saving = saving,
+                                onBeginEdit = { },
+                                onDraftChange = onDraftChange,
+                                onSave = onSave,
+                                onCancelEdit = onCancelEdit,
+                            )
+                        }
+                    }
+                    items(
+                        items = response.entries,
+                        key = { it.filename },
+                    ) { entry ->
+                        val isOpen = expanded[entry.filename] == true
+                        val isEditing = editingFilename == entry.filename
+                        MemoryEntryCard(
+                            entry = entry,
+                            expanded = isOpen || isEditing,
+                            onToggle = { expanded[entry.filename] = !isOpen },
+                            editing = isEditing,
+                            draft = draft,
+                            saving = saving,
+                            onBeginEdit = { onBeginEdit(entry) },
+                            onDraftChange = onDraftChange,
+                            onSave = onSave,
+                            onCancelEdit = onCancelEdit,
+                        )
+                    }
+                }
+            }
+
+            // Bottom "+ New entry" button — rendered whether the list is
+            // empty or populated. Disabled while an edit is already in
+            // flight so we don't stack drafts.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+            ) {
+                OutlinedButton(
+                    onClick = { showNewDialog = true },
+                    enabled = editingFilename == null,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Add,
+                        contentDescription = null,
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(stringResource(R.string.profile_inspector_new_entry))
+                }
+            }
+
+            if (showNewDialog) {
+                NewMemoryEntryDialog(
+                    existingFilenames = response.entries.map { it.filename },
+                    validateFilename = validateFilename,
+                    onCreate = { filename ->
+                        showNewDialog = false
+                        onNewEntry(filename)
+                    },
+                    onDismiss = { showNewDialog = false },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Filename-prompt dialog for creating a new memory entry. Validates
+ * against [validateFilename] (the VM-exposed rule set: must end in
+ * `.md`, no slashes, no `..`, no leading `.`) plus a collision check
+ * against [existingFilenames]. The current implementation rejects
+ * collisions — editing an existing entry goes through the per-card
+ * pencil affordance, not this dialog.
+ */
+@Composable
+private fun NewMemoryEntryDialog(
+    existingFilenames: List<String>,
+    validateFilename: (String) -> String?,
+    onCreate: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val duplicateError = stringResource(R.string.profile_inspector_filename_exists)
+    var filename by remember { mutableStateOf("") }
+    val error = remember(filename, existingFilenames, duplicateError) {
+        if (filename.isBlank()) null
+        else validateFilename(filename)
+            ?: if (filename in existingFilenames) duplicateError else null
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.profile_inspector_new_memory_entry)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = stringResource(R.string.profile_inspector_filename_md),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = filename,
+                    onValueChange = { filename = it },
+                    placeholder = { Text(stringResource(R.string.profile_inspector_filename_placeholder)) },
+                    isError = error != null && filename.isNotBlank(),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (error != null && filename.isNotBlank()) {
+                    Text(
+                        text = error,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onCreate(filename.trim()) },
+                enabled = filename.isNotBlank() && error == null,
+            ) {
+                Text(stringResource(R.string.profile_inspector_create))
+            }
+        },
+        dismissButton = {
+            OutlinedButton(onClick = onDismiss) {
+                Text(stringResource(R.string.profile_inspector_cancel))
+            }
+        },
+    )
+}
+
+@Composable
+private fun MemoryEntryCard(
+    entry: ProfileMemoryEntry,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    editing: Boolean,
+    draft: String,
+    saving: Boolean,
+    onBeginEdit: () -> Unit,
+    onDraftChange: (String) -> Unit,
+    onSave: () -> Unit,
+    onCancelEdit: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+        ),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = !editing, onClick = onToggle),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = entry.filename,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = stringResource(R.string.profile_inspector_bytes, entry.sizeBytes),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (!editing) {
+                    IconButton(onClick = onBeginEdit) {
+                        Icon(
+                            imageVector = Icons.Filled.Edit,
+                            contentDescription = stringResource(R.string.profile_inspector_edit_entry),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Icon(
+                        imageVector = if (expanded) {
+                            Icons.Filled.ExpandLess
+                        } else {
+                            Icons.Filled.ExpandMore
+                        },
+                        contentDescription = if (expanded) stringResource(R.string.profile_inspector_collapse)
+                        else stringResource(R.string.profile_inspector_expand),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    IconButton(
+                        onClick = onCancelEdit,
+                        enabled = !saving,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = stringResource(R.string.profile_inspector_cancel_edit),
+                        )
+                    }
+                }
+            }
+            if (expanded) {
+                Spacer(modifier = Modifier.height(8.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+                Spacer(modifier = Modifier.height(8.dp))
+                if (!editing && entry.truncated) {
+                    TruncatedBanner()
+                    Spacer(modifier = Modifier.height(6.dp))
+                }
+                Text(
+                    text = entry.path,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                if (editing) {
+                    MonospaceEditor(
+                        content = draft,
+                        onContentChange = onDraftChange,
+                        enabled = !saving,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 180.dp, max = 420.dp),
+                    )
+                    EditorBottomBar(
+                        saving = saving,
+                        canSave = true,
+                        onSave = onSave,
+                        onCancel = onCancelEdit,
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 360.dp)
+                            .background(
+                                color = MaterialTheme.colorScheme.surface,
+                                shape = RoundedCornerShape(6.dp),
+                            )
+                            .padding(8.dp),
+                    ) {
+                        val emptyContentLabel = stringResource(R.string.profile_inspector_empty_content)
+                        Text(
+                            text = entry.content.ifBlank { emptyContentLabel },
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .verticalScroll(rememberScrollState()),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------
+// Skills pane — grouped by category.
+// ---------------------------------------------------------------
+
+@Composable
+private fun SkillsPane(
+    state: LoadState<com.hermesandroid.relay.data.ProfileSkillsResponse>,
+    onRetry: () -> Unit,
+    toggleSupported: Boolean?,
+    onToggleSkill: (String, Boolean) -> Unit,
+    gatewayNative: Boolean,
+    skillDrafts: Map<String, Boolean>,
+    toolsets: List<GatewayProfileToolset>,
+    toolsetDrafts: Map<String, Boolean>,
+    saving: Boolean,
+    onToggleToolset: (String, Boolean) -> Unit,
+    onSaveDrafts: () -> Unit,
+) {
+    PaneShell(state = state, onRetry = onRetry) { response ->
+        if (response.skills.isEmpty() && !gatewayNative) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.profile_inspector_no_skills),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text(
+                    text = stringResource(R.string.profile_inspector_skills_total, response.total),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        } else {
+            var query by remember(response.profile) { mutableStateOf("") }
+            var filter by remember(response.profile) { mutableStateOf(SkillFilter.All) }
+            val collapsedCategories = remember(response.profile) {
+                mutableStateMapOf<String, Boolean>()
+            }
+            val enabledCount = remember(response.skills) {
+                response.skills.count { it.enabled }
+            }
+            val visibleSkills = remember(response.skills, query, filter) {
+                filterSkills(response.skills, query, filter)
+            }
+            // Group after filtering so the original server/category
+            // insertion order remains the source of truth.
+            val uncategorizedLabel = stringResource(R.string.profile_inspector_uncategorized)
+            val grouped = remember(visibleSkills, uncategorizedLabel) {
+                visibleSkills.groupBy { it.category.ifBlank { uncategorizedLabel } }
+                    .toList() // preserves group order in the JSON payload
+            }
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                    horizontal = 16.dp,
+                    vertical = 12.dp,
+                ),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                item(key = "__skills_controls__") {
+                    SkillsControls(
+                        query = query,
+                        onQueryChange = { query = it },
+                        filter = filter,
+                        onFilterChange = { filter = it },
+                        enabledCount = enabledCount,
+                        totalCount = response.total,
+                        visibleCount = visibleSkills.size,
+                    )
+                }
+                if (gatewayNative && toolsets.isNotEmpty()) {
+                    item(key = "__toolsets__") {
+                        GatewayToolsetsCard(
+                            toolsets = toolsets,
+                            drafts = toolsetDrafts,
+                            onToggle = onToggleToolset,
+                        )
+                    }
+                }
+                if (gatewayNative && gatewayDraftSaveVisible(skillDrafts, toolsetDrafts)) {
+                    item(key = "__save_gateway_drafts__") {
+                        Button(
+                            onClick = onSaveDrafts,
+                            enabled = !saving,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            if (saving) {
+                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                                Spacer(Modifier.width(8.dp))
+                            }
+                            Text(stringResource(if (saving) R.string.profile_inspector_saving else R.string.profile_inspector_save_changes))
+                        }
+                    }
+                }
+                if (visibleSkills.isEmpty()) {
+                    item(key = "__skills_empty_filter__") {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            ),
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.profile_inspector_no_matching_skills),
+                                    style = MaterialTheme.typography.titleSmall,
+                                )
+                                Text(
+                                    text = stringResource(R.string.profile_inspector_no_matching_skills_hint),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+                items(
+                    items = grouped,
+                    key = { pair -> pair.first },
+                ) { pair ->
+                    val isExpanded = collapsedCategories[pair.first] != true
+                    SkillCategorySection(
+                        category = pair.first,
+                        skills = pair.second,
+                        expanded = isExpanded,
+                        onToggleExpanded = {
+                            collapsedCategories[pair.first] = isExpanded
+                        },
+                        toggleSupported = toggleSupported,
+                        onToggleSkill = onToggleSkill,
+                        gatewayNative = gatewayNative,
+                        skillDrafts = skillDrafts,
+                    )
+                }
+                if (toggleSupported == false) {
+                    // Bottom-of-list caption when the probe confirmed
+                    // the endpoint isn't available server-side. Kept
+                    // out of each card so the message is shown once
+                    // rather than N times.
+                    item(key = "__toggle_unsupported_caption__") {
+                        Text(
+                            text = stringResource(R.string.profile_inspector_toggle_unsupported),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private enum class SkillFilter {
+    All,
+    Enabled,
+    Disabled,
+}
+
+private fun filterSkills(
+    skills: List<ProfileSkillEntry>,
+    query: String,
+    filter: SkillFilter,
+): List<ProfileSkillEntry> = skills.filter { skill ->
+    val matchesQuery = query.isBlank() ||
+        skill.name.contains(query, ignoreCase = true) ||
+        skill.description.contains(query, ignoreCase = true) ||
+        skill.category.contains(query, ignoreCase = true)
+    val matchesFilter = when (filter) {
+        SkillFilter.All -> true
+        SkillFilter.Enabled -> skill.enabled
+        SkillFilter.Disabled -> !skill.enabled
+    }
+    matchesQuery && matchesFilter
+}
+
+@Composable
+private fun SkillsControls(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    filter: SkillFilter,
+    onFilterChange: (SkillFilter) -> Unit,
+    enabledCount: Int,
+    totalCount: Int,
+    visibleCount: Int,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = stringResource(
+                R.string.profile_inspector_skills_count_summary,
+                enabledCount,
+                totalCount,
+            ),
+            style = MaterialTheme.typography.titleSmall,
+        )
+        Text(
+            text = stringResource(
+                R.string.profile_inspector_skills_visible_count,
+                visibleCount,
+                totalCount,
+            ),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedTextField(
+            value = query,
+            onValueChange = onQueryChange,
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text(stringResource(R.string.profile_inspector_search_skills)) },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Filled.Search,
+                    contentDescription = null,
+                )
+            },
+            trailingIcon = if (query.isNotEmpty()) {
+                {
+                    IconButton(onClick = { onQueryChange("") }) {
+                        Icon(
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = stringResource(
+                                R.string.profile_inspector_clear_skill_search,
+                            ),
+                        )
+                    }
+                }
+            } else {
+                null
+            },
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            SkillFilter.entries.forEach { candidate ->
+                val label = when (candidate) {
+                    SkillFilter.All -> stringResource(R.string.profile_inspector_filter_all)
+                    SkillFilter.Enabled -> stringResource(R.string.profile_inspector_filter_enabled)
+                    SkillFilter.Disabled -> stringResource(R.string.profile_inspector_filter_disabled)
+                }
+                FilterChip(
+                    selected = filter == candidate,
+                    onClick = { onFilterChange(candidate) },
+                    label = { Text(label) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SkillCategorySection(
+    category: String,
+    skills: List<ProfileSkillEntry>,
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit,
+    toggleSupported: Boolean?,
+    onToggleSkill: (String, Boolean) -> Unit,
+    gatewayNative: Boolean,
+    skillDrafts: Map<String, Boolean>,
+) {
+    val categoryStateDescription = stringResource(
+        if (expanded) {
+            R.string.profile_inspector_expanded_state
+        } else {
+            R.string.profile_inspector_collapsed_state
+        },
+    )
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(
+                    role = Role.Button,
+                    onClick = onToggleExpanded,
+                )
+                .semantics {
+                    stateDescription = categoryStateDescription
+                }
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = category,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = skills.size.toString(),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Icon(
+                imageVector = if (expanded) {
+                    Icons.Filled.ExpandLess
+                } else {
+                    Icons.Filled.ExpandMore
+                },
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (expanded) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                ),
+            ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    skills.forEachIndexed { index, skill ->
+                        SkillRow(
+                            skill = skill,
+                            toggleSupported = toggleSupported,
+                            onToggleSkill = onToggleSkill,
+                            controlledEnabled = if (gatewayNative) skillDrafts[skill.name] ?: skill.enabled else null,
+                        )
+                        if (index != skills.lastIndex) {
+                            HorizontalDivider(
+                                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SkillRow(
+    skill: ProfileSkillEntry,
+    toggleSupported: Boolean?,
+    onToggleSkill: (String, Boolean) -> Unit,
+    controlledEnabled: Boolean?,
+) {
+    // Optimistic local toggle state. The VM's emitted events revert us
+    // on failure; on success the next `/skills` refetch will overwrite
+    // this with the server's canonical value. Keyed on (skill, enabled)
+    // so a fresh fetch resets the local pick.
+    var localEnabled by remember(skill.name, skill.enabled) {
+        mutableStateOf(skill.enabled)
+    }
+    // 501-known-unsupported → ghost the switch entirely.
+    // null (probe hasn't completed) → leave tappable but the PUT will
+    // ask authoritatively.
+    val switchEnabled = toggleSupported != false
+    val displayedEnabled = controlledEnabled ?: localEnabled
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = skill.name,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                if (!displayedEnabled) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = stringResource(R.string.profile_inspector_disabled),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (skill.description.isNotBlank()) {
+                Text(
+                    text = skill.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        val toggleDescription = stringResource(
+            if (displayedEnabled) {
+                R.string.profile_inspector_disable_skill
+            } else {
+                R.string.profile_inspector_enable_skill
+            },
+            skill.name,
+        )
+        androidx.compose.material3.Switch(
+            checked = displayedEnabled,
+            enabled = switchEnabled,
+            modifier = Modifier.semantics {
+                contentDescription = toggleDescription
+            },
+            onCheckedChange = { new ->
+                // Optimistic flip; VM revert on 501 will come back via
+                // the snackbar error event. We don't have a direct
+                // "revert visually" hook here without VM-state feedback,
+                // so we key off the revealed `toggleSupported` value
+                // the next recomposition sees — when the VM updates
+                // the flag to false post-call, we reset the switch to
+                // the prior state on the next pass.
+                if (controlledEnabled == null) localEnabled = new
+                onToggleSkill(skill.name, new)
+            },
+        )
+    }
+    // Revert visual state if the probe flipped to unsupported AFTER the
+    // user tapped. Compose effect keyed on toggleSupported + the skill's
+    // server-reported enabled flag.
+    LaunchedEffect(toggleSupported, skill.enabled) {
+        if (toggleSupported == false && localEnabled != skill.enabled) {
+            localEnabled = skill.enabled
+        }
+    }
+}
+
+@Composable
+private fun GatewayToolsetsCard(
+    toolsets: List<GatewayProfileToolset>,
+    drafts: Map<String, Boolean>,
+    onToggle: (String, Boolean) -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(stringResource(R.string.profile_inspector_toolsets), fontWeight = FontWeight.SemiBold)
+            Text(
+                stringResource(R.string.profile_inspector_toolsets_hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            toolsets.forEach { toolset ->
+                val enabled = drafts[toolset.name] ?: toolset.enabled
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(toolset.name, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            stringResource(R.string.profile_inspector_tool_count, toolset.toolCount),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    androidx.compose.material3.Switch(
+                        checked = enabled,
+                        onCheckedChange = { onToggle(toolset.name, it) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------
+// Shared UI bits
+// ---------------------------------------------------------------
+
+/**
+ * Wrapper that renders the three shared pane states (Loading / Error /
+ * Loaded) so individual panes only need to implement the Loaded body.
+ * Idle renders as Loading-without-spinner so the user doesn't see
+ * flashes when a section is entered before `loadAll()` completes.
+ */
+@Composable
+private fun <T> PaneShell(
+    state: LoadState<T>,
+    onRetry: () -> Unit,
+    content: @Composable (T) -> Unit,
+) {
+    when (state) {
+        is LoadState.Idle, is LoadState.Loading -> {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (state is LoadState.Loading) {
+                    CircularProgressIndicator()
+                }
+            }
+        }
+        is LoadState.Error -> {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Warning,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                )
+                Text(
+                    text = state.message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Button(onClick = onRetry) { Text(stringResource(R.string.profile_inspector_retry)) }
+            }
+        }
+        is LoadState.Loaded<T> -> {
+            content(state.value)
+        }
+    }
+}
+
+@Composable
+private fun PathCaption(label: String, path: String) {
+    Column {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = path,
+            style = MaterialTheme.typography.bodySmall,
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
+
+@Composable
+private fun TruncatedBanner() {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                color = MaterialTheme.colorScheme.errorContainer,
+                shape = appearanceRoundedCornerShape(6.dp),
+            )
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Warning,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onErrorContainer,
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text = stringResource(R.string.profile_inspector_truncated),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onErrorContainer,
+        )
+    }
+}
+
+@Composable
+private fun EmptyStateRow(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}

@@ -1,0 +1,781 @@
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import io
+import sys
+import unittest
+from pathlib import Path
+from typing import Any
+
+from aiohttp import ClientSession, WSMsgType, web
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from vanilla_gateway import GatewayFixture, ScenarioError, load_scenario  # noqa: E402
+from vanilla_gateway.cli import parse_args  # noqa: E402
+from vanilla_gateway.evidence import EvidenceLog  # noqa: E402
+
+
+class FixtureTestCase(unittest.IsolatedAsyncioTestCase):
+    async def test_dashboard_setup_signin_expiry_and_loopback_are_distinct(self) -> None:
+        fixture, base_url = await self.start("dashboard_onboarding")
+        async with self.session.get(f"{base_url}/api/status") as response:
+            self.assertTrue((await response.json())["auth_required"])
+        async with self.session.get(f"{base_url}/api/auth/me") as response:
+            self.assertEqual(401, response.status)
+        async with self.session.post(f"{base_url}/auth/password-login", json={
+            "username": "fixture", "password": "fixture",
+        }) as response:
+            self.assertEqual(200, response.status)
+            cookie = response.cookies["hermes_session"].value
+        headers = {"Cookie": f"hermes_session={cookie}"}
+        async with self.session.get(f"{base_url}/api/auth/me", headers=headers) as response:
+            self.assertTrue((await response.json())["authenticated"])
+        async with self.session.post(f"{base_url}/api/auth/ws-ticket", headers=headers) as response:
+            self.assertIn("ticket", await response.json())
+        async with self.session.post(f"{base_url}/__fixture__/auth", json={"mode": "expired"}):
+            pass
+        async with self.session.get(f"{base_url}/api/auth/me", headers=headers) as response:
+            self.assertEqual("session_expired", (await response.json())["error"])
+        async with self.session.post(f"{base_url}/__fixture__/auth", json={"mode": "loopback"}):
+            pass
+        async with self.session.get(f"{base_url}/api/status") as response:
+            self.assertFalse((await response.json())["auth_required"])
+        async with self.session.get(f"{base_url}/api/auth/me", headers=headers) as response:
+            self.assertEqual({"detail": "Unauthorized"}, await response.json())
+        self.assertEqual([], fixture._history_rows)
+
+    async def test_native_method_family_accepts_results_and_unsupported_errors(self) -> None:
+        fixture, base_url = await self.start("server_requests")
+        ws, _ = await self.connect(base_url)
+        await self.rpc(ws, 1, "client.capabilities", {"server_requests": True})
+        await self.frames_until(ws, lambda f: f.get("id") == 1)
+        await self.rpc(ws, 2, "prompt.submit")
+        seen = []
+        for _ in range(13):
+            frames = await self.frames_until(ws, lambda f: "id" in f and "method" in f)
+            frame = frames[-1]
+            method = frame["method"]
+            seen.append(method)
+            response = {"jsonrpc": "2.0", "id": frame["id"]}
+            if method in ("clarify", "approval", "sudo", "secret"):
+                key = "answer" if method == "clarify" else "choice" if method == "approval" else "value"
+                response["result"] = {key: "deny" if method == "approval" else ""}
+            else:
+                response["error"] = {"code": -32601, "message": "Unsupported"}
+            await ws.send_json(response)
+        await self.frames_until(ws, lambda f: f.get("params", {}).get("type") == "message.complete")
+        self.assertEqual(13, len(set(seen)))
+        self.assertIsNone(fixture._native_request)
+
+    async def test_native_clarify_requires_capabilities_and_replays_locks(self) -> None:
+        fixture, base_url = await self.start("clarify_batch")
+        ws, _ = await self.connect(base_url)
+        await self.rpc(ws, 1, "client.capabilities", {"server_requests": True})
+        await self.frames_until(ws, lambda f: f.get("id") == 1)
+        await self.rpc(ws, 2, "prompt.submit")
+        frames = await self.frames_until(ws, lambda f: f.get("method") == "clarify")
+        frame = frames[-1]
+        self.assertNotIn("request_id", frame["params"])
+        rid = frame["id"]
+        await self.rpc(ws, 3, "clarify.lock", {"request_id": rid, "question_id": "route/a", "answer": "Canary"})
+        frames = await self.frames_until(ws, lambda f: f.get("id") == 3)
+        self.assertEqual(["environment:b"], frames[-1]["result"]["remaining"])
+        await ws.close()
+        ws, _ = await self.connect(base_url)
+        await self.rpc(ws, 4, "client.capabilities", {"server_requests": True})
+        await self.frames_until(ws, lambda f: f.get("id") == 4)
+        await self.rpc(ws, 5, "session.activate", {"session_id": fixture.scenario.live_session_id})
+        frames = await self.frames_until(ws, lambda f: f.get("id") == 5)
+        replay = frames[-1]["result"]["open_requests"][0]
+        self.assertEqual(rid, replay["id"])
+        self.assertEqual({"route/a": "Canary"}, replay["params"]["answers"])
+        # Empty answer skips only this question; the last lock settles without a response frame.
+        await self.rpc(ws, 6, "clarify.lock", {"request_id": rid, "question_id": "environment:b", "answer": ""})
+        frames = await self.frames_until(ws, lambda f: f.get("id") == 6)
+        self.assertEqual([], frames[-1]["result"]["remaining"])
+        await self.frames_until(ws, lambda f: f.get("params", {}).get("type") == "message.complete")
+
+    async def test_native_clarify_legacy_client_fails_fast(self) -> None:
+        fixture, base_url = await self.start("clarify_batch")
+        ws, _ = await self.connect(base_url)
+        await self.rpc(ws, 1, "prompt.submit")
+        frames = await self.frames_until(ws, lambda f: f.get("params", {}).get("type") == "message.complete")
+        self.assertFalse(any(f.get("method") == "clarify" for f in frames))
+        self.assertIsNone(fixture._native_request)
+
+    async def test_clarify_batch_requires_each_qid_and_replays_partial_progress(self) -> None:
+        fixture, base_url = await self.start("clarify_batch_legacy")
+        ws, _ = await self.connect(base_url)
+        await self.rpc(ws, 1, "prompt.submit")
+        frames = await self.frames_until(ws, lambda f: f.get("params", {}).get("type") == "clarify.request")
+        request = frames[-1]["params"]["payload"]
+        rid = request["request_id"]
+        await self.rpc(ws, 2, "clarify.respond", {"request_id": rid, "question_id": "foreign", "answer": "x"})
+        frames = await self.frames_until(ws, lambda f: f.get("id") == 2)
+        self.assertEqual(4002, frames[-1]["error"]["code"])
+        await self.rpc(ws, 3, "clarify.respond", {"request_id": rid, "question_id": "route/a", "answer": "Canary"})
+        frames = await self.frames_until(ws, lambda f: f.get("id") == 3)
+        self.assertEqual(["environment:b"], frames[-1]["result"]["remaining"])
+        self.assertTrue(fixture.running)
+        await ws.close()
+        ws, _ = await self.connect(base_url)
+        await self.rpc(ws, 4, "session.activate", {"session_id": fixture.scenario.live_session_id})
+        frames = await self.frames_until(ws, lambda f: f.get("id") == 4)
+        self.assertEqual({"route/a": "Canary"}, frames[-1]["result"]["pending_clarify"]["answers"])
+        await self.rpc(ws, 5, "clarify.respond", {
+            "request_id": rid, "question_id": "environment:b", "answer": '["Stage","Production"]',
+        })
+        frames = await self.frames_until(ws, lambda f: f.get("id") == 5)
+        self.assertEqual([], frames[-1]["result"]["remaining"])
+        self.assertEqual('["Stage","Production"]', fixture._clarify_answers["environment:b"])
+        frames = await self.frames_until(ws, lambda f: f.get("params", {}).get("type") == "message.complete")
+        self.assertEqual("message.complete", frames[-1]["params"]["type"])
+
+    async def test_clarify_legacy_keeps_unkeyed_response(self) -> None:
+        _, base_url = await self.start("clarify_legacy")
+        ws, _ = await self.connect(base_url)
+        await self.rpc(ws, 1, "prompt.submit")
+        frames = await self.frames_until(ws, lambda f: f.get("params", {}).get("type") == "clarify.request")
+        payload = frames[-1]["params"]["payload"]
+        self.assertNotIn("questions", payload)
+        await self.rpc(ws, 2, "clarify.respond", {"request_id": payload["request_id"], "answer": "Canary"})
+        frames = await self.frames_until(ws, lambda f: f.get("id") == 2)
+        self.assertEqual("ok", frames[-1]["result"]["status"])
+
+    async def test_one_normalized_question_is_still_qid_owned(self) -> None:
+        _, base_url = await self.start("clarify_normalized_single_legacy")
+        ws, _ = await self.connect(base_url)
+        await self.rpc(ws, 1, "prompt.submit")
+        frames = await self.frames_until(ws, lambda f: f.get("params", {}).get("type") == "clarify.request")
+        payload = frames[-1]["params"]["payload"]
+        self.assertEqual(1, len(payload["questions"]))
+        await self.rpc(ws, 2, "clarify.respond", {
+            "request_id": payload["request_id"], "question_id": payload["questions"][0]["qid"], "answer": "Canary",
+        })
+        frames = await self.frames_until(ws, lambda f: f.get("id") == 2)
+        self.assertEqual([], frames[-1]["result"]["remaining"])
+
+    async def asyncSetUp(self) -> None:
+        self.session = ClientSession()
+        self.runner: web.AppRunner | None = None
+        self.websockets = []
+
+    async def asyncTearDown(self) -> None:
+        for websocket in self.websockets:
+            if not websocket.closed:
+                await websocket.close()
+        await self.session.close()
+        if self.runner is not None:
+            await self.runner.cleanup()
+
+    async def start(self, scenario_name: str) -> tuple[GatewayFixture, str]:
+        fixture = GatewayFixture(load_scenario(scenario_name), evidence_limit=64)
+        self.runner = web.AppRunner(fixture.app)
+        await self.runner.setup()
+        site = web.TCPSite(self.runner, "127.0.0.1", 0)
+        await site.start()
+        server = site._server
+        assert server is not None
+        port = server.sockets[0].getsockname()[1]
+        return fixture, f"http://127.0.0.1:{port}"
+
+    async def connect(self, base_url: str):
+        async with self.session.post(f"{base_url}/api/auth/ws-ticket") as response:
+            self.assertEqual(200, response.status)
+            ticket = (await response.json())["ticket"]
+        ws = await self.session.ws_connect(f"{base_url}/api/ws?ticket={ticket}")
+        self.websockets.append(ws)
+        ready = await ws.receive_json()
+        self.assertEqual("gateway.ready", ready["params"]["type"])
+        return ws, ticket
+
+    async def rpc(self, ws, request_id: int, method: str, params: dict[str, Any] | None = None):
+        await ws.send_json(
+            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params or {}},
+        )
+
+    async def frames_until(self, ws, predicate, limit: int = 30) -> list[dict[str, Any]]:
+        frames: list[dict[str, Any]] = []
+        for _ in range(limit):
+            message = await asyncio.wait_for(ws.receive(), timeout=5)
+            if message.type != WSMsgType.TEXT:
+                break
+            frame = message.json()
+            frames.append(frame)
+            if predicate(frame):
+                break
+        return frames
+
+    async def test_ticket_is_single_use(self) -> None:
+        _, base_url = await self.start("ordinary_turn")
+        ws, ticket = await self.connect(base_url)
+        rejected = await self.session.get(f"{base_url}/api/ws?ticket={ticket}")
+        self.assertEqual(401, rejected.status)
+        await rejected.release()
+        await ws.close()
+
+    async def test_initial_history_is_available_before_session_resume(self) -> None:
+        fixture, base_url = await self.start("initial_history_bind")
+        async with self.session.get(
+            f"{base_url}/api/sessions/{fixture.scenario.stored_session_id}/messages",
+            params={"profile": "research", "limit": 500, "offset": 0, "order": "asc"},
+        ) as response:
+            history = await response.json()
+        self.assertEqual(
+            ["Open the durable Bot Chat.", "Durable Bot Chat history is ready."],
+            [row["content"] for row in history["messages"]],
+        )
+
+        ws, _ = await self.connect(base_url)
+        await self.rpc(
+            ws,
+            1,
+            "session.resume",
+            {"session_id": fixture.scenario.stored_session_id, "profile": "research"},
+        )
+        resumed = (await ws.receive_json())["result"]
+        self.assertEqual(fixture.scenario.live_session_id, resumed["session_id"])
+        self.assertEqual(fixture.scenario.stored_session_id, resumed["stored_session_id"])
+
+    async def test_notification_terminal_outcomes_preserve_success_error_and_interrupt(self) -> None:
+        fixture, base_url = await self.start("notification_terminal_outcomes")
+        ws, _ = await self.connect(base_url)
+        await self.rpc(ws, 1, "session.create", {"profile": "default"})
+        await ws.receive_json()
+        for rpc_id, status in enumerate(("complete", "error", "interrupted"), 2):
+            await self.rpc(ws, rpc_id, "prompt.submit", {"text": "synthetic input"})
+            frames = await self.frames_until(
+                ws, lambda frame: frame.get("params", {}).get("type") == "message.complete",
+            )
+            self.assertEqual(status, frames[-1]["params"]["payload"]["status"])
+            self.assertEqual(fixture.scenario.live_session_id, frames[-1]["params"]["session_id"])
+
+    async def test_ordinary_turn_persists_authoritative_history(self) -> None:
+        fixture, base_url = await self.start("ordinary_turn")
+        ws, _ = await self.connect(base_url)
+        await self.rpc(ws, 1, "session.create", {"profile": "default"})
+        create = (await ws.receive_json())["result"]
+        self.assertEqual(fixture.scenario.live_session_id, create["session_id"])
+        await self.rpc(ws, 2, "prompt.submit", {"text": "not recorded in evidence"})
+        frames = await self.frames_until(
+            ws,
+            lambda frame: frame.get("params", {}).get("type") == "message.complete",
+        )
+        event_types = [frame.get("params", {}).get("type") for frame in frames]
+        self.assertIn("message.start", event_types)
+        self.assertIn("message.delta", event_types)
+        self.assertIn("message.complete", event_types)
+        async with self.session.get(
+            f"{base_url}/api/sessions/{fixture.scenario.stored_session_id}/messages",
+            params={"profile": "default", "limit": 500, "offset": 0, "order": "asc"},
+        ) as response:
+            history = await response.json()
+        self.assertEqual(["user", "assistant"], [row["role"] for row in history["messages"]])
+        self.assertEqual(2, history["pagination"]["returned"])
+
+    async def test_initialization_failure_precedes_lazy_create_ack(self) -> None:
+        fixture, base_url = await self.start("session_initialization_failure")
+        ws, _ = await self.connect(base_url)
+        await self.rpc(ws, 1, "session.create", {"profile": "default"})
+        failure = await ws.receive_json()
+        self.assertEqual("error", failure["params"]["type"])
+        self.assertEqual(fixture.scenario.live_session_id, failure["params"]["session_id"])
+        ack = await ws.receive_json()
+        self.assertTrue(ack["result"]["info"]["lazy"])
+
+    async def test_child_activity_outlives_parent_before_completion_wake(self) -> None:
+        fixture, base_url = await self.start("subagent_child_preview")
+        ws, _ = await self.connect(base_url)
+        await self.rpc(ws, 1, "prompt.submit", {"text": "fixture"})
+        first = await self.frames_until(ws, lambda f: f.get("params", {}).get("type") == "message.complete")
+        later = await self.frames_until(ws, lambda f: f.get("params", {}).get("type") == "message.complete")
+        first_types = [f.get("params", {}).get("type") for f in first]
+        later_types = [f.get("params", {}).get("type") for f in later]
+        self.assertIn("subagent.start", first_types)
+        self.assertNotIn("subagent.complete", first_types)
+        self.assertIn("subagent.progress", later_types)
+        self.assertEqual(2, later_types.count("subagent.complete"))
+        self.assertLess(later_types.index("subagent.complete"), later_types.index("message.start"))
+        child_events = [
+            frame["params"]["payload"] for frame in first + later
+            if frame.get("params", {}).get("type", "").startswith("subagent.")
+        ]
+        self.assertTrue(child_events)
+        self.assertEqual({"delegation-fixture-1"}, {event["delegation_id"] for event in child_events})
+        async with self.session.get(
+            f"{base_url}/api/sessions/{fixture.scenario.stored_session_id}/messages",
+            params={"profile": "default", "limit": 500, "offset": 0, "order": "asc"},
+        ) as response:
+            history = (await response.json())["messages"]
+        self.assertEqual(["user", "assistant", "user", "assistant"], [row["role"] for row in history])
+        receipt = history[2]
+        self.assertEqual("async_delegation_complete", receipt["display_kind"])
+        self.assertEqual("delegation-fixture-1", receipt["display_metadata"]["delegation_id"])
+        self.assertEqual(2, receipt["display_metadata"]["task_count"])
+        self.assertEqual(1, receipt["display_metadata"]["completed_count"])
+        self.assertNotIn("child_session_id", receipt["display_metadata"])
+        self.assertEqual("Delegation complete.", history[3]["content"])
+
+    async def test_unsolicited_voice_turns_follow_one_submit(self) -> None:
+        _, base_url = await self.start("unsolicited_voice_completions")
+        ws, _ = await self.connect(base_url)
+        await self.rpc(ws, 1, "prompt.submit", {"text": "fixture"})
+        frames = await self.frames_until(ws, lambda f: (
+            f.get("params", {}).get("type") == "message.complete"
+            and f.get("params", {}).get("payload", {}).get("text") == "Delegated work finished."
+        ))
+        answers = [f["params"]["payload"]["text"] for f in frames
+                   if f.get("params", {}).get("type") == "message.complete"]
+        self.assertEqual([
+            "Work started.", "Process finished.", "Process finished.",
+            "Watch matched.", "Delegated work finished.",
+        ], answers)
+
+    async def test_ownership_rejection_is_terminal_without_persisted_turn(self) -> None:
+        fixture, base_url = await self.start("ownership_rejection")
+        ws, _ = await self.connect(base_url)
+        await self.rpc(ws, 1, "session.create", {"profile": "default"})
+        await ws.receive_json()
+        await self.rpc(ws, 2, "prompt.submit", {"text": "not recorded in evidence"})
+        frames = await self.frames_until(
+            ws,
+            lambda frame: frame.get("params", {}).get("type") == "error",
+        )
+        error = frames[-1]["params"]["payload"]["message"]
+        self.assertIn("already has a live owner (webui", error)
+        self.assertIn("Only one surface at a time may run a session", error)
+        async with self.session.get(
+            f"{base_url}/api/sessions/{fixture.scenario.stored_session_id}/messages",
+        ) as response:
+            history = await response.json()
+        self.assertEqual([], history["messages"])
+
+    async def test_compaction_status_repeats_before_terminal_completion(self) -> None:
+        fixture, base_url = await self.start("compaction_status")
+        ws, _ = await self.connect(base_url)
+        await self.rpc(ws, 1, "prompt.submit", {"text": "fixture"})
+        frames = await self.frames_until(
+            ws,
+            lambda frame: frame.get("params", {}).get("type") == "message.complete",
+        )
+        events = [frame["params"] for frame in frames if frame.get("method") == "event"]
+        compacting = [
+            event for event in events
+            if event.get("type") == "status.update"
+            and event.get("payload", {}).get("kind") == "compacting"
+        ]
+        self.assertEqual(2, len(compacting))
+        self.assertEqual("message.complete", events[-1]["type"])
+
+    async def test_cross_client_observer_never_claims_or_interrupts_producer(self) -> None:
+        fixture, base_url = await self.start("cross_client_observation")
+        producer, _ = await self.connect(base_url)
+        await self.rpc(producer, 1, "session.resume", {"session_id": fixture.scenario.stored_session_id})
+        await producer.receive_json()
+        await self.rpc(producer, 2, "prompt.submit", {"text": "producer-only content"})
+        producer_frames = await self.frames_until(
+            producer,
+            lambda frame: frame.get("params", {}).get("type") == "message.delta",
+        )
+
+        observer, _ = await self.connect(base_url)
+        await self.rpc(observer, 3, "session.active_list")
+        active = (await observer.receive_json())["result"]["sessions"]
+        self.assertEqual("working", active[0]["status"])
+        self.assertNotIn("profile", active[0])
+
+        async with self.session.get(
+            f"{base_url}/api/sessions/{fixture.scenario.stored_session_id}/messages",
+            params={"profile": "default", "limit": 500, "offset": 0, "order": "asc"},
+        ) as response:
+            self.assertEqual(200, response.status)
+            self.assertIsInstance((await response.json())["messages"], list)
+        await observer.close()
+
+        producer_frames += await self.frames_until(
+            producer,
+            lambda frame: frame.get("params", {}).get("type") == "message.complete",
+        )
+        self.assertIn(
+            "message.complete",
+            [frame.get("params", {}).get("type") for frame in producer_frames],
+        )
+        async with self.session.get(f"{base_url}/__fixture__/evidence") as response:
+            evidence = await response.json()
+        observer_methods = [
+            entry.get("method")
+            for entry in evidence["entries"]
+            if entry.get("kind") == "rpc" and entry.get("connection") == 2
+        ]
+        self.assertEqual(["session.active_list"], observer_methods)
+        self.assertNotIn("session.interrupt", observer_methods)
+
+    async def test_cold_start_observer_opens_socket_without_control_rpc(self) -> None:
+        _, base_url = await self.start("cold_start_observation")
+
+        # Android's cold-start barrier hydrates the profile-scoped Dashboard
+        # directory before it opens the passive Gateway observation socket.
+        # The REST read is independent of gateway.ready and must not create or
+        # attach a live runtime.
+        async with self.session.get(
+            f"{base_url}/api/sessions",
+            params={"profile": "default", "limit": 50, "offset": 0},
+        ) as response:
+            self.assertEqual(200, response.status)
+            self.assertEqual([], (await response.json())["sessions"])
+
+        observer, _ = await self.connect(base_url)
+        await self.rpc(observer, 1, "session.active_list")
+        active = (await observer.receive_json())["result"]["sessions"]
+        self.assertEqual([], active)
+
+        async with self.session.get(f"{base_url}/__fixture__/evidence") as response:
+            evidence = await response.json()
+        methods = [entry["method"] for entry in evidence["entries"] if "method" in entry]
+        self.assertEqual({"session.active_list"}, set(methods))
+        self.assertTrue(any(entry.get("event_type") == "gateway.ready" for entry in evidence["entries"]))
+
+    async def test_rapid_chunks_tools_and_interims_keep_wire_order(self) -> None:
+        _, base_url = await self.start("rapid_tools_interims")
+        ws, _ = await self.connect(base_url)
+        await self.rpc(ws, 1, "prompt.submit", {"text": "fixture"})
+        frames = await self.frames_until(
+            ws,
+            lambda frame: frame.get("params", {}).get("type") == "message.complete",
+        )
+        event_types = [
+            frame["params"]["type"] for frame in frames if frame.get("method") == "event"
+        ]
+        self.assertEqual(
+            [
+                "message.start",
+                "reasoning.delta",
+                "tool.start",
+                "message.delta",
+                "message.delta",
+                "tool.complete",
+                "message.delta",
+                "message.complete",
+            ],
+            event_types,
+        )
+
+    async def test_terminal_gap_reconnect_activation_is_authoritatively_settled(self) -> None:
+        fixture, base_url = await self.start("terminal_gap_activate")
+        ws, _ = await self.connect(base_url)
+        await self.rpc(ws, 1, "session.create")
+        await ws.receive_json()
+        await self.rpc(ws, 2, "prompt.submit", {"text": "fixture"})
+        first_connection = await self.frames_until(ws, lambda _frame: False)
+        event_types = [frame.get("params", {}).get("type") for frame in first_connection]
+        self.assertIn("message.delta", event_types)
+        self.assertNotIn("message.complete", event_types)
+        ws2, _ = await self.connect(base_url)
+        await self.rpc(
+            ws2, 3, "session.activate", {"session_id": fixture.scenario.live_session_id},
+        )
+        activation = await ws2.receive_json()
+        self.assertFalse(activation["result"]["running"])
+        self.assertEqual(fixture.scenario.stored_session_id, activation["result"]["stored_session_id"])
+        await ws2.close()
+
+    async def test_scoped_session_info_settles_without_message_complete(self) -> None:
+        fixture, base_url = await self.start("terminal_gap_session_info")
+        ws, _ = await self.connect(base_url)
+        await self.rpc(ws, 1, "prompt.submit", {"text": "fixture"})
+        frames = await self.frames_until(
+            ws,
+            lambda frame: frame.get("params", {}).get("type") == "session.info",
+        )
+        events = [frame["params"] for frame in frames if frame.get("method") == "event"]
+        self.assertFalse(events[-1]["payload"]["running"])
+        self.assertEqual(fixture.scenario.live_session_id, events[-1]["session_id"])
+        self.assertNotIn("message.complete", [event["type"] for event in events])
+
+    async def test_active_list_idle_settles_without_message_complete(self) -> None:
+        fixture, base_url = await self.start("terminal_gap_active_list")
+        ws, _ = await self.connect(base_url)
+        await self.rpc(ws, 1, "prompt.submit", {"text": "fixture"})
+        frames = await self.frames_until(
+            ws,
+            lambda frame: frame.get("params", {}).get("type") == "message.delta",
+        )
+        for _ in range(50):
+            async with self.session.get(f"{base_url}/__fixture__/state") as response:
+                state = await response.json()
+            if not state["running"]:
+                break
+            await asyncio.sleep(0.01)
+        self.assertFalse(state["running"])
+
+        await self.rpc(
+            ws,
+            2,
+            "session.active_list",
+            {"current_session_id": fixture.scenario.live_session_id},
+        )
+        snapshot = (await ws.receive_json())["result"]["sessions"]
+        self.assertEqual("idle", snapshot[0]["status"])
+        self.assertEqual(fixture.scenario.live_session_id, snapshot[0]["id"])
+        self.assertEqual(fixture.scenario.stored_session_id, snapshot[0]["session_key"])
+        self.assertNotIn(
+            "message.complete",
+            [frame.get("params", {}).get("type") for frame in frames],
+        )
+
+    async def test_queued_follow_up_runs_after_first_turn(self) -> None:
+        _, base_url = await self.start("queued_follow_up")
+        ws, _ = await self.connect(base_url)
+        await self.rpc(ws, 1, "prompt.submit", {"text": "first"})
+        frames = await self.frames_until(
+            ws,
+            lambda frame: frame.get("params", {}).get("type") == "message.delta",
+        )
+        self.assertTrue(frames)
+        await self.rpc(ws, 2, "prompt.submit", {"text": "queued"})
+        complete_count = 0
+
+        def two_completions(frame: dict[str, Any]) -> bool:
+            nonlocal complete_count
+            if frame.get("params", {}).get("type") == "message.complete":
+                complete_count += 1
+            return complete_count >= 2
+
+        frames += await self.frames_until(
+            ws,
+            two_completions,
+        )
+        completes = [
+            frame for frame in frames if frame.get("params", {}).get("type") == "message.complete"
+        ]
+        self.assertEqual(2, len(completes))
+
+    async def test_interrupt_stops_old_turn_before_explicit_queue_resume(self) -> None:
+        fixture, base_url = await self.start("queued_stop_resume")
+        ws, _ = await self.connect(base_url)
+        await self.rpc(ws, 1, "prompt.submit", {"text": "original"})
+        await self.frames_until(ws, lambda f: f.get("params", {}).get("type") == "message.delta")
+        await self.rpc(ws, 2, "session.interrupt")
+        frames = await self.frames_until(ws, lambda f: f.get("id") == 2)
+        self.assertFalse(fixture._running)
+        self.assertFalse(fixture._turn_active)
+        await self.rpc(ws, 3, "prompt.submit", {"text": "resumed", "queued": True})
+        frames += await self.frames_until(ws, lambda f: f.get("params", {}).get("type") == "message.complete")
+        completes = [f["params"]["payload"]["text"] for f in frames if f.get("params", {}).get("type") == "message.complete"]
+        self.assertEqual(["", "Resumed follow-up."], completes)
+        self.assertEqual(1, sum(f.get("params", {}).get("payload", {}).get("status") == "interrupted" for f in frames))
+
+    async def test_scope_scenario_exposes_rejection_inputs_and_exact_terminal(self) -> None:
+        fixture, base_url = await self.start("scope_rejection_inputs")
+        ws, _ = await self.connect(base_url)
+        await self.rpc(ws, 1, "prompt.submit", {"text": "fixture"})
+        frames = await self.frames_until(
+            ws,
+            lambda frame: (
+                frame.get("params", {}).get("type") == "message.complete"
+                and frame.get("params", {}).get("session_id") == fixture.scenario.live_session_id
+            ),
+        )
+        events = [frame["params"] for frame in frames if frame.get("method") == "event"]
+        self.assertTrue(any("session_id" not in event for event in events))
+        self.assertTrue(any(event.get("session_id") == "fixture-foreign-session" for event in events))
+        self.assertEqual(fixture.scenario.live_session_id, events[-1]["session_id"])
+
+    async def test_active_list_exposes_all_live_states_then_authoritative_absence(self) -> None:
+        _, base_url = await self.start("active_status_lifecycle")
+        ws, _ = await self.connect(base_url)
+
+        await self.rpc(ws, 1, "session.active_list", {"current_session_id": "fixture-live-working"})
+        first = (await ws.receive_json())["result"]["sessions"]
+        self.assertEqual(
+            ["starting", "working", "waiting", "idle"],
+            [row["status"] for row in first],
+        )
+
+        await self.rpc(ws, 2, "session.active_list", {"current_session_id": "fixture-live-working"})
+        second = (await ws.receive_json())["result"]["sessions"]
+        self.assertEqual([], second)
+
+        # An exhausted script remains on its last successful snapshot so polling
+        # cannot accidentally resurrect an earlier live row.
+        await self.rpc(ws, 3, "session.active_list")
+        third = (await ws.receive_json())["result"]["sessions"]
+        self.assertEqual([], third)
+
+    async def test_active_list_rows_require_client_owned_profile_resolution(self) -> None:
+        fixture, base_url = await self.start("active_status_profile_scope")
+        ws, _ = await self.connect(base_url)
+
+        # Upstream accepts current_session_id, not a profile filter. The fixture
+        # deliberately ignores this extra hint and returns an unscoped row.
+        await self.rpc(ws, 1, "session.active_list", {"profile": "default"})
+        rows = (await ws.receive_json())["result"]["sessions"]
+
+        self.assertEqual("research", fixture.scenario.profile)
+        self.assertEqual("fixture-shared-stored-session", rows[0]["session_key"])
+        self.assertNotIn("profile", rows[0])
+
+    async def test_active_list_unsupported_is_explicit_method_not_found(self) -> None:
+        _, base_url = await self.start("active_status_unsupported")
+        ws, _ = await self.connect(base_url)
+        await self.rpc(ws, 1, "session.active_list")
+        frame = await ws.receive_json()
+        self.assertEqual(-32601, frame["error"]["code"])
+
+    async def test_evidence_is_bounded_and_contains_no_rpc_payloads(self) -> None:
+        _, base_url = await self.start("ordinary_turn")
+        ws, _ = await self.connect(base_url)
+        await self.rpc(ws, 1, "prompt.submit", {"text": "private sentinel"})
+        await self.frames_until(
+            ws,
+            lambda frame: frame.get("params", {}).get("type") == "message.complete",
+        )
+        async with self.session.get(f"{base_url}/__fixture__/evidence") as response:
+            evidence = await response.json()
+        rendered = str(evidence)
+        self.assertNotIn("private sentinel", rendered)
+        self.assertNotIn("Fixture response", rendered)
+        self.assertTrue(evidence["bounded"])
+        allowed = {"sequence", "kind", "connection", "method", "event_type", "scope", "outcome"}
+        self.assertTrue(all(set(entry) <= allowed for entry in evidence["entries"]))
+
+
+class ScenarioTestCase(unittest.TestCase):
+    def test_all_bundled_scenarios_validate(self) -> None:
+        for name in (
+            "active_status_lifecycle",
+            "active_status_profile_scope",
+            "active_status_unsupported",
+            "cold_start_observation",
+            "cross_client_observation",
+            "initial_history_bind",
+            "ordinary_turn",
+            "unsolicited_voice_completions",
+            "ownership_rejection",
+            "rapid_tools_interims",
+            "subagent_child_preview",
+            "terminal_gap_activate",
+            "secure_link_gateway_auth",
+            "terminal_gap_active_list",
+            "terminal_gap_session_info",
+            "queued_follow_up",
+            "queued_stop_resume",
+            "scope_rejection_inputs",
+        ):
+            scenario = load_scenario(name)
+            self.assertEqual(name, scenario.name)
+            self.assertTrue(scenario.contract_requirements)
+
+    def test_active_list_scenario_rejects_unknown_status(self) -> None:
+        scenario = {
+            "name": "invalid_activity",
+            "live_session_id": "live",
+            "stored_session_id": "stored",
+            "turns": [],
+            "active_list": {
+                "supported": True,
+                "snapshots": [[{"id": "live", "session_key": "stored", "status": "recent"}]],
+            },
+        }
+        with self.assertRaisesRegex(ScenarioError, "invalid status"):
+            from vanilla_gateway.scenario import Scenario
+            Scenario.from_dict(scenario)
+
+    def test_contract_manifests_select_upstream_contracts(self) -> None:
+        self.assertEqual(
+            ("gateway.session_resume_durable",),
+            load_scenario("initial_history_bind").contract_requirements,
+        )
+        self.assertEqual(
+            (
+                "gateway.message_complete",
+                "gateway.settled_session_info",
+                "gateway.session_activate_live",
+            ),
+            load_scenario("terminal_gap_activate").contract_requirements,
+        )
+        self.assertEqual(
+            ("gateway.session_active_list",),
+            load_scenario("terminal_gap_active_list").contract_requirements,
+        )
+        self.assertEqual(
+            ("gateway.settled_session_info",),
+            load_scenario("terminal_gap_session_info").contract_requirements,
+        )
+        self.assertEqual(
+            ("gateway.session_active_list",),
+            load_scenario("cold_start_observation").contract_requirements,
+        )
+        self.assertEqual(
+            ("gateway.message_complete", "gateway.session_active_list"),
+            load_scenario("cross_client_observation").contract_requirements,
+        )
+        self.assertEqual(
+            ("gateway.session_exclusive_submit",),
+            load_scenario("ownership_rejection").contract_requirements,
+        )
+
+    def test_tls_arguments_must_be_paired(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                parse_args(["ordinary_turn", "--tls-cert", "fixture.pem"])
+            with self.assertRaises(SystemExit):
+                parse_args(["ordinary_turn", "--tls-key", "fixture.key"])
+        args = parse_args(
+            [
+                "ordinary_turn",
+                "--tls-cert", "fixture.pem",
+                "--tls-key", "fixture.key",
+            ],
+        )
+        self.assertEqual(Path("fixture.pem"), args.tls_cert)
+        self.assertEqual(Path("fixture.key"), args.tls_key)
+
+    def test_non_loopback_binding_requires_tls(self) -> None:
+        self.assertEqual("127.0.0.1", parse_args(["ordinary_turn"]).host)
+        self.assertEqual("::1", parse_args(["ordinary_turn", "--host", "::1"]).host)
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                parse_args(["ordinary_turn", "--host", "0.0.0.0"])
+        args = parse_args(
+            [
+                "ordinary_turn",
+                "--host", "0.0.0.0",
+                "--tls-cert", "fixture.pem",
+                "--tls-key", "fixture.key",
+            ],
+        )
+        self.assertEqual("0.0.0.0", args.host)
+
+    def test_invalid_scenario_fails_closed(self) -> None:
+        with self.assertRaises(ScenarioError):
+            load_scenario(Path(__file__).parent / "missing.json")
+
+    def test_evidence_ring_drops_oldest_entries(self) -> None:
+        evidence = EvidenceLog(maximum=2)
+        evidence.add("rpc", method="first")
+        evidence.add("rpc", method="second")
+        evidence.add("rpc", method="third")
+        exported = evidence.export("fixture")
+        self.assertEqual(["second", "third"], [entry["method"] for entry in exported["entries"]])
+
+    def test_evidence_redacts_unbounded_metadata_fields(self) -> None:
+        evidence = EvidenceLog(maximum=4)
+        evidence.add(
+            "rpc with private content",
+            method="prompt.submit secret text",
+            outcome="received\ncredential",
+        )
+
+        exported = evidence.export("scenario/private/path")
+
+        self.assertEqual("<redacted>", exported["scenario"])
+        self.assertEqual("<redacted>", exported["entries"][0]["kind"])
+        self.assertEqual("<redacted>", exported["entries"][0]["method"])
+        self.assertEqual("<redacted>", exported["entries"][0]["outcome"])
+
+
+if __name__ == "__main__":
+    unittest.main()

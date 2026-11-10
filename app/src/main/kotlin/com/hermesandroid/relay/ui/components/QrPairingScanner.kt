@@ -1,0 +1,1265 @@
+package com.hermesandroid.relay.ui.components
+
+import android.util.Log
+import android.view.ViewGroup
+import androidx.activity.compose.BackHandler
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.Preview
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.paneTitle
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.foundation.Canvas
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.common.InputImage
+import com.hermesandroid.relay.data.ApiEndpoint
+import com.hermesandroid.relay.data.Connection
+import com.hermesandroid.relay.data.DashboardEndpoint
+import com.hermesandroid.relay.data.EndpointCandidate
+import com.hermesandroid.relay.network.shared.normalizeCredentialForHeader
+import com.hermesandroid.relay.data.RelayEndpoint
+import androidx.compose.ui.res.stringResource
+import com.hermesandroid.relay.R
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonPrimitive
+import java.net.URI
+import java.util.concurrent.Executors
+import kotlin.math.max
+
+internal fun scannerSettleDelayMs(motionEnabled: Boolean): Long = if (motionEnabled) 200L else 0L
+
+/**
+ * Parsed result from a Hermes pairing QR code.
+ *
+ * **Supported versions:** v1, v2, and v3.
+ *
+ * v1 (legacy, pre-2026-04-11):
+ * ```json
+ * {
+ *   "hermes": 1,
+ *   "host": "192.168.1.100",
+ *   "port": 8642,
+ *   "key": "bearer-token",
+ *   "tls": false,
+ *   "relay": { "url": "ws://192.168.1.100:8767", "code": "ABCD12" }
+ * }
+ * ```
+ *
+ * v2 (security overhaul, 2026-04-11):
+ * ```json
+ * {
+ *   "hermes": 2,
+ *   "host": "192.168.1.100",
+ *   "port": 8642,
+ *   "key": "optional-api-key",
+ *   "tls": true,
+ *   "relay": {
+ *     "url": "ws://192.168.1.100:8767",
+ *     "code": "ABC123",
+ *     "ttl_seconds": 2592000,
+ *     "grants": { "terminal": 2592000, "bridge": 604800 },
+ *     "transport_hint": "wss"
+ *   },
+ *   "sig": "base64-hmac-sha256"
+ * }
+ * ```
+ *
+ * v3 (multi-endpoint pairing, 2026-04-19 — ADR 24):
+ * ```json
+ * {
+ *   "hermes": 3,
+ *   "host": "192.168.1.100",
+ *   "port": 8642,
+ *   "key": "optional-api-key",
+ *   "tls": false,
+ *   "relay": { "url": "ws://192.168.1.100:8767", "code": "ABC123",
+ *              "ttl_seconds": 2592000, "grants": {...},
+ *              "transport_hint": "ws" },
+ *   "endpoints": [
+ *     { "role": "lan", "priority": 0,
+ *       "api":   { "host": "192.168.1.100", "port": 8642, "tls": false },
+ *       "relay": { "url": "ws://192.168.1.100:8767", "transport_hint": "ws" } },
+ *     { "role": "tailscale", "priority": 1,
+ *       "api":   { "host": "hermes.tail-scale.ts.net", "port": 8642, "tls": true },
+ *       "relay": { "url": "wss://hermes.tail-scale.ts.net:8767", "transport_hint": "wss" } }
+ *   ],
+ *   "sig": "base64-hmac-sha256"
+ * }
+ * ```
+ *
+ * The top-level fields configure the direct Hermes API server. The
+ * optional [relay] block configures the Hermes-Relay WSS connection used by
+ * the terminal and bridge channels. The [endpoints] list (v3+) carries an
+ * ordered array of candidate endpoints; the phone picks the highest-priority
+ * reachable candidate at connect time — see ADR 24.
+ *
+ * **Forward/backward compatibility:**
+ *  - `hermes` now has a default of `1` so v1 QRs without the field parse.
+ *  - `sig` is captured but **not verified** — we don't have the server's
+ *    HMAC secret. Stored for future verification and for operator audit.
+ *    TODO: once the server exposes a pairing public key, verify.
+ *  - Unknown fields are tolerated via `ignoreUnknownKeys = true`. v4+ QRs
+ *    will still parse on this phone.
+ *  - The `ttl_seconds`, `grants`, and `transport_hint` fields on [RelayPairing]
+ *    are nullable so v1 QRs with only `url` + `code` still deserialize.
+ *  - [endpoints] is nullable — v1/v2 QRs without the field still parse, and
+ *    [parseHermesPairingQr] synthesizes a single priority-0 candidate from
+ *    the top-level fields so downstream code always has at least one entry.
+ *
+ * Old QRs without the relay block still parse cleanly because the field is
+ * nullable.
+ */
+@Serializable
+data class HermesPairingPayload(
+    val hermes: Int = 1,
+    val host: String = "",
+    val port: Int = 8642,
+    val key: String = "",
+    val tls: Boolean = false,
+    @SerialName("dashboard_url")
+    val dashboardUrl: String? = null,
+    val relay: RelayPairing? = null,
+    val sig: String? = null,
+    /**
+     * Optional ordered list of endpoint candidates (v3+). Present verbatim
+     * when the payload carried one; synthesized by [parseHermesPairingQr]
+     * from the top-level fields for v1/v2 payloads so callers can always
+     * assume this is non-null + non-empty after parse.
+     */
+    val endpoints: List<EndpointCandidate>? = null,
+) {
+    /** Build the full API server URL from host, port, and tls flag. */
+    val serverUrl: String
+        get() = if (host.isBlank()) "" else "${if (tls) "https" else "http"}://$host:$port"
+
+    /** Whether this setup payload explicitly configures the optional API server. */
+    val hasApiServer: Boolean
+        get() = host.isNotBlank()
+}
+
+/**
+ * Relay connection details carried in a Hermes pairing QR.
+ *
+ * - [url] is the full WebSocket URL the phone should connect to, e.g.
+ *   `ws://192.168.1.100:8767` for dev or `wss://relay.example.com:8767`
+ *   for a TLS-fronted relay.
+ * - [code] is a 6-char one-shot pairing code that the relay has already
+ *   registered via its localhost-only `/pairing/register` endpoint. The
+ *   phone sends this code in its first `system/auth` envelope; the relay
+ *   consumes it and returns a long-lived session token for subsequent
+ *   reconnects.
+ * - [ttlSeconds] is an operator-preselected session TTL. When non-null the
+ *   [com.hermesandroid.relay.ui.components.SessionTtlPickerDialog] defaults
+ *   to this value so users can override it if they want. `0` means "never
+ *   expire"; `null`/missing means "use the phone-side default".
+ * - [grants] is an optional per-channel TTL map. Keys are channel names
+ *   (`"chat"`, `"terminal"`, `"bridge"`); values are seconds. When the
+ *   phone authenticates it includes these grants in its auth envelope so
+ *   the relay can issue channel-specific tokens.
+ * - [transportHint] is `"wss"` / `"ws"` / `null`. Drives the default TTL
+ *   selection and the [com.hermesandroid.relay.ui.components.TransportSecurityBadge]
+ *   label.
+ */
+@Serializable
+data class RelayPairing(
+    val url: String = "",
+    val code: String = "",
+    @SerialName("ttl_seconds")
+    val ttlSeconds: Long? = null,
+    val grants: Map<String, Long>? = null,
+    @SerialName("transport_hint")
+    val transportHint: String? = null,
+)
+
+/** True only when a scoped Relay scan can immediately begin authentication. */
+internal fun HermesPairingPayload.hasUsableRelayPairing(): Boolean {
+    val relay = relay ?: return false
+    if (relay.code.isBlank()) return false
+    val uri = runCatching { URI(relay.url.trim()) }.getOrNull() ?: return false
+    val supportedScheme = uri.scheme.equals("ws", ignoreCase = true) ||
+        uri.scheme.equals("wss", ignoreCase = true)
+    return supportedScheme && !uri.host.isNullOrBlank()
+}
+
+private val json = Json {
+    ignoreUnknownKeys = true
+    isLenient = true
+    coerceInputValues = true
+}
+
+/**
+ * Try to parse a scanned string as a Hermes connection QR payload.
+ *
+ * Accepts v1, v2, and v3 (or anything without a `hermes` field — we default
+ * to `1`). Returns null when the payload is not valid JSON, configures neither
+ * a recognized API nor Dashboard surface, or fails strict decoding.
+ *
+ * For standard Hermes setup, also accepts generic API-only QRs:
+ *  - a plain `http://host:8642` or `https://host:8642` URL
+ *  - JSON with `api_url`, `apiUrl`, `server_url`, `serverUrl`, or `url`, plus
+ *    optional `api_key`, `apiKey`, or `key`, and optional `dashboard_url` or
+ *    `dashboardUrl`
+ *  - JSON with only `dashboard_url` or `dashboardUrl`, containing a fully
+ *    qualified HTTP(S) Dashboard/Gateway URL. This represents the upstream
+ *    standard surface without inventing an API server or Relay endpoint.
+ *
+ * **Endpoint synthesis (ADR 24):** when the payload has no `endpoints`
+ * array (v1/v2 QRs), a single priority-0 [EndpointCandidate] is materialized
+ * from the top-level fields so downstream code can always iterate
+ * `payload.endpoints`. The synthesized `role` is `"tailscale"` when the
+ * top-level [HermesPairingPayload.host] matches the Tailscale CGNAT /
+ * MagicDNS heuristic (`.ts.net` suffix or `100.` prefix), `"lan"` otherwise.
+ * A v3+ payload with an explicit `endpoints` array round-trips verbatim —
+ * role case, priority order, and unknown roles are all preserved.
+ */
+fun parseHermesPairingQr(raw: String): HermesPairingPayload? {
+    val trimmed = raw.trim()
+    parseHermesRelayQr(trimmed)?.let { return it }
+    // Structured Hermes payloads fail closed. Falling through to the generic
+    // parser would silently discard Relay credentials and route candidates.
+    if (looksLikeStructuredHermesPayload(trimmed)) return null
+    return parseGenericApiJsonQr(trimmed)
+        ?: parseGenericDashboardJsonQr(trimmed)
+        ?: parseGenericApiUrlQr(trimmed)
+}
+
+private fun looksLikeStructuredHermesPayload(raw: String): Boolean = runCatching {
+    val obj = json.decodeFromString<JsonObject>(raw)
+    obj.keys.any { it in setOf("hermes", "relay", "endpoints", "sig") }
+}.getOrDefault(false)
+
+private fun normalizeIntegralDuration(element: JsonElement): JsonElement {
+    val numeric = (element as? JsonPrimitive)?.doubleOrNull ?: return element
+    if (!numeric.isFinite() || numeric < 0 || numeric % 1.0 != 0.0) return element
+    if (numeric > Long.MAX_VALUE.toDouble()) return element
+    return JsonPrimitive(numeric.toLong())
+}
+
+/** Accept older Relay emitters that wrote whole seconds as JSON floats. */
+private fun normalizeRelayDurationFields(obj: JsonObject): JsonObject {
+    val relay = obj["relay"] as? JsonObject ?: return obj
+    val normalizedRelay = relay.toMutableMap()
+    relay["ttl_seconds"]?.let {
+        normalizedRelay["ttl_seconds"] = normalizeIntegralDuration(it)
+    }
+    (relay["grants"] as? JsonObject)?.let { grants ->
+        normalizedRelay["grants"] = JsonObject(
+            grants.mapValues { (_, duration) -> normalizeIntegralDuration(duration) },
+        )
+    }
+    return JsonObject(obj.toMutableMap().apply {
+        put("relay", JsonObject(normalizedRelay))
+    })
+}
+
+private fun parseHermesRelayQr(raw: String): HermesPairingPayload? {
+    return try {
+        // Future compatible versions remain accepted. The legacy top-level
+        // API host is optional when Dashboard plus Relay identity is present.
+        val obj = normalizeRelayDurationFields(json.decodeFromString<JsonObject>(raw))
+        val version = obj["hermes"]?.jsonPrimitive?.intOrNull ?: 1
+        if (version < 1) return null
+        val decoded = json.decodeFromString<HermesPairingPayload>(obj.toString())
+        val dashboardAlias = firstString(obj, "dashboardUrl")
+        val decodedWithAliases =
+            if (decoded.dashboardUrl.isNullOrBlank() && dashboardAlias != null) {
+                decoded.copy(dashboardUrl = dashboardAlias)
+            } else {
+                decoded
+            }
+        if (decodedWithAliases.host.isBlank() &&
+            !decodedWithAliases.hasDashboardRelayIdentity()
+        ) return null
+        val normalizedKey = normalizeCredentialForHeader(
+            decodedWithAliases.key,
+            "API credential",
+        )
+        val decodedWithSafeCredential = decodedWithAliases.copy(key = normalizedKey)
+
+        // TODO(security): verify `decoded.sig` against the server's HMAC
+        // secret once the pairing protocol exposes a public verification
+        // path. For now we parse and store the signature but do not reject
+        // unsigned payloads — the phone has no way to fetch the server's
+        // secret in-band.
+
+        // Synthesize a single priority-0 candidate from the top-level fields
+        // when the wire payload didn't carry an explicit `endpoints` array.
+        // v3+ payloads with an explicit array pass through untouched.
+        if (decodedWithSafeCredential.endpoints.isNullOrEmpty()) {
+            decodedWithSafeCredential.copy(
+                endpoints = listOf(
+                    if (decodedWithSafeCredential.hasApiServer) {
+                        synthesizeLegacyEndpoint(decodedWithSafeCredential)
+                    } else {
+                        synthesizeDashboardRelayEndpoint(decodedWithSafeCredential)
+                    },
+                ),
+            )
+        } else {
+            decodedWithSafeCredential
+        }
+    } catch (_: Exception) {
+        null
+    }
+}
+
+private fun HermesPairingPayload.hasDashboardRelayIdentity(): Boolean {
+    if (!hasUsableRelayPairing()) return false
+    val uri = dashboardUrl
+        ?.trim()
+        ?.let { runCatching { URI(it) }.getOrNull() }
+        ?: return false
+    return uri.scheme?.lowercase() in setOf("http", "https") && !uri.host.isNullOrBlank()
+}
+
+private fun synthesizeDashboardRelayEndpoint(
+    payload: HermesPairingPayload,
+): EndpointCandidate {
+    val dashboardUrl = requireNotNull(payload.dashboardUrl).trim().trimEnd('/')
+    return EndpointCandidate(
+        role = Connection.inferRouteRole(dashboardUrl),
+        priority = 0,
+        dashboard = DashboardEndpoint(dashboardUrl),
+        relay = RelayEndpoint(
+            url = requireNotNull(payload.relay).url,
+            transportHint = payload.relay.transportHint,
+        ),
+    )
+}
+
+private fun parseGenericApiJsonQr(raw: String): HermesPairingPayload? {
+    return try {
+        val obj = json.decodeFromString<JsonObject>(raw)
+        val apiUrl = firstString(
+            obj,
+            "api_url",
+            "apiUrl",
+            "server_url",
+            "serverUrl",
+            "url",
+        ) ?: return null
+        val apiKey = firstString(obj, "api_key", "apiKey", "key").orEmpty()
+        val dashboardUrl = firstString(obj, "dashboard_url", "dashboardUrl")
+        payloadFromApiUrl(apiUrl, apiKey, dashboardUrl)
+    } catch (_: Exception) {
+        null
+    }
+}
+
+private fun parseGenericApiUrlQr(raw: String): HermesPairingPayload? {
+    return payloadFromApiUrl(raw, apiKey = "")
+}
+
+private fun parseGenericDashboardJsonQr(raw: String): HermesPairingPayload? {
+    return try {
+        val obj = json.decodeFromString<JsonObject>(raw)
+        // Do not silently downgrade a malformed API setup into Dashboard-only
+        // setup. When an API alias is present, parseGenericApiJsonQr owns the
+        // payload and must either accept or reject it as a whole.
+        val apiAliases = setOf("api_url", "apiUrl", "server_url", "serverUrl", "url")
+        if (obj.keys.any { it in apiAliases }) return null
+
+        val dashboardUrl = firstString(obj, "dashboard_url", "dashboardUrl")
+            ?.trimEnd('/')
+            ?: return null
+        val uri = runCatching { URI(dashboardUrl) }.getOrNull() ?: return null
+        if (uri.scheme?.lowercase() !in setOf("http", "https") || uri.host.isNullOrBlank()) {
+            return null
+        }
+
+        HermesPairingPayload(
+            dashboardUrl = dashboardUrl,
+            endpoints = listOf(
+                EndpointCandidate(
+                    role = Connection.inferRouteRole(dashboardUrl),
+                    priority = 0,
+                    dashboard = DashboardEndpoint(dashboardUrl),
+                ),
+            ),
+        )
+    } catch (_: Exception) {
+        null
+    }
+}
+
+private fun firstString(obj: JsonObject, vararg names: String): String? {
+    return names.firstNotNullOfOrNull { name ->
+        obj[name]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotBlank() }
+    }
+}
+
+private fun payloadFromApiUrl(
+    apiUrl: String,
+    apiKey: String,
+    dashboardUrl: String? = null,
+): HermesPairingPayload? {
+    val uri = runCatching { URI(apiUrl.trim().trimEnd('/')) }.getOrNull() ?: return null
+    val scheme = uri.scheme?.lowercase()
+    val tls = when (scheme) {
+        "http" -> false
+        "https" -> true
+        else -> return null
+    }
+    val host = uri.host?.takeIf { it.isNotBlank() } ?: return null
+    val normalizedKey = runCatching {
+        normalizeCredentialForHeader(apiKey, "API credential")
+    }.getOrNull() ?: return null
+    val payload = HermesPairingPayload(
+        host = host,
+        port = if (uri.port > 0) uri.port else 8642,
+        key = normalizedKey,
+        tls = tls,
+        dashboardUrl = dashboardUrl?.trim()?.takeIf { it.isNotBlank() },
+        relay = null,
+    )
+    return payload.copy(endpoints = listOf(synthesizeGenericEndpoint(payload)))
+}
+
+private fun synthesizeGenericEndpoint(payload: HermesPairingPayload): EndpointCandidate {
+    val host = payload.host.lowercase()
+    val role = when {
+        host.endsWith(".ts.net") || host.startsWith("100.") -> "tailscale"
+        isPrivateLanHost(host) -> "lan"
+        else -> "public"
+    }
+    return EndpointCandidate(
+        role = role,
+        priority = 0,
+        api = ApiEndpoint(
+            host = payload.host,
+            port = payload.port,
+            tls = payload.tls,
+        ),
+        relay = RelayEndpoint(url = "", transportHint = null),
+        dashboard = payload.dashboardUrl?.let { DashboardEndpoint(url = it) },
+    )
+}
+
+private fun isPrivateLanHost(host: String): Boolean {
+    if (host == "localhost" || host == "127.0.0.1" || host == "::1") return true
+    val parts = host.split('.').mapNotNull { it.toIntOrNull() }
+    if (parts.size != 4) return false
+    return when {
+        parts[0] == 10 -> true
+        parts[0] == 172 && parts[1] in 16..31 -> true
+        parts[0] == 192 && parts[1] == 168 -> true
+        parts[0] == 169 && parts[1] == 254 -> true
+        else -> false
+    }
+}
+
+/**
+ * Build a single priority-0 [EndpointCandidate] from a v1/v2 pairing payload
+ * that lacked an `endpoints` array. Preserves the top-level API coordinates
+ * + the optional relay block (the synthesized candidate's [RelayEndpoint]
+ * intentionally drops `code` / `grants` / `ttl_seconds` — those stay on the
+ * top-level [RelayPairing]).
+ *
+ * Role detection: matches [TailscaleDetector]'s heuristic — `.ts.net` suffix
+ * or `100.`-prefixed IPv4 (CGNAT range 100.64.0.0/10 is the canonical one,
+ * but the broader `100.*` check keeps us tolerant of operator labeling).
+ * Inlined here so this pure-parse code has no Android Context dependency
+ * and stays unit-testable on the JVM.
+ */
+private fun synthesizeLegacyEndpoint(payload: HermesPairingPayload): EndpointCandidate {
+    val host = payload.host
+    val isTailscale = host.endsWith(".ts.net", ignoreCase = true) ||
+        host.startsWith("100.")
+    val role = if (isTailscale) "tailscale" else "lan"
+    return EndpointCandidate(
+        role = role,
+        priority = 0,
+        api = ApiEndpoint(
+            host = payload.host,
+            port = payload.port,
+            tls = payload.tls,
+        ),
+        relay = RelayEndpoint(
+            url = payload.relay?.url ?: "",
+            transportHint = payload.relay?.transportHint,
+        ),
+        dashboard = payload.dashboardUrl?.let { DashboardEndpoint(url = it) },
+    )
+}
+
+/**
+ * A bounding rect in *viewport* pixel coordinates (top-left origin), produced
+ * by mapping a barcode's image-space bounding box through the camera rotation
+ * + FILL_CENTER scale of the PreviewView. Used to drive the dynamic
+ * "snap-to-QR" corner brackets in [ScannerCornersOverlay].
+ */
+private data class ViewportRect(
+    val left: Float,
+    val top: Float,
+    val right: Float,
+    val bottom: Float,
+)
+
+/**
+ * One L-shaped corner bracket — origin point + the two arm endpoints + its
+ * core/glow colors. Pulled out to a top-level class so the draw loop can be
+ * a regular `for` over a typed list (Kotlin local data classes inside
+ * lambdas have edge-case restrictions; safer to declare here).
+ */
+private data class CornerBracket(
+    val origin: Offset,
+    val horiz: Offset,
+    val vert: Offset,
+    val core: Color,
+    val glow: Color,
+)
+
+/**
+ * Map a barcode bounding box in **image buffer coordinates** through the
+ * camera rotation and FILL_CENTER scaling of a square viewport, returning
+ * the rect in viewport pixel coordinates.
+ *
+ * Math notes:
+ *  - The camera buffer arrives in sensor orientation (typically landscape
+ *    e.g. 1280×720), with [rotationDegrees] indicating how many degrees the
+ *    image needs to be rotated CW to display upright on the device.
+ *  - We rotate the bounding box first, then scale-and-offset it into the
+ *    viewport. FILL_CENTER picks the *larger* of (vp/imgW, vp/imgH) so the
+ *    image fully covers the viewport (cropping the longer side).
+ *  - For 90°/270° rotations the post-rotation dimensions are swapped.
+ */
+private fun mapBoxToViewport(
+    box: android.graphics.Rect,
+    imgW: Int,
+    imgH: Int,
+    rotationDegrees: Int,
+    viewportSize: IntSize,
+): ViewportRect {
+    // Rotate the box into display orientation.
+    val rotated = when (rotationDegrees) {
+        90 -> floatArrayOf(
+            (imgH - box.bottom).toFloat(),
+            box.left.toFloat(),
+            (imgH - box.top).toFloat(),
+            box.right.toFloat(),
+        )
+        180 -> floatArrayOf(
+            (imgW - box.right).toFloat(),
+            (imgH - box.bottom).toFloat(),
+            (imgW - box.left).toFloat(),
+            (imgH - box.top).toFloat(),
+        )
+        270 -> floatArrayOf(
+            box.top.toFloat(),
+            (imgW - box.right).toFloat(),
+            box.bottom.toFloat(),
+            (imgW - box.left).toFloat(),
+        )
+        else -> floatArrayOf(
+            box.left.toFloat(),
+            box.top.toFloat(),
+            box.right.toFloat(),
+            box.bottom.toFloat(),
+        )
+    }
+    val rotW = if (rotationDegrees == 90 || rotationDegrees == 270) imgH else imgW
+    val rotH = if (rotationDegrees == 90 || rotationDegrees == 270) imgW else imgH
+
+    // FILL_CENTER: the image is scaled to fully cover the viewport, then
+    // centered. The visible portion is the central `viewport`-sized window
+    // of the scaled image. We map by applying the scale + the centering offset.
+    val vpW = viewportSize.width.toFloat()
+    val vpH = viewportSize.height.toFloat()
+    val scale = max(vpW / rotW, vpH / rotH)
+    val scaledW = rotW * scale
+    val scaledH = rotH * scale
+    val offsetX = (vpW - scaledW) / 2f
+    val offsetY = (vpH - scaledH) / 2f
+
+    return ViewportRect(
+        left = (rotated[0] * scale + offsetX).coerceIn(0f, vpW),
+        top = (rotated[1] * scale + offsetY).coerceIn(0f, vpH),
+        right = (rotated[2] * scale + offsetX).coerceIn(0f, vpW),
+        bottom = (rotated[3] * scale + offsetY).coerceIn(0f, vpH),
+    )
+}
+
+/**
+ * Full-screen QR code scanner overlay.
+ *
+ * Layout:
+ *  - Header bar with a Close button + "Scan Hermes QR" title
+ *  - Square camera viewport at 50% of the screen width, with rounded corners
+ *  - Sci-fi L-bracket overlay drawn on top of the viewport. When no QR is
+ *    in frame the brackets sit at a centered "ready" position with a slow
+ *    pulse animation. When a barcode is detected the brackets snap (with
+ *    a spring) to the bounding box of the QR — defining a live "lock-on"
+ *    indicator. Brackets release back to the centered ready state ~600ms
+ *    after the QR leaves the frame.
+ *  - Instruction copy below
+ *
+ * Detects Hermes pairing QR codes and calls [onPairingDetected] with the
+ * parsed payload after a brief delay, so the user actually sees the lock-on
+ * snap animation before the screen transitions away.
+ */
+@Composable
+fun QrPairingScanner(
+    onPairingDetected: (HermesPairingPayload) -> Unit,
+    onDismiss: () -> Unit,
+    relayOnly: Boolean = false,
+) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val motion = rememberAccessibleMotionState()
+    val motionEnabled = motion.osAnimations && !motion.touchExploration
+    val scannerPaneTitle = stringResource(
+        if (relayOnly) R.string.qr_scanner_relay_title else R.string.qr_scanner_title,
+    )
+    BackHandler(onBack = onDismiss)
+    // Pre-resolve strings used inside non-Composable contexts (CameraX
+    // listeners, exception handlers, etc. don't have a Composable scope).
+    val cameraErrorMsg = stringResource(R.string.qr_scanner_camera_error)
+    // AtomicBoolean for thread-safe detection flag (accessed from camera executor thread)
+    val hasDetected = remember { AtomicBoolean(false) }
+    val cameraProviderRef = remember { mutableStateOf<ProcessCameraProvider?>(null) }
+    // Set when the camera can't be brought up on this device/ROM (e.g. a
+    // foldable that fails CameraX init, or a busy/unavailable back camera).
+    // Drives a graceful "pair manually" fallback instead of a force-close —
+    // ProcessCameraProvider.getInstance().get() runs on the MAIN thread, so an
+    // uncaught throw there would crash the app outright (the failure mode behind
+    // foldable "keeps crashing during setup" reports).
+    var cameraError by remember { mutableStateOf<String?>(null) }
+
+    // Viewport is sized at 50% of the screen width via Modifier.fillMaxWidth(0.5f)
+    // below — comfortable scan target without dominating the screen, and
+    // matches the "futuristic scan port" aesthetic the brackets are drawn around.
+
+    // Live viewport pixel size — captured via onSizeChanged so the analyzer
+    // thread can compute viewport-space coordinates for the corner brackets.
+    var viewportSizePx by remember { mutableStateOf(IntSize.Zero) }
+
+    // Latest detected QR bounding box in viewport pixel coordinates. Updated
+    // continuously by the analyzer for any successfully decoded QR (not just
+    // valid Hermes ones). null = no current detection → brackets fall back
+    // to centered ready position.
+    var detectedBox by remember { mutableStateOf<ViewportRect?>(null) }
+    // Frame counter from the analyzer — bumped every analyzed frame so the
+    // "release back to ready position" timer can detect when detections stop
+    // arriving. Volatile because it's written from the camera executor thread
+    // and read from the main thread coroutine.
+    var lastDetectionAtMs by remember { mutableStateOf(0L) }
+
+    // Lock-on state — set true when we've parsed a valid Hermes payload.
+    // Drives the brief settle delay before navigating away so the user sees
+    // the snap animation actually land on the QR.
+    var lockedPayload by remember { mutableStateOf<HermesPairingPayload?>(null) }
+
+    val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
+    DisposableEffect(Unit) {
+        onDispose {
+            cameraProviderRef.value?.unbindAll()
+            cameraExecutor.shutdown()
+        }
+    }
+
+    // Release the brackets back to the centered ready position when no
+    // detection has arrived for ~600ms. Otherwise a stale detection from
+    // a frame ago would keep the brackets "stuck" off-center after the QR
+    // has left the frame.
+    LaunchedEffect(lastDetectionAtMs) {
+        if (detectedBox == null) return@LaunchedEffect
+        kotlinx.coroutines.delay(600)
+        if (System.currentTimeMillis() - lastDetectionAtMs >= 600) {
+            detectedBox = null
+        }
+    }
+
+    // After we lock on a valid Hermes payload, hold the snap animation for
+    // ~450ms so the user perceives the lock-on, then forward to onPairingDetected.
+    LaunchedEffect(lockedPayload) {
+        val payload = lockedPayload ?: return@LaunchedEffect
+        val settleDelayMs = scannerSettleDelayMs(motionEnabled)
+        if (settleDelayMs > 0) kotlinx.coroutines.delay(settleDelayMs)
+        onPairingDetected(payload)
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.95f))
+            .semantics { paneTitle = scannerPaneTitle }
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            // Header bar
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp)
+            ) {
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.align(Alignment.CenterStart)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = stringResource(R.string.qr_scanner_cd_close),
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+                Text(
+                    text = stringResource(
+                        if (relayOnly) R.string.qr_scanner_relay_title
+                        else R.string.qr_scanner_title,
+                    ),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.align(Alignment.Center).semantics { heading() }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Camera preview viewport (75% of screen width, square). Wider
+            // than the original 50% pass — a generous scan target makes
+            // framing the QR effortless and gives the bracket animations
+            // more room to read as a "lock-on" instead of a tiny pop.
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(0.75f)
+                    .aspectRatio(1f)
+                    .clip(RoundedCornerShape(20.dp))
+                    .onSizeChanged { viewportSizePx = it },
+                contentAlignment = Alignment.Center
+            ) {
+                if (cameraError != null) {
+                    CameraUnavailableCard(
+                        message = cameraError ?: "",
+                        onPairManually = onDismiss,
+                    )
+                } else {
+                AndroidView(
+                    factory = { ctx ->
+                        val previewView = PreviewView(ctx).apply {
+                            layoutParams = ViewGroup.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT
+                            )
+                            scaleType = PreviewView.ScaleType.FILL_CENTER
+                        }
+
+                        val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
+                        cameraProviderFuture.addListener({
+                            // get() can throw ExecutionException if CameraX init
+                            // fails (common on foldables / busy cameras). This
+                            // listener runs on the MAIN thread, so an uncaught
+                            // throw here force-closes the app — catch and degrade.
+                            val cameraProvider = try {
+                                cameraProviderFuture.get()
+                            } catch (t: Throwable) {
+                                Log.e("QrPairingScanner", "Camera provider init failed", t)
+                                cameraError = cameraErrorMsg
+                                return@addListener
+                            }
+                            cameraProviderRef.value = cameraProvider
+
+                            val preview = Preview.Builder().build().also {
+                                it.surfaceProvider = previewView.surfaceProvider
+                            }
+
+                            val barcodeScanner = BarcodeScanning.getClient()
+
+                            @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
+                            val imageAnalysis = ImageAnalysis.Builder()
+                                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                                .build()
+                                .also { analysis ->
+                                    analysis.setAnalyzer(cameraExecutor) { imageProxy ->
+                                        val mediaImage = imageProxy.image
+                                        if (mediaImage == null || hasDetected.get()) {
+                                            imageProxy.close()
+                                            return@setAnalyzer
+                                        }
+                                        // fromMediaImage() can throw on an
+                                        // unexpected frame format/rotation — a bad
+                                        // frame must skip, never kill the analyzer
+                                        // thread (which would crash the process).
+                                        val rotation = imageProxy.imageInfo.rotationDegrees
+                                        val imgW = mediaImage.width
+                                        val imgH = mediaImage.height
+                                        val inputImage = try {
+                                            InputImage.fromMediaImage(mediaImage, rotation)
+                                        } catch (t: Throwable) {
+                                            Log.w("QrPairingScanner", "Skipping unprocessable camera frame", t)
+                                            imageProxy.close()
+                                            return@setAnalyzer
+                                        }
+                                        barcodeScanner.process(inputImage)
+                                            .addOnSuccessListener { barcodes ->
+                                                // Drive the brackets off ANY decoded QR so
+                                                // the lock-on snap is visible even before
+                                                // we've parsed it as a valid Hermes payload.
+                                                val first = barcodes.firstOrNull { b ->
+                                                    b.boundingBox != null &&
+                                                        (b.valueType == Barcode.TYPE_TEXT ||
+                                                            b.valueType == Barcode.TYPE_UNKNOWN)
+                                                }
+                                                val box = first?.boundingBox
+                                                val vpSize = viewportSizePx
+                                                if (box != null && vpSize.width > 0 && vpSize.height > 0) {
+                                                    detectedBox = mapBoxToViewport(
+                                                        box = box,
+                                                        imgW = imgW,
+                                                        imgH = imgH,
+                                                        rotationDegrees = rotation,
+                                                        viewportSize = vpSize,
+                                                    )
+                                                    lastDetectionAtMs = System.currentTimeMillis()
+                                                }
+                                                // Then try to parse for the actual lock.
+                                                for (barcode in barcodes) {
+                                                    if (barcode.valueType == Barcode.TYPE_TEXT ||
+                                                        barcode.valueType == Barcode.TYPE_UNKNOWN
+                                                    ) {
+                                                        val rawValue = barcode.rawValue ?: continue
+                                                        val payload = parseHermesPairingQr(rawValue)
+                                                        if (
+                                                            payload != null &&
+                                                            (!relayOnly || payload.hasUsableRelayPairing()) &&
+                                                            hasDetected.compareAndSet(false, true)
+                                                        ) {
+                                                            lockedPayload = payload
+                                                            return@addOnSuccessListener
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            .addOnCompleteListener {
+                                                imageProxy.close()
+                                            }
+                                    }
+                                }
+
+                            try {
+                                cameraProvider.unbindAll()
+                                cameraProvider.bindToLifecycle(
+                                    lifecycleOwner,
+                                    CameraSelector.DEFAULT_BACK_CAMERA,
+                                    preview,
+                                    imageAnalysis
+                                )
+                            } catch (e: Exception) {
+                                Log.e("QrPairingScanner", "Camera bind failed", e)
+                                cameraError = cameraErrorMsg
+                            }
+                        }, ContextCompat.getMainExecutor(ctx))
+
+                        previewView
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+
+                // Sci-fi L-bracket overlay. When detectedBox is null the
+                // brackets sit at a centered ready inset; when present they
+                // spring to the bounding box of the live detection.
+                ScannerCornersOverlay(
+                    detected = detectedBox,
+                    locked = lockedPayload != null,
+                    motionEnabled = motionEnabled,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Instructions
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.padding(horizontal = 32.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.QrCodeScanner,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(32.dp)
+                )
+                Text(
+                    text = stringResource(
+                        if (relayOnly) R.string.qr_scanner_relay_instruction
+                        else R.string.qr_scanner_instruction,
+                    ),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.Center
+                )
+                Text(
+                    text = stringResource(
+                        if (relayOnly) R.string.qr_scanner_relay_subtext
+                        else R.string.qr_scanner_subtext,
+                    ),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+                Text(
+                    text = stringResource(
+                        if (lockedPayload == null) R.string.qr_scanner_ready
+                        else R.string.qr_scanner_found,
+                    ),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (lockedPayload == null) {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    },
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Graceful fallback shown inside the scan viewport when CameraX can't bring the
+ * camera up on this device (the foldable "keeps crashing during setup" class).
+ * Instead of a force-close, we explain the situation and route the user to the
+ * manual pairing paths (URL entry / 6-char code) via [onPairManually].
+ */
+@Composable
+private fun CameraUnavailableCard(
+    message: String,
+    onPairManually: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+            .padding(20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(
+            imageVector = Icons.Filled.CameraAlt,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(40.dp)
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = stringResource(R.string.qr_scanner_fallback_message),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        Button(onClick = onPairManually) {
+            Text(stringResource(R.string.qr_scanner_pair_manual))
+        }
+    }
+}
+
+/**
+ * Sci-fi L-bracket overlay drawn on top of the camera viewport. Renders four
+ * corner brackets that:
+ *
+ *  - Sit at a centered "ready" inset (~12% of viewport from each edge) when
+ *    no QR is detected, with a slow breathing pulse on alpha.
+ *  - Spring to the bounding box of a live detection when [detected] is non-null
+ *    — animated independently per side so the snap reads as a genuine "lock-on"
+ *    rather than a translation.
+ *  - Switch from the primary cyan tint to a vivid green when [locked] is true,
+ *    so the brief settle delay before navigation reads as confirmation.
+ *
+ * The brackets themselves are drawn with `Stroke(cap = StrokeCap.Round)` so
+ * the L-corners blend cleanly. Two passes — a soft outer glow at low alpha
+ * + a crisp inner stroke — give the futuristic glow without needing actual
+ * blur shaders.
+ */
+@Composable
+private fun ScannerCornersOverlay(
+    detected: ViewportRect?,
+    locked: Boolean,
+    motionEnabled: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    // Themed idle: two-tone gradient between primary (top-left/bottom-right)
+    // and tertiary (top-right/bottom-left). Both are brand purples in this
+    // theme, so the corners read as cohesive but not flat.
+    val primary = MaterialTheme.colorScheme.primary
+    val tertiary = MaterialTheme.colorScheme.tertiary
+    val onPrimary = MaterialTheme.colorScheme.onPrimary
+
+    // Vivid Material A400 success green — much more saturated than the
+    // generic 500-shade we had before, reads as "lock-on confirmed" instead
+    // of "neutral status indicator".
+    val successCore = Color(0xFF00E676)
+    val successGlow = Color(0xFF69F0AE)
+
+    // Slow breathing pulse on alpha when idle. Locked state stays solid +
+    // gets its own one-shot ramp so the green burst is unmistakable.
+    val idlePulse = if (motionEnabled) {
+        val infiniteTransition = rememberInfiniteTransition(label = "scan-corners")
+        infiniteTransition.animateFloat(
+            initialValue = 0.45f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(1400, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse,
+            ),
+            label = "idle-pulse",
+        ).value
+    } else {
+        1f
+    }
+
+    // One-shot ramp that fires when `locked` flips true. Drives the
+    // outward scale pop on the corners + the green tint flash overlay.
+    val lockRamp by animateFloatAsState(
+        targetValue = if (locked) 1f else 0f,
+        animationSpec = if (!motionEnabled) {
+            snap()
+        } else if (locked) {
+            spring(dampingRatio = 0.55f, stiffness = 220f)
+        } else {
+            tween(180)
+        },
+        label = "lock-ramp",
+    )
+
+    var size by remember { mutableStateOf(IntSize.Zero) }
+    val density = LocalDensity.current
+
+    // Compute the target rect (left/top/right/bottom in px). When idle we
+    // inset from the viewport edges by ~10%; when detected we use the
+    // detected box. Each side animates independently with a snappy spring.
+    val readyInsetFrac = 0.10f
+    val targetLeft: Float
+    val targetTop: Float
+    val targetRight: Float
+    val targetBottom: Float
+    if (detected != null) {
+        targetLeft = detected.left
+        targetTop = detected.top
+        targetRight = detected.right
+        targetBottom = detected.bottom
+    } else if (size.width > 0 && size.height > 0) {
+        targetLeft = size.width * readyInsetFrac
+        targetTop = size.height * readyInsetFrac
+        targetRight = size.width * (1f - readyInsetFrac)
+        targetBottom = size.height * (1f - readyInsetFrac)
+    } else {
+        targetLeft = 0f
+        targetTop = 0f
+        targetRight = 0f
+        targetBottom = 0f
+    }
+
+    val positionSpec = if (motionEnabled) {
+        spring<Float>(dampingRatio = 0.7f, stiffness = 280f)
+    } else {
+        snap()
+    }
+    val animLeft by animateFloatAsState(targetLeft, positionSpec, label = "snap-l")
+    val animTop by animateFloatAsState(targetTop, positionSpec, label = "snap-t")
+    val animRight by animateFloatAsState(targetRight, positionSpec, label = "snap-r")
+    val animBottom by animateFloatAsState(targetBottom, positionSpec, label = "snap-b")
+
+    Canvas(
+        modifier = modifier.onSizeChanged { size = it }
+    ) {
+        if (animRight <= animLeft || animBottom <= animTop) return@Canvas
+
+        // On lock, push the brackets outward by ~10dp so they pop OUT past
+        // the QR boundary like a "got it" flourish, then settle.
+        val popPx = with(density) { 10.dp.toPx() } * lockRamp
+        val left = animLeft - popPx
+        val top = animTop - popPx
+        val right = animRight + popPx
+        val bottom = animBottom + popPx
+
+        val w = right - left
+        val h = bottom - top
+        // Corner arm length scales with the smaller box side so the brackets
+        // stay proportional whether snapped to a small QR or sitting at the
+        // ready inset. Bumped from 22% → 26% for a more pronounced sci-fi look.
+        val arm = (kotlin.math.min(w, h) * 0.26f).coerceAtLeast(with(density) { 18.dp.toPx() })
+        val coreStroke = with(density) { 4.dp.toPx() }
+        val glowStroke = with(density) { 14.dp.toPx() }
+        val pipRadius = with(density) { 3.dp.toPx() }
+
+        // Idle alpha breathes; detected/locked are solid + amped by the lockRamp.
+        val baseAlpha = if (detected != null || locked) 1f else idlePulse
+        val glowAlpha = if (detected != null || locked) {
+            0.55f + 0.25f * lockRamp
+        } else {
+            idlePulse * 0.35f
+        }
+
+        // Diagonal pairing: TL+BR get the primary; TR+BL get the tertiary.
+        // Gives a cohesive two-tone "diagonal scan" feel. When locked, all
+        // four corners flip to the success green.
+        val tlBrCore = if (locked) successCore.copy(alpha = baseAlpha) else primary.copy(alpha = baseAlpha)
+        val trBlCore = if (locked) successCore.copy(alpha = baseAlpha) else tertiary.copy(alpha = baseAlpha)
+        val tlBrGlow = if (locked) successGlow.copy(alpha = glowAlpha) else primary.copy(alpha = glowAlpha)
+        val trBlGlow = if (locked) successGlow.copy(alpha = glowAlpha) else tertiary.copy(alpha = glowAlpha)
+        val pipColor = if (locked) successGlow.copy(alpha = baseAlpha) else onPrimary.copy(alpha = baseAlpha * 0.85f)
+
+        val corners = listOf(
+            CornerBracket(
+                origin = Offset(left, top),
+                horiz = Offset(left + arm, top),
+                vert = Offset(left, top + arm),
+                core = tlBrCore,
+                glow = tlBrGlow,
+            ),
+            CornerBracket(
+                origin = Offset(right, top),
+                horiz = Offset(right - arm, top),
+                vert = Offset(right, top + arm),
+                core = trBlCore,
+                glow = trBlGlow,
+            ),
+            CornerBracket(
+                origin = Offset(left, bottom),
+                horiz = Offset(left + arm, bottom),
+                vert = Offset(left, bottom - arm),
+                core = trBlCore,
+                glow = trBlGlow,
+            ),
+            CornerBracket(
+                origin = Offset(right, bottom),
+                horiz = Offset(right - arm, bottom),
+                vert = Offset(right, bottom - arm),
+                core = tlBrCore,
+                glow = tlBrGlow,
+            ),
+        )
+
+        // Pass 1 — wide soft glow underneath (low alpha, fat stroke)
+        for (c in corners) {
+            drawLine(
+                color = c.glow,
+                start = c.origin,
+                end = c.horiz,
+                strokeWidth = glowStroke,
+                cap = StrokeCap.Round,
+            )
+            drawLine(
+                color = c.glow,
+                start = c.origin,
+                end = c.vert,
+                strokeWidth = glowStroke,
+                cap = StrokeCap.Round,
+            )
+        }
+        // Pass 2 — crisp core stroke
+        for (c in corners) {
+            drawLine(
+                color = c.core,
+                start = c.origin,
+                end = c.horiz,
+                strokeWidth = coreStroke,
+                cap = StrokeCap.Round,
+            )
+            drawLine(
+                color = c.core,
+                start = c.origin,
+                end = c.vert,
+                strokeWidth = coreStroke,
+                cap = StrokeCap.Round,
+            )
+        }
+        // Pass 3 — pip dots at each L-corner origin. Tiny detail that reads
+        // as "targeting reticle" rather than "rounded rectangle".
+        for (c in corners) {
+            drawCircle(
+                color = pipColor,
+                radius = pipRadius,
+                center = c.origin,
+            )
+        }
+
+        // Lock flash — brief green tint over the entire viewport that fades
+        // out as lockRamp settles. Driven by the same spring as the corner
+        // pop so they read as one event.
+        if (motionEnabled && lockRamp > 0f) {
+            drawRect(
+                color = successCore.copy(alpha = 0.18f * lockRamp),
+                topLeft = Offset.Zero,
+                size = this.size,
+            )
+        }
+    }
+}

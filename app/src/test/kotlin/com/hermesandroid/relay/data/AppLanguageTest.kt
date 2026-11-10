@@ -1,0 +1,57 @@
+package com.hermesandroid.relay.data
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class AppLanguageTest {
+
+    @Test
+    fun emptyLocaleListUsesSystemDefault() {
+        assertEquals(AppLanguage.SYSTEM_DEFAULT, AppLanguage.fromLanguageTags(""))
+    }
+
+    @Test
+    fun englishRegionsResolveToEnglish() {
+        assertEquals(AppLanguage.ENGLISH, AppLanguage.fromLanguageTags("en-US"))
+        assertEquals(AppLanguage.ENGLISH, AppLanguage.fromLanguageTags("en-GB,fr"))
+    }
+
+    @Test
+    fun simplifiedChineseTagsResolveToSimplifiedChinese() {
+        assertEquals(AppLanguage.SIMPLIFIED_CHINESE, AppLanguage.fromLanguageTags("zh-Hans"))
+        assertEquals(AppLanguage.SIMPLIFIED_CHINESE, AppLanguage.fromLanguageTags("zh-CN"))
+        assertEquals(AppLanguage.SIMPLIFIED_CHINESE, AppLanguage.fromLanguageTags("zh-SG"))
+    }
+
+    @Test
+    fun addedLocaleTagsResolveToTheirPickerOptions() {
+        assertEquals(AppLanguage.GERMAN, AppLanguage.fromLanguageTags("de-DE"))
+        assertEquals(AppLanguage.BRAZILIAN_PORTUGUESE, AppLanguage.fromLanguageTags("pt-BR"))
+        assertEquals(AppLanguage.BRAZILIAN_PORTUGUESE, AppLanguage.fromLanguageTags("pt-PT"))
+        assertEquals(AppLanguage.JAPANESE, AppLanguage.fromLanguageTags("ja-JP"))
+        assertEquals(AppLanguage.SPANISH, AppLanguage.fromLanguageTags("es-MX"))
+    }
+
+    @Test
+    fun russianTagsResolveToRussian() {
+        assertEquals(AppLanguage.RUSSIAN, AppLanguage.fromLanguageTags("ru-RU"))
+        assertEquals(AppLanguage.RUSSIAN, AppLanguage.fromLanguageTags("ru"))
+        assertEquals(AppLanguage.RUSSIAN, AppLanguage.fromLanguageTags("ru-UA"))
+    }
+    @Test
+    fun languageOptionsProduceExpectedLocaleLists() {
+        assertTrue(AppLanguage.SYSTEM_DEFAULT.toLocaleList().isEmpty)
+        assertEquals("en", AppLanguage.ENGLISH.toLocaleList().toLanguageTags())
+        assertEquals("de", AppLanguage.GERMAN.toLocaleList().toLanguageTags())
+        assertEquals("pt-BR", AppLanguage.BRAZILIAN_PORTUGUESE.toLocaleList().toLanguageTags())
+        assertEquals("ja", AppLanguage.JAPANESE.toLocaleList().toLanguageTags())
+        assertEquals("zh-Hans", AppLanguage.SIMPLIFIED_CHINESE.languageTag)
+        assertEquals("es", AppLanguage.SPANISH.toLocaleList().toLanguageTags())
+        assertEquals("ru", AppLanguage.RUSSIAN.toLocaleList().toLanguageTags())
+        assertEquals(
+            "zh",
+            AppLanguage.SIMPLIFIED_CHINESE.toLocaleList()[0]?.language,
+        )
+    }
+}

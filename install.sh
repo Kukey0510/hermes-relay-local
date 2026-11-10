@@ -1,0 +1,996 @@
+#!/usr/bin/env bash
+# Hermes-Relay — canonical one-line installer (full relay path).
+#
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/Codename-11/hermes-relay/main/install.sh | bash
+#
+# Two ways to install:
+#   - FULL RELAY (this script): sets up the WSS relay server, systemd user
+#     unit, editable pip install, shell shims, skills dir, and the optional
+#     compatibility bootstrap — everything needed for terminal, bridge/phone
+#     control, relay voice, desktop tooling, and remote access.
+#   - TOOLS-ONLY (native): `hermes plugins install Codename-11/hermes-relay/plugin`
+#     uses hermes-agent's built-in plugin installer to discover + enable the
+#     android_*/desktop_* tools and prompt for optional voice-provider keys
+#     (declared in plugin/plugin.yaml `requires_env`). The `/plugin` subdir is
+#     required because the manifest lives there, not at the repo root. This path
+#     does NOT install the relay server, systemd unit, pip-editable, shims, or
+#     bootstrap — use it when you only want the agent-side tools.
+#
+# Installs:
+#   1. The hermes-relay repo to ~/.hermes/hermes-relay (editable, git-backed)
+#   2. The Python package (plugin + relay server + bootstrap injection) via
+#      `pip install -e` into the hermes-agent venv so `python -m plugin.pair`
+#      works from anywhere and the plugin-owned compatibility bootstrap is
+#      available. The bootstrap is wired up via a `.pth` file dropped directly
+#      into the venv's site-packages so Python's `site` module auto-loads it at
+#      every interpreter startup. The bootstrap monkey-patches
+#      `aiohttp.web.Application` so when the gateway builds its app,
+#      missing compatibility routes can be injected onto the same router the
+#      gateway is in the middle of populating. Current upstream already serves
+#      `/api/sessions/*` and read-only `/v1/skills` + `/v1/toolsets`; the
+#      bootstrap now mainly protects older core builds and remaining gaps such
+#      as `/api/memory`, legacy `/api/skills`, `/api/config`, and
+#      `/api/available-models`. Feature-detected by route path — if your
+#      hermes-agent build already has a route natively, the bootstrap leaves it
+#      alone.
+#   3. A symlink at ~/.hermes/plugins/hermes-relay → the clone's plugin/ dir
+#      so Hermes's plugin loader discovers + enables the plugin
+#   4. The skill(s) under skills/ into ~/.hermes/config.yaml as a scanned
+#      external_dirs entry — Hermes follows that path at runtime, so
+#      `git pull` on the clone auto-updates the SKILL.md files
+#   5. Shell shims at:
+#      - ~/.local/bin/hermes-pair          → `<venv>/python -m plugin.pair "$@"`
+#      - ~/.local/bin/hermes-status        → `<venv>/python -m plugin.status "$@"`
+#      - ~/.local/bin/hermes-relay         → `<venv>/python -m plugin.cli "$@"`
+#      - ~/.local/bin/hermes-relay-update  → curl-pipe re-runs install.sh
+#      - ~/.local/bin/hermes-relay-tailscale → `<venv>/python -m plugin.relay.tailscale_cli "$@"`
+#      Current upstream exposes plugin CLI commands, so `hermes pair` should
+#      work when the plugin is enabled. The pair/status shims remain
+#      script-friendly older-build fallbacks. The update shim is just a
+#      discoverable name for "re-run the canonical curl-pipe installer" —
+#      convenience UX, not a separate code path.
+#   6. A systemd user unit at ~/.config/systemd/user/hermes-relay.service
+#      (optional — only on hosts with a systemd user session; skipped on
+#      macOS, WSL-without-systemd, bare chroots, etc.). When installed,
+#      the relay auto-starts on login, restarts on failure, and picks up
+#      API keys from ~/.hermes/.env via the Python-side env bootstrap.
+#
+# Updates:
+#   cd ~/.hermes/hermes-relay && git pull
+#   (No reinstall needed — editable pip install + external_dirs scan mean
+#    changes go live on the next invocation. The bootstrap .pth hook is
+#    refreshed through `hermes relay compat install` on every install.sh re-run.)
+#
+# Uninstall:
+#   bash ~/.hermes/hermes-relay/uninstall.sh
+#   (Or, if you don't have the clone any more:
+#    curl -fsSL https://raw.githubusercontent.com/Codename-11/hermes-relay/main/uninstall.sh | bash)
+#
+#   The uninstaller reverses every step here in the opposite order. It is
+#   idempotent and never touches shared state (~/.hermes/.env, the gateway's
+#   state.db, the hermes-agent venv core). Use --keep-clone to leave the git
+#   tree in place, --remove-secret to also wipe the QR signing identity,
+#   --dry-run to preview without changing anything.
+#
+# Flags:
+#   --branch <name>         Git branch to install (default: main). Same effect
+#                           as HERMES_RELAY_BRANCH; flag wins over env var.
+#                           Useful for testing feature branches before merging
+#                           to main, e.g. `hermes-relay-update --branch
+#                           feature/bridge-feature-expansion`.
+#   --dashboard-plugin=yes  Enable (default) the hermes-agent dashboard plugin.
+#   --dashboard-plugin=no   Disable it — useful on hosts that don't run the
+#                           hermes-agent dashboard or want a minimal relay
+#                           install. Toggle at any time by re-running with
+#                           the opposite flag.
+#   --help                  Print this header and exit.
+#
+# Overrides:
+#   HERMES_RELAY_HOME       Target directory (default: ~/.hermes/hermes-relay)
+#   HERMES_RELAY_BRANCH     Git branch to install (default: main). Superseded
+#                           by --branch when both are provided.
+#   HERMES_VENV_PY          Path to hermes-agent venv python. When unset the
+#                           installer auto-detects, in order:
+#                             ~/.hermes/hermes-agent/venv/bin/python  (classic)
+#                             ~/.hermes/hermes-agent/.venv/bin/python (uv-managed)
+#                             /opt/hermes/.venv/bin/python            (official Docker image)
+#                           The Docker layout is immutable — the installer
+#                           refuses it and steers to the native plugin install.
+#   HERMES_HOME             Hermes config home (default: ~/.hermes)
+#   HERMES_RELAY_NO_SYSTEMD Skip step [6/6] even if systemd is available
+#                           (set to any non-empty value)
+
+set -euo pipefail
+
+# ── Argument parsing ──────────────────────────────────────────────────────
+# Parse CLI flags BEFORE setting config defaults so flags can override env
+# vars. Currently only --branch is supported; everything else still goes
+# through env vars (HERMES_RELAY_HOME, HERMES_VENV_PY, etc). The flag is
+# pass-through-friendly for `hermes-relay-update --branch <name>` since
+# the shim forwards args via `bash -s --`.
+_BRANCH_FLAG=""
+_DASHBOARD_PLUGIN_FLAG=""  # "", "yes", or "no"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --branch)
+            if [ $# -lt 2 ]; then
+                echo "install.sh: --branch needs an argument (e.g. --branch feature/foo)" >&2
+                exit 2
+            fi
+            _BRANCH_FLAG="$2"
+            shift 2
+            ;;
+        --branch=*)
+            _BRANCH_FLAG="${1#--branch=}"
+            shift
+            ;;
+        --dashboard-plugin=*)
+            _val="${1#--dashboard-plugin=}"
+            case "$_val" in
+                yes|on|true|1) _DASHBOARD_PLUGIN_FLAG="yes" ;;
+                no|off|false|0) _DASHBOARD_PLUGIN_FLAG="no" ;;
+                *)
+                    echo "install.sh: --dashboard-plugin expects yes|no (got $_val)" >&2
+                    exit 2
+                    ;;
+            esac
+            shift
+            ;;
+        --dashboard-plugin)
+            if [ $# -lt 2 ]; then
+                echo "install.sh: --dashboard-plugin needs yes|no" >&2
+                exit 2
+            fi
+            case "$2" in
+                yes|on|true|1) _DASHBOARD_PLUGIN_FLAG="yes" ;;
+                no|off|false|0) _DASHBOARD_PLUGIN_FLAG="no" ;;
+                *)
+                    echo "install.sh: --dashboard-plugin expects yes|no (got $2)" >&2
+                    exit 2
+                    ;;
+            esac
+            shift 2
+            ;;
+        -h|--help)
+            sed -n '3,97p' "$0" | sed 's/^# \{0,1\}//'
+            exit 0
+            ;;
+        *)
+            # Unknown args silently passed through to the rest of the
+            # script — currently nothing else consumes them, but keeping
+            # this lenient avoids breaking on future shim extensions.
+            shift
+            ;;
+    esac
+done
+
+# ── Config ─────────────────────────────────────────────────────────────────
+REPO_URL="https://github.com/Codename-11/hermes-relay.git"
+# Branch precedence: --branch flag wins over HERMES_RELAY_BRANCH env var
+# wins over the default ("main"). The env var is kept for backwards
+# compat with anyone scripting against the pre-flag interface.
+BRANCH="${_BRANCH_FLAG:-${HERMES_RELAY_BRANCH:-main}}"
+# Dashboard plugin: flag > env var > default ("yes"). Passing "no" stashes
+# the dashboard manifest to manifest.json.disabled so the hermes-agent
+# dashboard loader ignores the plugin entirely. Re-running with the
+# opposite flag flips it back without touching any other state.
+DASHBOARD_PLUGIN="${_DASHBOARD_PLUGIN_FLAG:-${HERMES_RELAY_DASHBOARD_PLUGIN:-yes}}"
+HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+RELAY_HOME="${HERMES_RELAY_HOME:-$HERMES_HOME/hermes-relay}"
+# Resolved below (after helpers) — empty means "auto-detect".
+VENV_PY="${HERMES_VENV_PY:-}"
+# The official Docker image (nousresearch/hermes-agent) ships hermes-agent
+# pre-installed here. It is an immutable container layout: no git clone at
+# $HERMES_HOME/hermes-agent, no user systemd, and site-packages that vanish
+# on the next `docker pull`. This script's editable-install path cannot work
+# there, so detection of this interpreter triggers a steer to the native
+# `hermes plugins install` path instead of dying mid-run.
+DOCKER_VENV_PY="/opt/hermes/.venv/bin/python"
+PLUGIN_LINK="$HERMES_HOME/plugins/hermes-relay"
+SKILLS_DIR_IN_REPO="$RELAY_HOME/skills"
+HERMES_CONFIG="$HERMES_HOME/config.yaml"
+SHIM_PATH="$HOME/.local/bin/hermes-pair"
+STATUS_SHIM_PATH="$HOME/.local/bin/hermes-status"
+RELAY_SHIM_PATH="$HOME/.local/bin/hermes-relay"
+UPDATE_SHIM_PATH="$HOME/.local/bin/hermes-relay-update"
+TS_SHIM_PATH="$HOME/.local/bin/hermes-relay-tailscale"
+SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+SERVICE_SRC="$RELAY_HOME/relay_server/hermes-relay.service"
+SERVICE_DST="$SYSTEMD_USER_DIR/hermes-relay.service"
+
+# ── TUI: colors + symbols (TTY-aware) ──────────────────────────────────────
+# All ANSI escapes resolve to empty strings when stdout is not a TTY
+# (curl | bash, CI logs, redirected output) so the script stays grep-friendly.
+# Override with NO_COLOR=1 to disable even on a TTY.
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && command -v tput >/dev/null 2>&1; then
+    C_RESET="$(tput sgr0)"
+    C_BOLD="$(tput bold)"
+    C_DIM="$(tput dim 2>/dev/null || printf '\033[2m')"
+    C_RED="$(tput setaf 1)"
+    C_GREEN="$(tput setaf 2)"
+    C_YELLOW="$(tput setaf 3)"
+    C_BLUE="$(tput setaf 4)"
+    C_MAGENTA="$(tput setaf 5)"
+    C_CYAN="$(tput setaf 6)"
+    SYM_OK="✓"
+    SYM_ERR="✗"
+    SYM_WARN="⚠"
+    SYM_INFO="→"
+    SYM_STEP="▶"
+    SYM_PEND="◯"
+else
+    C_RESET=""; C_BOLD=""; C_DIM=""; C_RED=""; C_GREEN=""
+    C_YELLOW=""; C_BLUE=""; C_MAGENTA=""; C_CYAN=""
+    SYM_OK="[ok]"; SYM_ERR="[x]"; SYM_WARN="[!]"
+    SYM_INFO="->"; SYM_STEP=">"; SYM_PEND="o"
+fi
+
+# ── Helpers ────────────────────────────────────────────────────────────────
+die()  { printf "  ${C_RED}${C_BOLD}%s${C_RESET} %s\n" "$SYM_ERR" "$*" >&2; exit 1; }
+info() { printf "    ${C_DIM}%s${C_RESET} %s\n" "$SYM_INFO" "$*"; }
+ok()   { printf "    ${C_GREEN}%s${C_RESET} %s\n" "$SYM_OK" "$*"; }
+warn() { printf "    ${C_YELLOW}%s${C_RESET} %s\n" "$SYM_WARN" "$*"; }
+
+# Section header — used by [N/6] step lines.
+step() {
+    local num="$1" total="$2" title="$3"
+    printf "\n  ${C_BOLD}${C_CYAN}%s${C_RESET} ${C_BOLD}[%s/%s]${C_RESET} ${C_BOLD}%s${C_RESET}\n" \
+        "$SYM_STEP" "$num" "$total" "$title"
+}
+
+# Bash spinner — runs while a backgrounded PID is alive. No-op (waits silently)
+# when stdout isn't a TTY so curl | bash logs don't fill with spinner cruft.
+# Usage:
+#     long_command &
+#     spin $! "Doing the thing"
+spin() {
+    local pid=$1 msg=$2
+    if [ ! -t 1 ]; then
+        wait "$pid"
+        return $?
+    fi
+    local frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+    local i=0
+    # Hide cursor for the duration of the spin.
+    printf '\033[?25l'
+    while kill -0 "$pid" 2>/dev/null; do
+        printf "\r    ${C_CYAN}%s${C_RESET} %s " "${frames:$((i % ${#frames})):1}" "$msg"
+        i=$((i+1))
+        sleep 0.08
+    done
+    # Reap and capture exit code.
+    wait "$pid"
+    local rc=$?
+    # Show cursor + clear the spinner line.
+    printf '\r\033[K\033[?25h'
+    return $rc
+}
+
+require() {
+    command -v "$1" >/dev/null 2>&1 || die "$1 is required but not installed"
+}
+
+# ── Venv autodetection ─────────────────────────────────────────────────────
+# hermes-agent installs land in several layouts. HERMES_VENV_PY always wins
+# when set; otherwise probe, in order: classic pip/git venv, uv-managed
+# .venv, official Docker image.
+_VENV_AUTODETECTED=""
+if [ -z "$VENV_PY" ]; then
+    for _cand in \
+        "$HERMES_HOME/hermes-agent/venv/bin/python" \
+        "$HERMES_HOME/hermes-agent/.venv/bin/python" \
+        "$DOCKER_VENV_PY"; do
+        if [ -x "$_cand" ]; then
+            VENV_PY="$_cand"
+            _VENV_AUTODETECTED=1
+            break
+        fi
+    done
+fi
+
+# ── Banner ─────────────────────────────────────────────────────────────────
+banner() {
+    printf "\n"
+    printf "  ${C_BOLD}${C_CYAN}╭─────────────────────────────────────────╮${C_RESET}\n"
+    printf "  ${C_BOLD}${C_CYAN}│${C_RESET}  ${C_BOLD}Hermes-Relay Installer${C_RESET}                 ${C_BOLD}${C_CYAN}│${C_RESET}\n"
+    printf "  ${C_BOLD}${C_CYAN}│${C_RESET}  ${C_DIM}Plugin + relay + bootstrap + skill${C_RESET}      ${C_BOLD}${C_CYAN}│${C_RESET}\n"
+    printf "  ${C_BOLD}${C_CYAN}╰─────────────────────────────────────────╯${C_RESET}\n"
+    printf "\n"
+    printf "    ${C_DIM}%-12s${C_RESET} %s\n" "Repo:"     "$REPO_URL ${C_DIM}($BRANCH)${C_RESET}"
+    printf "    ${C_DIM}%-12s${C_RESET} %s\n" "Target:"   "$RELAY_HOME"
+    printf "    ${C_DIM}%-12s${C_RESET} %s\n" "Venv:"     "${VENV_PY:-(not found — see below)}"
+    printf "    ${C_DIM}%-12s${C_RESET} %s\n" "Hermes:"   "$HERMES_CONFIG"
+}
+
+banner
+
+require git
+require python3
+
+# Immutable/container layout — refuse early with a usable next step instead
+# of failing partway through the editable install / systemd setup.
+if [ -n "$_VENV_AUTODETECTED" ] && [ "$VENV_PY" = "$DOCKER_VENV_PY" ]; then
+    printf "\n"
+    warn "Official Hermes Docker image detected ($DOCKER_VENV_PY)."
+    info "This installer's editable install + systemd + shell shims do not"
+    info "apply inside the immutable container image."
+    info "Install the plugin the native way instead:"
+    printf "\n        ${C_BOLD}hermes plugins install Codename-11/hermes-relay/plugin${C_RESET}\n\n"
+    info "then enable it when prompted and restart the container."
+    info "(To force this script anyway, set HERMES_VENV_PY explicitly.)"
+    exit 1
+fi
+
+if [ ! -d "$HERMES_HOME/hermes-agent" ]; then
+    die "hermes-agent not found at $HERMES_HOME/hermes-agent — install Hermes first"
+fi
+
+if [ -z "$VENV_PY" ] || [ ! -x "$VENV_PY" ]; then
+    die "hermes-agent venv Python not found (tried $HERMES_HOME/hermes-agent/venv, $HERMES_HOME/hermes-agent/.venv, and /opt/hermes/.venv) — reinstall hermes-agent or set HERMES_VENV_PY"
+fi
+
+# ── 1/6  Clone or update the repo ──────────────────────────────────────────
+step 1 6 "Syncing repo"
+if [ -d "$RELAY_HOME/.git" ]; then
+    # Widen the remote refspec to the standard "all branches" form BEFORE
+    # fetching. Pre-v0.4 installs used `git clone --single-branch` which
+    # pinned the refspec to `+refs/heads/main:refs/remotes/origin/main` —
+    # that prevents `git checkout feature/...` from working even after an
+    # explicit `git fetch origin feature/...`, because no remote-tracking
+    # ref gets created. Widening the refspec is idempotent: sets it to
+    # the standard form if narrow, no-op if already wide. This lets
+    # `--branch <name>` and `HERMES_RELAY_BRANCH=<name> hermes-relay-update`
+    # work cleanly on clones that pre-date v0.4.
+    (cd "$RELAY_HOME" \
+        && git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*" \
+        && git fetch --quiet origin "$BRANCH" \
+        && git checkout --quiet "$BRANCH" \
+        && git pull --ff-only --quiet) \
+        || die "Failed to update existing clone at $RELAY_HOME"
+    ok "Updated existing clone at $RELAY_HOME"
+elif [ -e "$RELAY_HOME" ]; then
+    die "$RELAY_HOME exists but is not a git clone — remove it or set HERMES_RELAY_HOME to a different path"
+else
+    mkdir -p "$(dirname "$RELAY_HOME")"
+    # Deliberately NOT passing --single-branch here: we want future branch
+    # switches (`--branch feature/foo`) to work without a retroactive
+    # refspec fix. The clone is a few KB larger but the ergonomic win is
+    # much bigger than the disk cost.
+    git clone --quiet --branch "$BRANCH" "$REPO_URL" "$RELAY_HOME" \
+        || die "Failed to clone $REPO_URL into $RELAY_HOME"
+    ok "Cloned $REPO_URL to $RELAY_HOME"
+fi
+
+# ── 2/6  Install Python package editable into the hermes venv ──────────────
+step 2 6 "Installing plugin into hermes venv (editable)"
+# Pick an installer. hermes-agent venvs created by `uv venv` (the upstream
+# default) ship NO pip module — `python -m pip` fails with "No module named
+# pip". Detect that and bootstrap pip via ensurepip, or fall back to `uv pip`,
+# so the editable install works on uv-managed cores instead of dying here.
+_relay_pip_ready=""
+if "$VENV_PY" -m pip --version >/dev/null 2>&1; then
+    _relay_pip_ready="1"
+elif "$VENV_PY" -m ensurepip --upgrade >/dev/null 2>&1 \
+        && "$VENV_PY" -m pip --version >/dev/null 2>&1; then
+    _relay_pip_ready="1"
+    info "venv had no pip — bootstrapped it with ensurepip"
+fi
+
+if [ -n "$_relay_pip_ready" ]; then
+    "$VENV_PY" -m pip install --quiet --upgrade pip >/dev/null 2>&1 || true
+    # Run the long install in the background and spin while we wait — keeps the
+    # user oriented during the 5-30s install. spin() falls back to a silent
+    # wait when stdout isn't a TTY (curl | bash) so log capture stays clean.
+    ( "$VENV_PY" -m pip install --quiet -e "$RELAY_HOME" >/dev/null 2>&1 ) &
+    spin $! "pip install -e $(basename "$RELAY_HOME")" \
+        || die "pip install -e $RELAY_HOME failed"
+elif command -v uv >/dev/null 2>&1; then
+    # Pip-less venv and ensurepip unavailable — use uv directly against the
+    # venv interpreter (uv is what created these venvs in the first place).
+    ( uv pip install --quiet --python "$VENV_PY" -e "$RELAY_HOME" >/dev/null 2>&1 ) &
+    spin $! "uv pip install -e $(basename "$RELAY_HOME")" \
+        || die "uv pip install -e $RELAY_HOME failed"
+else
+    die "venv at $VENV_PY has no pip (uv-managed?) and 'uv' is not on PATH — install uv or add pip to the venv, then re-run"
+fi
+
+# Version readback, tolerant of the uv-only path (no pip module to query).
+_relay_ver="$("$VENV_PY" -m pip show hermes-relay 2>/dev/null | awk '/^Name:/{n=$2}/^Version:/{print n" "$2}')"
+if [ -z "$_relay_ver" ] && command -v uv >/dev/null 2>&1; then
+    _relay_ver="$(uv pip show --python "$VENV_PY" hermes-relay 2>/dev/null | awk '/^Name:/{n=$2}/^Version:/{print n" "$2}')"
+fi
+ok "Installed ${_relay_ver:-hermes-relay}"
+
+# Drop the legacy bootstrap .pth into the venv's site-packages so Python loads
+# the plugin-owned compatibility bootstrap at interpreter startup. This is what
+# allows the plugin to inject missing compatibility routes onto the gateway's
+# aiohttp app at startup. The .pth has to live directly in site-packages —
+# setuptools' editable install does NOT ship data-files there, so we drop it
+# manually here. Idempotent: a second run overwrites the same file.
+#
+# Removal: the bootstrap package and its .pth come out together via
+# `bash uninstall.sh`. The bootstrap also feature-detects on route paths,
+# so it cleanly no-ops on hermes-agent builds that already serve the same
+# routes natively — leaving it installed is safe across all versions.
+SITE_PKGS="$("$VENV_PY" -c 'import site; print(site.getsitepackages()[0])' 2>/dev/null || true)"
+if [ -n "$SITE_PKGS" ] && [ -d "$SITE_PKGS" ]; then
+    if "$VENV_PY" -m plugin.cli relay compat install --site-packages "$SITE_PKGS" >/dev/null 2>&1; then
+        ok "Installed compat hook via hermes relay compat → $SITE_PKGS/hermes_relay_bootstrap.pth"
+    else
+        warn "Could not install compat hook through plugin CLI"
+        info "  Modern standard chat, Manage, and dashboard voice do not require it."
+        info "  For older Hermes compatibility routes, retry: hermes relay compat install"
+    fi
+else
+    info "  Could not determine venv site-packages — bootstrap .pth NOT installed"
+    info "  This means older hermes-agent builds won't get relay compatibility"
+    info "  routes. Retry later with: hermes relay compat install"
+fi
+
+# ── 3/6  Symlink plugin into Hermes plugin dir ─────────────────────────────
+step 3 6 "Registering plugin with Hermes"
+mkdir -p "$(dirname "$PLUGIN_LINK")"
+# Remove an old install (dir, symlink, or mismatched target)
+if [ -L "$PLUGIN_LINK" ] || [ -e "$PLUGIN_LINK" ]; then
+    rm -rf "$PLUGIN_LINK"
+fi
+ln -s "$RELAY_HOME/plugin" "$PLUGIN_LINK"
+ok "Symlinked $PLUGIN_LINK → $RELAY_HOME/plugin"
+
+# Also remove any deprecated hand-installs
+for stale in "$HERMES_HOME/plugins/hermes-android" "$HERMES_HOME/hermes-agent/plugins/hermes-android" "$HERMES_HOME/hermes-agent/plugins/hermes-relay"; do
+    if [ -L "$stale" ] || [ -e "$stale" ]; then
+        rm -rf "$stale"
+        ok "Removed stale $stale"
+    fi
+done
+
+# Remove any OTHER plugin dir that also declares `name: hermes-relay`. The
+# gateway loader dedups discovered plugins by manifest name, so a stale
+# duplicate (a backup copy from an older installer, or a leftover native
+# install) can win the dedup and make the gateway load stale code — silently
+# ignoring every later deploy. Keep only the canonical symlink created above.
+plugins_dir="$(dirname "$PLUGIN_LINK")"
+canonical_name="$(basename "$PLUGIN_LINK")"
+if [ -d "$plugins_dir" ]; then
+    for entry in "$plugins_dir"/*; do
+        [ -e "$entry" ] || continue
+        [ "$(basename "$entry")" = "$canonical_name" ] && continue
+        if [ -f "$entry/plugin.yaml" ] \
+            && grep -Eq '^[[:space:]]*name:[[:space:]]*["'\'']?hermes-relay["'\'']?[[:space:]]*$' "$entry/plugin.yaml"; then
+            rm -rf "$entry"
+            ok "Removed duplicate hermes-relay plugin dir: $entry"
+        fi
+    done
+fi
+
+# Dashboard plugin toggle. The hermes-agent dashboard auto-discovers plugins
+# via `dashboard/manifest.json`. We flip visibility by renaming the manifest
+# file — no separate config lives anywhere else, and the same state is
+# observable by `ls plugin/dashboard/` so uninstall reasoning is trivial.
+DASHBOARD_MANIFEST_ACTIVE="$RELAY_HOME/plugin/dashboard/manifest.json"
+DASHBOARD_MANIFEST_DISABLED="$RELAY_HOME/plugin/dashboard/manifest.json.disabled"
+if [ -d "$RELAY_HOME/plugin/dashboard" ]; then
+    case "$DASHBOARD_PLUGIN" in
+        yes)
+            if [ ! -f "$DASHBOARD_MANIFEST_ACTIVE" ] && [ -f "$DASHBOARD_MANIFEST_DISABLED" ]; then
+                mv "$DASHBOARD_MANIFEST_DISABLED" "$DASHBOARD_MANIFEST_ACTIVE"
+            fi
+            if [ -f "$DASHBOARD_MANIFEST_ACTIVE" ]; then
+                ok "Dashboard plugin files installed"
+                info "  Activate with: hermes plugins enable hermes-relay"
+                info "  Then restart the Dashboard process to mount its backend and refresh the browser."
+            else
+                info "  Dashboard plugin manifest missing — skipped (expected when installing an older branch)"
+            fi
+            ;;
+        no)
+            if [ -f "$DASHBOARD_MANIFEST_ACTIVE" ]; then
+                mv "$DASHBOARD_MANIFEST_ACTIVE" "$DASHBOARD_MANIFEST_DISABLED"
+            fi
+            ok "Dashboard plugin disabled — hermes-agent dashboard will not load the relay tab"
+            ;;
+    esac
+    # Best-effort discovery rescan. A newly installed Python backend still
+    # needs a Dashboard process restart after explicit plugin activation.
+    # Silent if the dashboard isn't running, or binds somewhere
+    # we can't see from here.
+    #
+    # The dashboard may bind to 127.0.0.1, localhost, 0.0.0.0, or a
+    # specific LAN IP. On hosts with a systemd user unit we extract the
+    # actual --host / --port from the ExecStart line so we hit the right
+    # endpoint instead of guessing. Falls back to a small list of common
+    # bind addresses for installs that don't use systemd.
+    if command -v curl >/dev/null 2>&1; then
+        _dash_hosts=""
+        _dash_port=""
+        if command -v systemctl >/dev/null 2>&1; then
+            _exec_line="$(systemctl --user cat hermes-dashboard 2>/dev/null | grep -m1 '^ExecStart=' || true)"
+            if [ -n "$_exec_line" ]; then
+                _dash_hosts="$(echo "$_exec_line" | sed -nE 's/.*--host[[:space:]=]+([^[:space:]]+).*/\1/p')"
+                _dash_port="$(echo "$_exec_line" | sed -nE 's/.*--port[[:space:]=]+([0-9]+).*/\1/p')"
+            fi
+        fi
+        [ -z "$_dash_port" ] && _dash_port="9119"
+        # Always try loopback first; if the systemd unit advertises a
+        # specific bind host, try that second. Keep a couple of common
+        # fallbacks for non-systemd hosts.
+        _rescan_hit=""
+        for host in 127.0.0.1 localhost ${_dash_hosts:-} 0.0.0.0; do
+            [ -z "$host" ] && continue
+            for port in "$_dash_port" 9119 9100 9000; do
+                url="http://${host}:${port}/api/dashboard/plugins/rescan"
+                if curl -sf -m 2 -X GET "$url" >/dev/null 2>&1; then
+                    info "  Refreshed dashboard discovery at ${host}:${port}; new backend routes require a Dashboard restart"
+                    _rescan_hit=1
+                    break 2
+                fi
+            done
+        done
+        [ -z "$_rescan_hit" ] && info "  (dashboard not reachable — restart it if the toggle doesn't take effect)"
+    fi
+fi
+
+# ── 4/6  Register skills dir in Hermes config (external_dirs) ──────────────
+step 4 6 "Registering skills directory"
+"$VENV_PY" - <<PY
+import sys
+from pathlib import Path
+
+try:
+    import yaml
+except ImportError:
+    print("  [x] pyyaml not installed in hermes venv — this should have come with the plugin")
+    sys.exit(1)
+
+cfg_path = Path("$HERMES_CONFIG")
+target = "$SKILLS_DIR_IN_REPO"
+
+data: dict = {}
+if cfg_path.is_file():
+    try:
+        data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    except Exception as exc:
+        print(f"  [x] Failed to parse {cfg_path}: {exc}")
+        sys.exit(1)
+
+if not isinstance(data, dict):
+    data = {}
+
+skills_section = data.get("skills")
+if not isinstance(skills_section, dict):
+    skills_section = {}
+    data["skills"] = skills_section
+
+external_dirs = skills_section.get("external_dirs")
+if not isinstance(external_dirs, list):
+    external_dirs = []
+    skills_section["external_dirs"] = external_dirs
+
+# Idempotent — skip if already present (match by expanded path)
+expanded_targets = {str(Path(p).expanduser().resolve()) for p in external_dirs if isinstance(p, str)}
+if str(Path(target).expanduser().resolve()) in expanded_targets:
+    print(f"  [ok] external_dirs already contains {target}")
+else:
+    external_dirs.append(target)
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    # Save a .bak next to the original — yaml.safe_dump round-trips lose
+    # inline comments and key ordering, so users with hand-edited configs
+    # can restore from the backup if the new layout isn't what they want.
+    if cfg_path.is_file():
+        backup = cfg_path.with_suffix(cfg_path.suffix + ".bak")
+        backup.write_text(cfg_path.read_text(encoding="utf-8"), encoding="utf-8")
+        print(f"  [ok] Backed up existing config to {backup}")
+    cfg_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    print(f"  [ok] Added {target} to skills.external_dirs in {cfg_path}")
+PY
+
+# ── 5/7  Install hermes-pair + hermes-status + hermes-relay shims ──
+step 5 7 "Installing hermes-pair + hermes-status + hermes-relay shims"
+mkdir -p "$(dirname "$SHIM_PATH")"
+cat > "$SHIM_PATH" <<SHIM
+#!/usr/bin/env bash
+# Hermes-Relay pairing shim — routes to \`python -m plugin.pair\` inside the
+# hermes-agent venv where the hermes-relay plugin is installed.
+#
+# Also available: /hermes-relay-pair slash command in any Hermes chat session.
+#
+# Override the venv python path with \$HERMES_VENV_PY if needed. When unset,
+# the install-time detected interpreter is tried first, then classic + uv layouts.
+
+HERMES_VENV_PY="\${HERMES_VENV_PY:-}"
+if [ -z "\$HERMES_VENV_PY" ]; then
+    for candidate in "$VENV_PY" "\$HOME/.hermes/hermes-agent/.venv/bin/python" "\$HOME/.hermes/hermes-agent/venv/bin/python"; do
+        if [ -x "\$candidate" ]; then
+            HERMES_VENV_PY="\$candidate"
+            break
+        fi
+    done
+fi
+if [ ! -x "\$HERMES_VENV_PY" ]; then
+    echo "hermes-pair: cannot find hermes venv python at \$HERMES_VENV_PY" >&2
+    echo "hermes-pair: set HERMES_VENV_PY or reinstall hermes-agent" >&2
+    exit 1
+fi
+exec "\$HERMES_VENV_PY" -m plugin.pair "\$@"
+SHIM
+chmod +x "$SHIM_PATH"
+ok "Installed $SHIM_PATH"
+
+cat > "$STATUS_SHIM_PATH" <<SHIM
+#!/usr/bin/env bash
+# Hermes-Relay phone-status shim — routes to \`python -m plugin.status\`
+# inside the hermes-agent venv where the hermes-relay plugin is installed.
+#
+# Also available: /hermes-relay-status slash command in any Hermes chat session.
+#
+# Override the venv python path with \$HERMES_VENV_PY if needed. When unset,
+# the install-time detected interpreter is tried first, then classic + uv layouts.
+
+HERMES_VENV_PY="\${HERMES_VENV_PY:-}"
+if [ -z "\$HERMES_VENV_PY" ]; then
+    for candidate in "$VENV_PY" "\$HOME/.hermes/hermes-agent/.venv/bin/python" "\$HOME/.hermes/hermes-agent/venv/bin/python"; do
+        if [ -x "\$candidate" ]; then
+            HERMES_VENV_PY="\$candidate"
+            break
+        fi
+    done
+fi
+if [ ! -x "\$HERMES_VENV_PY" ]; then
+    echo "hermes-status: cannot find hermes venv python at \$HERMES_VENV_PY" >&2
+    echo "hermes-status: set HERMES_VENV_PY or reinstall hermes-agent" >&2
+    exit 1
+fi
+exec "\$HERMES_VENV_PY" -m plugin.status "\$@"
+SHIM
+chmod +x "$STATUS_SHIM_PATH"
+ok "Installed $STATUS_SHIM_PATH"
+
+cat > "$RELAY_SHIM_PATH" <<SHIM
+#!/usr/bin/env bash
+# Hermes-Relay management shim — routes to \`python -m plugin.cli\`
+# inside the hermes-agent venv where the hermes-relay plugin is installed.
+#
+# Usage:
+#   hermes-relay insecure-api-key status
+#   hermes-relay insecure-api-key on
+#   hermes-relay insecure-api-key off
+#
+# Override paths with \$HERMES_VENV_PY / \$HERMES_RELAY_HOME if needed.
+set -eu
+HERMES_RELAY_HOME="\${HERMES_RELAY_HOME:-\$HOME/.hermes/hermes-relay}"
+HERMES_VENV_PY="\${HERMES_VENV_PY:-}"
+if [ -z "\$HERMES_VENV_PY" ]; then
+    for candidate in "$VENV_PY" "\$HOME/.hermes/hermes-agent/.venv/bin/python" "\$HOME/.hermes/hermes-agent/venv/bin/python"; do
+        if [ -x "\$candidate" ]; then
+            HERMES_VENV_PY="\$candidate"
+            break
+        fi
+    done
+fi
+if [ ! -x "\$HERMES_VENV_PY" ]; then
+    echo "hermes-relay: cannot find hermes venv python at \$HERMES_VENV_PY" >&2
+    echo "hermes-relay: set HERMES_VENV_PY or reinstall hermes-agent" >&2
+    exit 1
+fi
+if [ ! -d "\$HERMES_RELAY_HOME/plugin" ]; then
+    echo "hermes-relay: cannot find relay repo at \$HERMES_RELAY_HOME" >&2
+    echo "hermes-relay: set HERMES_RELAY_HOME or reinstall hermes-relay" >&2
+    exit 1
+fi
+cd "\$HERMES_RELAY_HOME"
+export PYTHONPATH="\$HERMES_RELAY_HOME\${PYTHONPATH:+:\$PYTHONPATH}"
+exec "\$HERMES_VENV_PY" -m plugin.cli "\$@"
+SHIM
+chmod +x "$RELAY_SHIM_PATH"
+ok "Installed $RELAY_SHIM_PATH"
+
+# hermes-relay-update — discoverable name for "update Hermes-Relay". Just
+# re-runs the canonical curl-pipe installer (which is idempotent and does
+# all the work). Forwards any args to install.sh via `bash -s --` so e.g.
+# \`hermes-relay-update --restart-gateway\` works once we ever add that flag.
+# Honors the existing HERMES_RELAY_RESTART_GATEWAY / HERMES_RELAY_NO_RESTART_GATEWAY
+# env vars without any wrapping logic — they pass through naturally.
+cat > "$UPDATE_SHIM_PATH" <<'SHIM'
+#!/usr/bin/env bash
+# Hermes-Relay updater shim — re-runs the canonical one-line installer.
+#
+# Common usage:
+#   hermes-relay-update                                    # update to latest main
+#   hermes-relay-update --branch feature/bridge-feature-expansion  # switch to a branch
+#   hermes-relay-update --branch main                      # return to main
+#   HERMES_RELAY_RESTART_GATEWAY=1 hermes-relay-update     # also restart gateway
+#
+# Bootstrap caveat (only relevant before --branch lands on main):
+#   The shim normally fetches install.sh from main, so --branch only works
+#   if main's install.sh already understands the flag (it does as of v0.4.0).
+#   To install a feature branch BEFORE it has been merged to main, override
+#   the install.sh URL with HERMES_RELAY_INSTALL_URL:
+#
+#     HERMES_RELAY_INSTALL_URL=https://raw.githubusercontent.com/Codename-11/hermes-relay/feature/foo/install.sh \
+#       hermes-relay-update --branch feature/foo
+#
+#   This is a one-shot escape hatch — after the install lands the host has
+#   the new install.sh on disk + the regular shim works for all subsequent
+#   updates, including switching back to main.
+#
+# install.sh is fully idempotent — it pulls the requested branch (default
+# main), refreshes the editable pip install, recreates both shims, restarts
+# hermes-relay, and prompts before restarting hermes-gateway. Set
+# HERMES_RELAY_RESTART_GATEWAY=1 to opt into the gateway restart non-
+# interactively.
+INSTALL_URL="${HERMES_RELAY_INSTALL_URL:-https://raw.githubusercontent.com/Codename-11/hermes-relay/main/install.sh}"
+exec curl -fsSL "$INSTALL_URL" | bash -s -- "$@"
+SHIM
+chmod +x "$UPDATE_SHIM_PATH"
+ok "Installed $UPDATE_SHIM_PATH"
+
+# hermes-relay-tailscale — thin wrapper around `python -m
+# plugin.relay.tailscale_cli`. Installed unconditionally (the shim
+# itself is cheap); the ONE-TIME enablement prompt happens below in
+# step 7/7 and only if the tailscale binary is actually present.
+cat > "$TS_SHIM_PATH" <<SHIM
+#!/usr/bin/env bash
+# Hermes-Relay Tailscale helper — routes to \`python -m
+# plugin.relay.tailscale_cli\` inside the hermes-agent venv.
+#
+# Usage:
+#   hermes-relay-tailscale status
+#   hermes-relay-tailscale enable [--dashboard-listener-port 10443] [--dashboard-target-port 9119] [--api-port 8642] [--no-api]
+#   hermes-relay-tailscale disable [--dashboard-listener-port 10443] [--dashboard-target-port 9119] [--api-port 8642] [--no-api]
+#   hermes-relay-tailscale enable --dashboard-listener-port 443  # advanced override; only when :443 is free
+#   hermes-relay-tailscale enable --port 8767   # explicit legacy/direct Relay
+#   hermes-relay-tailscale disable --port 8767  # explicit legacy/direct Relay
+#
+# Override the venv python path with \$HERMES_VENV_PY if needed. When unset,
+# the install-time detected interpreter is tried first, then classic + uv layouts.
+set -eu
+HERMES_VENV_PY="\${HERMES_VENV_PY:-}"
+if [ -z "\$HERMES_VENV_PY" ]; then
+    for candidate in "$VENV_PY" "\$HOME/.hermes/hermes-agent/.venv/bin/python" "\$HOME/.hermes/hermes-agent/venv/bin/python"; do
+        if [ -x "\$candidate" ]; then
+            HERMES_VENV_PY="\$candidate"
+            break
+        fi
+    done
+fi
+if [ ! -x "\$HERMES_VENV_PY" ]; then
+    echo "hermes-relay-tailscale: cannot find hermes venv python at \$HERMES_VENV_PY" >&2
+    echo "hermes-relay-tailscale: set HERMES_VENV_PY or reinstall hermes-agent" >&2
+    exit 1
+fi
+exec "\$HERMES_VENV_PY" -m plugin.relay.tailscale_cli "\$@"
+SHIM
+chmod +x "$TS_SHIM_PATH"
+ok "Installed $TS_SHIM_PATH"
+
+# ── 6/7  Install systemd user service (optional) ───────────────────────────
+# Idempotent: safe to re-run. Skipped gracefully on hosts without a systemd
+# user session (macOS, bare chroots, WSL without systemd, containers, etc).
+# The relay still runs fine on those — users just start it manually or via
+# their preferred process supervisor.
+#
+# The unit has NO EnvironmentFile= — plugin/relay/_env_bootstrap.py loads
+# ~/.hermes/.env into os.environ on startup, mirroring how the gateway
+# handles API keys. Any future `systemctl --user restart hermes-relay`
+# picks up fresh values from .env automatically.
+step 6 7 "Installing systemd user service"
+
+if [ -n "${HERMES_RELAY_NO_SYSTEMD:-}" ]; then
+    info "  HERMES_RELAY_NO_SYSTEMD set — skipping"
+elif ! command -v systemctl >/dev/null 2>&1; then
+    info "  systemctl not found — skipping (run manually: $VENV_PY -m plugin.relay --no-ssl)"
+elif ! systemctl --user show-environment >/dev/null 2>&1; then
+    info "  systemd user session not available — skipping"
+    info "  Run manually: $VENV_PY -m plugin.relay --no-ssl"
+elif [ ! -f "$SERVICE_SRC" ]; then
+    info "  Service template not found at $SERVICE_SRC — skipping"
+else
+    mkdir -p "$SYSTEMD_USER_DIR"
+    # The committed template hardcodes the classic %h/.hermes/hermes-agent/venv
+    # layout. Rewrite that prefix to the venv we actually detected (uv-managed
+    # .venv, a HERMES_VENV_PY override, etc.) so ExecStart / PATH / VIRTUAL_ENV
+    # point at a real interpreter instead of dying with 203/EXEC on non-classic
+    # hosts. $VENV_PY is ".../<venv>/bin/python"; strip "/bin/python" for the dir.
+    # A `|` delimiter avoids clashing with the `/` path separators. We assume the
+    # venv path has no sed metacharacters (& | \) — true for the standard
+    # ~/.hermes/hermes-agent/{venv,.venv} layouts and any sane HERMES_VENV_PY.
+    _venv_bin_dir="${VENV_PY%/*}"           # .../<venv>/bin
+    _venv_root_dir="${_venv_bin_dir%/*}"    # .../<venv>
+    sed "s|%h/.hermes/hermes-agent/venv|$_venv_root_dir|g" "$SERVICE_SRC" > "$SERVICE_DST"
+    ok "Wrote $SERVICE_DST (venv → $_venv_root_dir)"
+
+    systemctl --user daemon-reload >/dev/null 2>&1 || true
+
+    # If a nohup-launched relay is holding :8767, stop+disable will fail
+    # to bind on start. Warn the user to kill it first rather than racing
+    # the installer against their manual process.
+    if pgrep -f "python -m plugin.relay" >/dev/null 2>&1 && \
+       ! systemctl --user is-active hermes-relay.service >/dev/null 2>&1; then
+        info "  A manual 'python -m plugin.relay' is already running."
+        info "  Stop it first:  pkill -f 'python -m plugin.relay'"
+        info "  Then:           systemctl --user enable --now hermes-relay.service"
+    else
+        # Was the service already running? If yes we MUST `restart` it
+        # explicitly — `enable --now` is a no-op on already-active services
+        # and the editable-install code refresh would never reach the live
+        # process. (Spent way too long debugging this on hermes-host
+        # 2026-04-12 — every install.sh run looked successful but the live
+        # relay kept serving stale code from before the last git pull.)
+        if systemctl --user is-active hermes-relay.service >/dev/null 2>&1; then
+            ( systemctl --user restart hermes-relay.service >/dev/null 2>&1 ) &
+            if spin $! "Restarting hermes-relay (already active — picking up new code)"; then
+                ok "hermes-relay restarted — new code is live"
+            else
+                warn "Could not restart hermes-relay automatically"
+                info "Check:  journalctl --user -u hermes-relay -n 30 --no-pager"
+            fi
+        elif systemctl --user enable --now hermes-relay.service >/dev/null 2>&1; then
+            ok "Enabled + started hermes-relay.service"
+            # Give aiohttp a second to bind before checking state.
+            sleep 1
+            if systemctl --user is-active hermes-relay.service >/dev/null 2>&1; then
+                ok "hermes-relay is running"
+            else
+                warn "hermes-relay failed to start"
+                info "Check:  journalctl --user -u hermes-relay -n 30 --no-pager"
+            fi
+        else
+            warn "Could not enable hermes-relay.service"
+            info "Check:  systemctl --user status hermes-relay.service"
+        fi
+    fi
+
+    info "  Linger tip: 'loginctl enable-linger $USER' keeps it running after logout"
+fi
+
+# ── 7/7  Offer (don't force) Tailscale serve enablement ───────────────────
+# ADR 25 — first-class Tailscale helper. The relay stays loopback-bound on
+# :8767 while the recommended Tailscale ingress listens on HTTPS :10443 and
+# proxies local Dashboard :9119; Relay rides Dashboard's same-origin plugin
+# transport. The optional Hermes API server may also be published on :8642
+# for headless compatibility.
+# `tailscale serve` terminates TLS + identity for the tailnet. This step is
+# fully optional:
+#
+#   - Binary absent?                    → skip silently (no Tailscale = no offer)
+#   - TS_DECLINE=1 in env?              → skip silently (scripted opt-out)
+#   - Non-interactive shell w/o TS_AUTO → skip silently with a one-line hint
+#   - Non-interactive shell + TS_AUTO=1 → enable non-interactively
+#   - Interactive shell                 → prompt with default "no"
+#
+# Wrapped in a protective `if` — nothing here can break the installer.
+#
+# TODO(upstream-merge #9295): remove this block once the canonical
+# `hermes gateway run --tailscale` flag lands on hermes-agent main. The
+# capability probe lives in plugin/relay/tailscale.py::canonical_upstream_present.
+if command -v tailscale >/dev/null 2>&1; then
+    step 7 7 "Optional — publish Dashboard over Tailscale"
+    if [ -n "${TS_DECLINE:-}" ]; then
+        info "  TS_DECLINE=1 set — skipping Tailscale serve offer"
+    else
+        ts_do=""
+        if [ ! -t 0 ] || [ "${CI:-}" = "true" ]; then
+            # Non-interactive — only proceed when explicitly opted in.
+            if [ "${TS_AUTO:-}" = "1" ]; then
+                ts_do="yes"
+            else
+                info "  tailscale detected; skipping in non-interactive mode"
+                info "  To enable later: ${C_BOLD}hermes-relay-tailscale enable${C_RESET}"
+                info "  Or re-run install.sh with TS_AUTO=1 to auto-enable."
+            fi
+        else
+            printf "\n"
+            printf "    ${C_DIM}%s${C_RESET} %s\n" "$SYM_INFO" "Tailscale is installed. Publish Dashboard + optional API over your tailnet?"
+            printf "    ${C_DIM}%s${C_RESET} %s\n" "$SYM_INFO" "Runs dedicated HTTPS ${C_BOLD}:10443${C_RESET} → local Dashboard ${C_BOLD}:9119${C_RESET} (including Relay path), plus ${C_BOLD}:8642${C_RESET} for optional API fallback."
+            printf "    ${C_DIM}%s${C_RESET} %s\n" "$SYM_INFO" "Loopback services stay private; Tailscale handles TLS + identity."
+            printf "\n    ${C_BOLD}Enable now?${C_RESET} ${C_DIM}[y/N]${C_RESET} "
+            read -r ts_reply </dev/tty || ts_reply=""
+            case "$ts_reply" in
+                [Yy]*) ts_do="yes" ;;
+                *)     ts_do="" ;;
+            esac
+        fi
+
+        if [ -n "$ts_do" ]; then
+            if "$VENV_PY" -m plugin.relay.tailscale_cli enable >/dev/null 2>&1; then
+                ok "tailscale serve enabled on HTTPS :10443 for local Dashboard :9119, plus optional API :8642"
+                info "  Check:  ${C_BOLD}hermes-relay-tailscale status${C_RESET}"
+                info "  Revoke: ${C_BOLD}hermes-relay-tailscale disable${C_RESET}"
+            else
+                warn "tailscale serve command failed — relay still reachable on loopback"
+                info "  Retry manually: ${C_BOLD}hermes-relay-tailscale enable${C_RESET}"
+            fi
+        elif [ -z "${TS_AUTO:-}" ] && [ -t 0 ] && [ "${CI:-}" != "true" ]; then
+            info "  Declined — relay stays loopback-only."
+            info "  Enable later with: ${C_BOLD}hermes-relay-tailscale enable${C_RESET}"
+        fi
+    fi
+fi
+
+# ── 7b/7  Offer (don't force) hermes-gateway restart ──────────────────────
+# The hermes-agent gateway caches plugin tools (android_*, etc.) and skills
+# at import time, so a fresh `git pull` of the plugin does NOT take effect
+# until the gateway re-imports. We could auto-restart it, but that interrupts
+# any active chat sessions and feels presumptuous since we don't own the
+# gateway process. Instead:
+#
+#   - If --restart-gateway was passed, restart unconditionally (scripted use)
+#   - If --no-restart-gateway was passed, skip silently
+#   - If stdin is a TTY (interactive), prompt with default "no"
+#   - If stdin is NOT a TTY (curl | bash), print a clear hint and skip
+#
+# Either way, the user is in control. No surprise restarts.
+if [ -z "${HERMES_RELAY_NO_SYSTEMD:-}" ] \
+   && [ -z "${HERMES_RELAY_NO_RESTART_GATEWAY:-}" ] \
+   && command -v systemctl >/dev/null 2>&1 \
+   && systemctl --user is-active hermes-gateway.service >/dev/null 2>&1; then
+
+    do_restart=""
+    if [ -n "${HERMES_RELAY_RESTART_GATEWAY:-}" ]; then
+        do_restart="yes"
+    elif [ -t 0 ]; then
+        printf "\n"
+        printf "    ${C_YELLOW}%s${C_RESET} %s\n" "$SYM_WARN" "${C_BOLD}hermes-gateway is running${C_RESET}"
+        printf "    ${C_DIM}%s${C_RESET}\n" "Restarting it lets the gateway re-import the updated plugin code"
+        printf "    ${C_DIM}%s${C_RESET}\n" "(new tools, skills, etc). Active chat sessions are interrupted for ~2s."
+        printf "\n    ${C_BOLD}Restart hermes-gateway now?${C_RESET} ${C_DIM}[y/N]${C_RESET} "
+        read -r reply </dev/tty || reply=""
+        case "$reply" in
+            [Yy]*) do_restart="yes" ;;
+            *)     do_restart="" ;;
+        esac
+    else
+        warn "hermes-gateway is running with stale plugin imports"
+        info "To re-import: ${C_BOLD}systemctl --user restart hermes-gateway${C_RESET}"
+        info "Or re-run with HERMES_RELAY_RESTART_GATEWAY=1 to do it automatically"
+    fi
+
+    if [ -n "$do_restart" ]; then
+        ( systemctl --user restart hermes-gateway.service >/dev/null 2>&1 ) &
+        if spin $! "Restarting hermes-gateway"; then
+            ok "hermes-gateway restarted — new plugin tools are live"
+        else
+            warn "Could not restart hermes-gateway automatically"
+            info "Run manually: ${C_BOLD}systemctl --user restart hermes-gateway${C_RESET}"
+        fi
+    fi
+fi
+
+# ── Done ───────────────────────────────────────────────────────────────────
+printf "\n"
+printf "  ${C_BOLD}${C_GREEN}╭─────────────────────────────────────────╮${C_RESET}\n"
+printf "  ${C_BOLD}${C_GREEN}│${C_RESET}  ${C_BOLD}${SYM_OK} Hermes-Relay installed${C_RESET}                ${C_BOLD}${C_GREEN}│${C_RESET}\n"
+printf "  ${C_BOLD}${C_GREEN}╰─────────────────────────────────────────╯${C_RESET}\n"
+printf "\n"
+printf "  ${C_BOLD}${C_CYAN}Pair your phone${C_RESET}\n"
+printf "    ${C_DIM}%s${C_RESET} ${C_BOLD}/hermes-relay-pair${C_RESET}        ${C_DIM}# from any Hermes chat${C_RESET}\n" "$SYM_INFO"
+printf "    ${C_DIM}%s${C_RESET} ${C_BOLD}hermes-pair${C_RESET}               ${C_DIM}# from any shell${C_RESET}\n" "$SYM_INFO"
+printf "    ${C_DIM}%s${C_RESET} ${C_BOLD}hermes-pair --mode auto --prefer tailscale${C_RESET} ${C_DIM}# one QR for LAN + Tailscale${C_RESET}\n" "$SYM_INFO"
+printf "    ${C_DIM}%s${C_RESET} ${C_BOLD}hermes-status${C_RESET}             ${C_DIM}# show live phone state${C_RESET}\n" "$SYM_INFO"
+printf "\n"
+printf "  ${C_BOLD}${C_CYAN}Remote access${C_RESET}\n"
+printf "    ${C_DIM}%s${C_RESET} ${C_BOLD}hermes-relay-tailscale enable${C_RESET}   ${C_DIM}# HTTPS :10443 → Dashboard :9119 + optional API :8642${C_RESET}\n" "$SYM_INFO"
+printf "    ${C_DIM}%s${C_RESET} ${C_BOLD}hermes-relay-tailscale enable --dashboard-listener-port 443${C_RESET} ${C_DIM}# advanced override; only if :443 is free${C_RESET}\n" "$SYM_INFO"
+printf "    ${C_DIM}%s${C_RESET} ${C_BOLD}hermes-relay-tailscale enable --port 8767${C_RESET} ${C_DIM}# legacy/direct Relay only${C_RESET}\n" "$SYM_INFO"
+printf "    ${C_DIM}%s${C_RESET} ${C_BOLD}hermes-relay-tailscale status${C_RESET}   ${C_DIM}# show served Tailscale ports${C_RESET}\n" "$SYM_INFO"
+printf "\n"
+printf "  ${C_BOLD}${C_CYAN}Self-setup / troubleshoot${C_RESET}\n"
+printf "    ${C_DIM}%s${C_RESET} ${C_BOLD}/hermes-relay-self-setup${C_RESET}  ${C_DIM}# agent walks you through verify, re-pair, fix${C_RESET}\n" "$SYM_INFO"
+printf "\n"
+printf "  ${C_BOLD}${C_CYAN}Update later${C_RESET} ${C_DIM}(idempotent — pick whichever you remember)${C_RESET}\n"
+printf "    ${C_DIM}%s${C_RESET} ${C_BOLD}hermes-relay-update${C_RESET}             ${C_DIM}# shortest path${C_RESET}\n" "$SYM_INFO"
+printf "    ${C_DIM}%s${C_RESET} ${C_BOLD}curl -fsSL https://raw.githubusercontent.com/Codename-11/hermes-relay/main/install.sh | bash${C_RESET}\n" "$SYM_INFO"
+printf "\n"
+printf "  ${C_BOLD}${C_CYAN}Manage the relay service${C_RESET}\n"
+printf "    ${C_DIM}%s${C_RESET} ${C_BOLD}systemctl --user status hermes-relay${C_RESET}\n" "$SYM_INFO"
+printf "    ${C_DIM}%s${C_RESET} ${C_BOLD}systemctl --user restart hermes-relay${C_RESET}\n" "$SYM_INFO"
+printf "    ${C_DIM}%s${C_RESET} ${C_BOLD}journalctl --user -u hermes-relay -f${C_RESET}\n" "$SYM_INFO"
+printf "\n"
+printf "  ${C_BOLD}${C_CYAN}Uninstall${C_RESET}\n"
+printf "    ${C_DIM}%s${C_RESET} ${C_BOLD}bash $RELAY_HOME/uninstall.sh${C_RESET}\n" "$SYM_INFO"
+printf "    ${C_DIM}%s${C_RESET} ${C_BOLD}bash $RELAY_HOME/uninstall.sh --dry-run${C_RESET}  ${C_DIM}# preview only${C_RESET}\n" "$SYM_INFO"
+printf "\n"
+printf "  ${C_DIM}Scan the QR from the Hermes-Relay app: Settings → Connection → Scan Pairing QR${C_RESET}\n"
+printf "\n"

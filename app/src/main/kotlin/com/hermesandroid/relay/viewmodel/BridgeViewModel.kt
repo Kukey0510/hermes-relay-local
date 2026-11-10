@@ -1,0 +1,634 @@
+package com.hermesandroid.relay.viewmodel
+
+import android.app.Application
+import android.content.Context
+import android.os.BatteryManager
+import android.os.PowerManager
+import android.provider.Settings
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.hermesandroid.relay.data.BridgeActivityEntry
+import com.hermesandroid.relay.data.BridgePreferencesRepository
+// === PHASE3-safety-rails: foreground service lifecycle ===
+import com.hermesandroid.relay.bridge.BridgeForegroundService
+import com.hermesandroid.relay.bridge.BridgeSafetyManager
+import com.hermesandroid.relay.bridge.BridgeStatusOverlay
+import com.hermesandroid.relay.bridge.UnattendedAccessManager
+import com.hermesandroid.relay.data.BridgeSafetyPreferencesRepository
+// === END PHASE3-safety-rails ===
+// === PHASE3-safety-rails-followup: in-app permission Test handlers ===
+import com.hermesandroid.relay.accessibility.HermesAccessibilityService
+import com.hermesandroid.relay.accessibility.MediaProjectionHolder
+// === END PHASE3-safety-rails-followup ===
+// === PHASE3-bridge-ui-followup: screen capture consent flow ===
+import com.hermesandroid.relay.accessibility.ScreenCaptureRequester
+// === END PHASE3-bridge-ui-followup ===
+import com.hermesandroid.relay.permissions.AppPermissionStatus
+import com.hermesandroid.relay.permissions.AppPermissionStatusProbe
+import com.hermesandroid.relay.util.AppForegroundTracker
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+
+/**
+ * Bridge tab view-model — Phase 3 Wave 1 (Agent bridge-ui).
+ *
+ * Scope: UI state for the new BridgeScreen only. The actual AccessibilityService
+ * runtime (read screen, tap, type, screenshot) is Agent accessibility's file set under
+ * `com.hermesandroid.relay.accessibility`. bridge-ui intentionally **does not** touch
+ * those files — we read/display state from whatever StateFlows accessibility exposes and
+ * stub them here until accessibility's runtime lands.
+ *
+ * ## accessibility-handoff points (TODO before Wave 1 merges)
+ *
+ * 1. **`bridgeStatus`** — currently a `MutableStateFlow<BridgeStatus?>` seeded
+ *    from a best-effort read of [PowerManager] + [BatteryManager] on init.
+ *    accessibility must either:
+ *      - expose a `com.hermesandroid.relay.accessibility.HermesAccessibilityService`
+ *        singleton with `status: StateFlow<BridgeStatus>`, OR
+ *      - post updates into a shared `BridgeStateHolder` object that both
+ *        accessibility's service and this ViewModel read from.
+ *    Either way, bridge-ui replaces the local MutableStateFlow with `.combine` against
+ *    the accessibility flow. The [BridgeStatus] data class below is bridge-ui's proposed wire
+ *    shape — accessibility is welcome to move it into `accessibility/` and have us import
+ *    from there.
+ *
+ * 2. **`permissionStatus`** — we read the centralized [AppPermissionStatusProbe]
+ *    snapshot so Bridge and Settings report the same Android grants and
+ *    special-access state.
+ *
+ * 3. **`recordActivity` / `updateActivity`** — bridge-ui writes activity log entries
+ *    to [BridgePreferencesRepository]. accessibility's `HermesAccessibilityService`
+ *    command dispatcher should call these (or a singleton that forwards to
+ *    them) whenever a bridge command starts / completes / fails / is blocked
+ *    by safety rails. Until accessibility lands, the log stays empty and the UI shows
+ *    the empty-state copy.
+ *
+ * 4. **`masterToggle`** write path — flipping the master switch persists via
+ *    [BridgePreferencesRepository.setMasterEnabled]. accessibility's service reads the
+ *    same DataStore key (`bridge_master_enabled_v2`) and treats it as the
+ *    runtime disable switch — when false, the service should ignore all
+ *    incoming `bridge.command` envelopes. bridge-ui does not wire the service lifecycle
+ *    to this toggle; that's accessibility's call.
+ *
+ * Kept deliberately thin — this is a UI-presentation layer, not a mediator.
+ */
+class BridgeViewModel(application: Application) : AndroidViewModel(application) {
+
+    private val prefsRepo = BridgePreferencesRepository(application)
+
+    // v0.4.1 — direct DataStore access for the unattended-access opt-in.
+    // The BridgeSafetyManager singleton already exposes the same settings
+    // via `safety.settings`, but the manager is installed lazily by
+    // ConnectionViewModel and may be null on first composition. We keep
+    // a direct repository reference here so the unattended toggle works
+    // immediately on first launch even before the safety manager exists.
+    private val safetyPrefsRepo = BridgeSafetyPreferencesRepository(application)
+
+    // ── Master toggle ────────────────────────────────────────────────────
+    val masterToggle: StateFlow<Boolean> = prefsRepo.settings
+        .map { it.masterEnabled }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = BridgePreferencesRepository.DEFAULT_MASTER_ENABLED
+        )
+
+    // ── Bridge status (accessibility-handoff stub) ───────────────────────────────────
+    //
+    // TODO(accessibility-handoff): replace this MutableStateFlow with the StateFlow that
+    // HermesAccessibilityService exposes. Until then we seed a minimal status
+    // on init from system APIs so the status card has *something* to show in
+    // screenshots and previews.
+    private val _bridgeStatus = MutableStateFlow<BridgeStatus?>(null)
+    val bridgeStatus: StateFlow<BridgeStatus?> = _bridgeStatus.asStateFlow()
+
+    // ── Permission status ────────────────────────────────────────────────
+    private val _permissionStatus = MutableStateFlow(BridgePermissionStatus())
+    val permissionStatus: StateFlow<BridgePermissionStatus> = _permissionStatus.asStateFlow()
+
+    // ── Activity log ─────────────────────────────────────────────────────
+    val activityLog: StateFlow<List<BridgeActivityEntry>> = prefsRepo.activityLog
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = emptyList()
+        )
+
+    // === PHASE3-safety-rails-followup: permission test result events ===
+    //
+    // One-shot result messages emitted by the in-app permission Test buttons
+    // in BridgePermissionChecklist. BridgeScreen collects this and surfaces
+    // each emission via the global LocalSnackbarHost. Buffer 4 so back-to-back
+    // taps don't drop on the floor; replay 0 because stale results from a
+    // prior screen visit shouldn't pop up.
+    private val _testEvents = MutableSharedFlow<String>(
+        replay = 0,
+        extraBufferCapacity = 4,
+    )
+    val testEvents: SharedFlow<String> = _testEvents.asSharedFlow()
+    // === END PHASE3-safety-rails-followup ===
+
+    // === v0.4.1 unattended-access state ===
+    /**
+     * User opt-in: agent may wake the screen on bridge commands while
+     * the user is away. Drives both the toggle row in BridgeScreen and
+     * the [UnattendedAccessManager] singleton (mirrored on every change
+     * via the collector below).
+     */
+    val unattendedEnabled: StateFlow<Boolean> = safetyPrefsRepo.settings
+        .map { it.unattendedAccessEnabled }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = false,
+        )
+
+    /**
+     * Latch indicating whether the user has dismissed the one-time
+     * scary opt-in dialog. BridgeScreen reads this to decide whether
+     * to show the dialog on the next enable attempt.
+     */
+    val unattendedWarningSeen: StateFlow<Boolean> = safetyPrefsRepo.settings
+        .map { it.unattendedWarningSeen }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = false,
+        )
+
+    /**
+     * Live snapshot of whether the device has a credential lock (PIN /
+     * pattern / biometric) configured. Drives the persistent "keyguard
+     * detected" chip on BridgeScreen when unattended is on.
+     */
+    val credentialLockDetected: StateFlow<Boolean> =
+        UnattendedAccessManager.credentialLockDetected
+    // === END v0.4.1 unattended-access state ===
+
+    init {
+        refreshPermissionStatus()
+        refreshBridgeStatusFromSystem()
+
+        // Periodic 5s refresh of bridge status while the ViewModel is alive.
+        // currentApp / battery / screenOn are the only fields that change
+        // between screen-resume events; polling is cheap (all three are
+        // synchronous reads from PowerManager / BatteryManager / a11y
+        // singleton) and StateFlow equality suppresses no-op emissions.
+        // Without this, "Current app" stays stuck at whatever it was when
+        // the user last resumed the Bridge tab.
+        viewModelScope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(5_000)
+                refreshBridgeStatusFromSystem()
+            }
+        }
+
+        // === v0.4.1 mirror unattended toggle into the singleton ===
+        // BridgeSafetySettings.unattendedAccessEnabled lives in DataStore
+        // and is the source of truth, but the wake-lock acquire path
+        // (UnattendedAccessManager.acquireForAction) has no DataStore
+        // access. Mirror the live value into the manager's StateFlow so
+        // the acquire fast-path can read .value synchronously.
+        viewModelScope.launch {
+            unattendedEnabled.collect { enabled ->
+                UnattendedAccessManager.setEnabled(enabled)
+                if (!enabled) {
+                    // Drop any held screen-bright lock immediately on
+                    // disable so the screen returns to its natural
+                    // timeout. Without this the lock would self-release
+                    // 30s later but the user would see the screen stay
+                    // lit past their toggle action — confusing UX.
+                    UnattendedAccessManager.release()
+                }
+            }
+        }
+        // === END v0.4.1 mirror ===
+
+        // === PHASE3-bridge-ui-followup: react to MediaProjection grants ===
+        // The MediaProjection grant lands inside BridgeForegroundService
+        // (the only place where Android 14+ permits getMediaProjection),
+        // not in this ViewModel. We observe the holder's StateFlow so the
+        // permission row's green check lights up the moment the FGS stores
+        // the projection — no waiting for the next ON_RESUME, no race
+        // window where the user returns from the consent dialog and sees
+        // the row still red for a frame.
+        viewModelScope.launch {
+            MediaProjectionHolder.projectionFlow.collect {
+                refreshPermissionStatus()
+            }
+        }
+        // === END PHASE3-bridge-ui-followup ===
+
+        // === PHASE3-safety-rails: foreground service lifecycle ===
+        // Start/stop BridgeForegroundService from the persisted settings Flow,
+        // not masterToggle's synthetic initial=false StateFlow value. Using the
+        // synthetic value here could revoke an unlimited lease during startup
+        // before DataStore reported that Master was actually persisted ON.
+        // distinctUntilChanged prevents duplicate service work. Cancel the safety manager's
+        // timed screen grants when the user flips the master off manually
+        // (otherwise stale authority could revive when master is re-enabled).
+        viewModelScope.launch {
+            prefsRepo.settings
+                .map { it.masterEnabled }
+                .distinctUntilChanged()
+                .collect { enabled ->
+                val ctx = getApplication<Application>()
+                if (enabled) {
+                    runCatching { BridgeForegroundService.start(ctx) }
+                } else {
+                    runCatching { BridgeForegroundService.stop(ctx) }
+                    BridgeSafetyManager.peek()?.revokeTimedCapabilities()
+                    // Force the overlay chip off even if the user hasn't
+                    // explicitly disabled it — no point showing "bridge
+                    // active" when the toggle is off.
+                    BridgeStatusOverlay.peek()?.setChipVisible(false)
+                    // The projection is meaningless without the bridge —
+                    // drop it on toggle-off so the row goes back to red
+                    // and the next bridge enable prompts for fresh consent.
+                    MediaProjectionHolder.revoke()
+                    // Drop the unattended wake lock immediately. The safety
+                    // manager also clears the persisted unattended preference,
+                    // so re-enabling Master cannot silently revive it.
+                    UnattendedAccessManager.release()
+                }
+            }
+        }
+
+        // Toggle the optional status overlay in response to both the
+        // user's preference and the master toggle (chip only shows when
+        // bridge is active AND user opted in).
+        //
+        // v0.4.1: when unattended-access is also on, the chip renders
+        // its amber "Unattended ON" variant. We additionally force the
+        // chip ON whenever unattended is enabled and the master toggle
+        // is on — even if the user disabled the regular status overlay
+        // — because the unattended state is load-bearing safety
+        // information that the user needs to know about at a glance
+        // when they walk back to the phone.
+        //
+        // v0.4.1 polish: the chip is a *cross-app* indicator — it only
+        // earns its screen real estate when the user is NOT inside
+        // Hermes-Relay (where the in-app UnattendedGlobalBanner already
+        // covers the same signal on every tab). Gate on
+        // AppForegroundTracker.isForeground so chip + banner are never
+        // visible at the same time.
+        viewModelScope.launch {
+            val safety = BridgeSafetyManager.peek() ?: return@launch
+            combine(
+                masterToggle,
+                safety.settings.map { it.statusOverlayEnabled }.distinctUntilChanged(),
+                safety.settings.map { it.unattendedAccessEnabled }.distinctUntilChanged(),
+                AppForegroundTracker.isForeground,
+            ) { master, overlayOn, unattendedOn, isForeground ->
+                ChipState(master, overlayOn, unattendedOn, isForeground)
+            }
+                .distinctUntilChanged()
+                .collect { st ->
+                    val shouldShow = st.master &&
+                        (st.overlayOn || st.unattendedOn) &&
+                        !st.isForeground
+                    BridgeStatusOverlay.peek()
+                        ?.setChipVisible(shouldShow, unattended = st.unattendedOn)
+                }
+        }
+        // === END PHASE3-safety-rails ===
+    }
+
+    /**
+     * Called from the UI when BridgeScreen regains focus (e.g., returning
+     * from Android Settings after granting the a11y permission). Re-probes
+     * Settings.Secure and battery/screen state.
+     */
+    fun onScreenResumed() {
+        refreshPermissionStatus()
+        refreshBridgeStatusFromSystem()
+        // v0.4.1 — re-probe credential-lock state too. The user may have
+        // changed their lock screen setting in Android Settings between
+        // visits, and the keyguard-detected chip should reflect reality.
+        UnattendedAccessManager.refreshKeyguardState()
+    }
+
+    // === v0.4.1 unattended-access toggle handlers ===
+
+    /**
+     * Persist the unattended-access opt-in state. Caller (BridgeScreen)
+     * is responsible for showing the scary one-time warning dialog
+     * BEFORE the first true write — see [markUnattendedWarningSeen].
+     *
+     * The mirroring collector in [init] propagates the new value into
+     * [UnattendedAccessManager], which gates the wake-lock acquire path.
+     */
+    fun setUnattendedAccessEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            safetyPrefsRepo.setUnattendedAccessEnabled(enabled)
+        }
+    }
+
+    fun setTimedAccessMinutes(minutes: Int) {
+        viewModelScope.launch {
+            safetyPrefsRepo.setAutoDisableMinutes(minutes)
+        }
+    }
+
+    /**
+     * Latch the "user has seen the warning" sentinel so the scary
+     * dialog never appears again after the first dismissal. Called
+     * from BridgeScreen the first time the user enables unattended
+     * access, right after they tap "I understand" on the dialog.
+     */
+    fun markUnattendedWarningSeen() {
+        viewModelScope.launch {
+            safetyPrefsRepo.setUnattendedWarningSeen(true)
+        }
+    }
+
+    // === END v0.4.1 unattended-access toggle handlers ===
+
+    fun setMasterEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            prefsRepo.setMasterEnabled(enabled)
+        }
+    }
+
+    /**
+     * Append (or replace by id) an activity entry. Exposed so Agent accessibility's
+     * command dispatcher can call it directly once it has a reference to
+     * this ViewModel via a shared holder.
+     */
+    fun recordActivity(entry: BridgeActivityEntry) {
+        viewModelScope.launch {
+            prefsRepo.appendEntry(entry)
+        }
+    }
+
+    fun clearActivityLog() {
+        viewModelScope.launch {
+            prefsRepo.clearLog()
+        }
+    }
+
+    // === PHASE3-safety-rails-followup: in-app permission Test handlers ===
+    //
+    // Side-effect-free diagnostic checks for each bridge permission. Each
+    // method observes the actual runtime state (service binding, projection
+    // grant, overlay capability) and emits a one-shot human-readable result
+    // on `testEvents` for the snackbar. These match the pattern notif-listener already
+    // shipped for the notification companion's "Test" button — diagnostics
+    // first, full functional tests as a Wave 3 follow-up.
+
+    /**
+     * Verify the AccessibilityService is bound and can read the foreground
+     * window. Three cases: not bound (user didn't enable in Settings), bound
+     * but no active root window (rare — usually means we're on the home
+     * launcher with a TYPE_WALLPAPER backdrop), or fully OK.
+     */
+    fun testAccessibilityService() {
+        val instance = HermesAccessibilityService.instance
+        val msg = when {
+            instance == null -> {
+                "Not bound. Enable Hermes-Relay Bridge in Android Settings → " +
+                    "Accessibility → Installed services."
+            }
+            instance.rootInActiveWindow == null -> {
+                "Bound, but cannot read the active window right now. " +
+                    "Open any app and tap Test again."
+            }
+            else -> {
+                "OK — bound and reading the active window."
+            }
+        }
+        viewModelScope.launch { _testEvents.emit("Accessibility · $msg") }
+    }
+
+    /**
+     * Verify the per-session MediaProjection grant is alive. MediaProjection
+     * is granted per-session via a system consent dialog and not persistent —
+     * "no active grant" is the normal state until a screenshot is requested.
+     */
+    fun testScreenCapture() {
+        val projection = MediaProjectionHolder.projection
+        val msg = if (projection != null) {
+            "OK — MediaProjection grant is active for this session."
+        } else {
+            "No active grant. Tap the row to grant now, or wait for the " +
+                "agent's first /screenshot request."
+        }
+        // Refresh the row's checkmark to reflect what we just observed.
+        refreshPermissionStatus()
+        viewModelScope.launch { _testEvents.emit("Screen capture · $msg") }
+    }
+
+    /**
+     * Proactively ask the user for the per-session MediaProjection grant
+     * via the system consent dialog. Routes through [ScreenCaptureRequester]
+     * which `MainActivity` keeps installed for the lifetime of its window.
+     *
+     * # Android 14+ FGS prerequisite
+     *
+     * On Android 14 (API 34) and above, `getMediaProjection(...)` returns
+     * a projection that the system auto-revokes within frames UNLESS a
+     * foreground service has already called
+     * `startForeground(type=mediaProjection)`. In our app that FGS is
+     * [com.hermesandroid.relay.bridge.BridgeForegroundService], which only
+     * runs while the master toggle is on. So this method gates on the
+     * master toggle — no point firing the consent dialog if the grant is
+     * going to evaporate on the way back. Tell the user to enable Bridge
+     * first and the consent will then stick.
+     *
+     * No-op (with a snackbar) if the request can't be dispatched — usually
+     * because MainActivity is destroyed (process restarted from a notification
+     * tap, etc.) and we'd need to be brought to the foreground first.
+     */
+    fun requestScreenCapture() {
+        // === PHASE3-bridge-ui-followup: gate consent on master toggle ===
+        // BridgeForegroundService must already be running with type
+        // mediaProjection BEFORE we call MediaProjectionManager.getMediaProjection,
+        // or Android 14+ silently revokes the grant. The FGS only runs
+        // while the master toggle is on, so refuse the consent flow when
+        // the toggle is off and tell the user what to do.
+        if (!masterToggle.value) {
+            viewModelScope.launch {
+                _testEvents.emit(
+                    "Screen capture · Enable Allow Agent Control first, then tap " +
+                        "Screen Capture again."
+                )
+            }
+            return
+        }
+        // === END PHASE3-bridge-ui-followup ===
+
+        val dispatched = ScreenCaptureRequester.request()
+        val msg = if (dispatched) {
+            "Asking for screen-capture consent…"
+        } else {
+            "Open the Hermes app to your foreground to grant screen capture."
+        }
+        viewModelScope.launch { _testEvents.emit("Screen capture · $msg") }
+    }
+
+    /**
+     * Verify SYSTEM_ALERT_WINDOW is granted. Without this permission safety-rails's
+     * destructive-verb confirmation modal cannot display, and the safety
+     * manager will fail-closed (deny the action) when an agent tries to
+     * type/tap a destructive verb.
+     */
+    fun testOverlayPermission() {
+        val ctx = getApplication<Application>()
+        val granted = Settings.canDrawOverlays(ctx)
+        val msg = if (granted) {
+            "OK — confirmation prompts can display while the bridge is active."
+        } else {
+            "Not granted. Tap the row to open Android's overlay-permission " +
+                "page. Without this, destructive actions will be silently denied."
+        }
+        viewModelScope.launch { _testEvents.emit("Display over other apps · $msg") }
+    }
+
+    /**
+     * Verify the NotificationListenerService is enabled. The full
+     * functional test (round-trip a notification through the bridge) lives
+     * on NotificationCompanionSettingsScreen — this is just a parity Test
+     * button on the Bridge tab so users don't have to navigate away to
+     * verify the permission is granted.
+     */
+    fun testNotificationListener() {
+        val ctx = getApplication<Application>()
+        val granted = AppPermissionStatusProbe.snapshot(ctx).notificationListenerPermitted
+        val msg = if (granted) {
+            "OK — Hermes can read posted notifications."
+        } else {
+            "Not granted. Tap the row to open Android's Notification access page."
+        }
+        // Refresh in case the user just flipped the switch in Settings.
+        refreshPermissionStatus()
+        viewModelScope.launch { _testEvents.emit("Notification listener · $msg") }
+    }
+    // === END PHASE3-safety-rails-followup ===
+
+    // ── Internals ────────────────────────────────────────────────────────
+
+    private fun refreshPermissionStatus() {
+        val ctx = getApplication<Application>()
+        _permissionStatus.value = AppPermissionStatusProbe.snapshot(ctx).toBridgePermissionStatus()
+    }
+
+    /**
+     * Seed bridge status from what we can read without accessibility's runtime:
+     * screen state and battery level. `currentApp` is populated from
+     * `HermesAccessibilityService.instance.currentApp`, which the service
+     * updates on every `TYPE_WINDOW_STATE_CHANGED` event — so we get the
+     * most recent foreground package whenever this method runs. When the
+     * accessibility service isn't bound (permission not granted, or the
+     * system just killed it), `currentApp` is null and the UI falls back
+     * to its "—" placeholder.
+     */
+    private fun refreshBridgeStatusFromSystem() {
+        val ctx = getApplication<Application>()
+        val pm = ctx.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        val bm = ctx.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
+        val screenOn = pm?.isInteractive ?: false
+        val battery = bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
+        _bridgeStatus.value = BridgeStatus(
+            deviceName = android.os.Build.MODEL ?: "Android device",
+            batteryPercent = if (battery in 0..100) battery else null,
+            screenOn = screenOn,
+            currentApp = HermesAccessibilityService.instance?.currentApp,
+            accessibilityEnabled = _permissionStatus.value.accessibilityServiceEnabled,
+        )
+    }
+
+}
+
+private fun AppPermissionStatus.toBridgePermissionStatus(): BridgePermissionStatus =
+    BridgePermissionStatus(
+        accessibilityServiceEnabled = accessibilityServiceEnabled,
+        screenCapturePermitted = screenCapturePermitted,
+        overlayPermitted = overlayPermitted,
+        notificationListenerPermitted = notificationListenerPermitted,
+        notificationsPermitted = notificationsPermitted,
+        microphonePermitted = microphonePermitted,
+        cameraPermitted = cameraPermitted,
+        contactsPermitted = contactsPermitted,
+        smsPermitted = smsPermitted,
+        phonePermitted = phonePermitted,
+        locationPermitted = locationPermitted,
+    )
+
+/**
+ * Internal tuple for the chip-visibility combine — carries the four
+ * gating inputs (master toggle, user's status-overlay preference,
+ * unattended-access opt-in, app foreground signal) so
+ * `distinctUntilChanged` can dedupe on equality. Lives here rather
+ * than inline so the combine lambda stays readable.
+ */
+private data class ChipState(
+    val master: Boolean,
+    val overlayOn: Boolean,
+    val unattendedOn: Boolean,
+    val isForeground: Boolean,
+)
+
+/**
+ * Snapshot of what the phone's bridge runtime is reporting — what the
+ * status card displays. Corresponds to the `bridge.status` wire envelope
+ * from the phase 3 plan.
+ *
+ * TODO(accessibility-handoff): if accessibility wants this class to live under `accessibility/`
+ * instead, move it there and re-import. bridge-ui keeps it here as a placeholder
+ * so BridgeScreen can compile today without blocking on accessibility.
+ */
+data class BridgeStatus(
+    val deviceName: String,
+    val batteryPercent: Int?,
+    val screenOn: Boolean,
+    val currentApp: String?,
+    val accessibilityEnabled: Boolean,
+)
+
+/**
+ * Snapshot of every bridge-relevant permission's current state.
+ *
+ * v0.4.1 expanded this from the original five core-bridge entries to include
+ * runtime dangerous permissions (microphone, camera, contacts, SMS, phone,
+ * location) so the tiered [com.hermesandroid.relay.ui.components.BridgePermissionChecklist]
+ * can render an explicit grant affordance for each one. The sideload-only
+ * permissions (contacts/sms/phone/location) on a googlePlay build will always
+ * report `false` because the underlying manifest declarations live in the
+ * sideload flavor overlay — those rows are hidden in the checklist via the
+ * `BuildFlavor.isSideload` gate, so the false value never surfaces.
+ */
+data class BridgePermissionStatus(
+    val accessibilityServiceEnabled: Boolean = false,
+    val screenCapturePermitted: Boolean = false,
+    val overlayPermitted: Boolean = false,
+    val notificationListenerPermitted: Boolean = false,
+    val notificationsPermitted: Boolean = false,
+    // === v0.4.1 tiered checklist ============================================
+    /** Voice mode + voice intents (`RECORD_AUDIO`). Required when the user enters voice mode. */
+    val microphonePermitted: Boolean = false,
+    /** Camera attachment + future on-device vision tools (`CAMERA`). */
+    val cameraPermitted: Boolean = false,
+    /** `android_search_contacts` resolver (`READ_CONTACTS`, sideload-only). */
+    val contactsPermitted: Boolean = false,
+    /** `android_send_sms` direct dispatch (`SEND_SMS`, sideload-only). */
+    val smsPermitted: Boolean = false,
+    /** `android_call` auto-dial (`CALL_PHONE`, sideload-only). */
+    val phonePermitted: Boolean = false,
+    /** `android_location` last-known fix (`ACCESS_FINE_LOCATION`, sideload-only). */
+    val locationPermitted: Boolean = false,
+    // === END v0.4.1 tiered checklist =========================================
+) {
+    /** True when every permission required for Tier 1 + 2 is granted. */
+    val allRequiredGranted: Boolean
+        get() = accessibilityServiceEnabled // MediaProjection is per-session, not sticky
+}

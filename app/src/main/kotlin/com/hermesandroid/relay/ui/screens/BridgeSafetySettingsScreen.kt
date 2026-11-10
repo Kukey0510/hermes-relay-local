@@ -1,0 +1,609 @@
+package com.hermesandroid.relay.ui.screens
+
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DividerDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.InputChip
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
+import com.hermesandroid.relay.R
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.hermesandroid.relay.data.BridgeSafetyPreferencesRepository
+import com.hermesandroid.relay.data.BridgeSafetySettings
+import com.hermesandroid.relay.bridge.BridgeCapability
+import com.hermesandroid.relay.bridge.BridgeCapabilityPolicy
+import com.hermesandroid.relay.bridge.BridgeSafetyManager
+import com.hermesandroid.relay.data.DEFAULT_BLOCKLIST
+import com.hermesandroid.relay.data.MAX_AUTO_DISABLE_MINUTES
+import com.hermesandroid.relay.data.MAX_CONFIRMATION_TIMEOUT_SECONDS
+import com.hermesandroid.relay.data.MIN_AUTO_DISABLE_MINUTES
+import com.hermesandroid.relay.data.MIN_CONFIRMATION_TIMEOUT_SECONDS
+import kotlinx.coroutines.launch
+
+/**
+ * Phase 3 — safety-rails `bridge-safety-rails`
+ *
+ * Compose screen for Tier 5 safety configuration. Five sections:
+ *
+ *  1. Blocklist — searchable list of installed apps with a checkbox per
+ *     row. Uses `PackageManager.getInstalledApplications` + a filter
+ *     dropping system apps with no launcher intent so the list is a few
+ *     dozen entries not five hundred.
+ *  2. Destructive verbs — input-chip list with an "Add" text field.
+ *  3. Auto-disable timer — slider 5..120 min.
+ *  4. Status overlay — toggle; if flipped on without SYSTEM_ALERT_WINDOW
+ *     permission, tapping the switch kicks off the permission grant flow.
+ *  5. Confirmation timeout — slider 10..60s.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun BridgeSafetySettingsScreen(
+    connectionId: String? = null,
+    onBack: () -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val repo = remember { BridgeSafetyPreferencesRepository(context) }
+    val settings by repo.settings.collectAsState(initial = BridgeSafetySettings())
+    val safetyManager = BridgeSafetyManager.peek()
+    val capabilityPolicy by (safetyManager?.capabilityPolicy(connectionId)
+        ?: remember { kotlinx.coroutines.flow.MutableStateFlow(BridgeCapabilityPolicy()) })
+        .collectAsState(initial = BridgeCapabilityPolicy())
+
+    // Overlay-permission live check — recompute on resume so returning
+    // from Settings flips the switch's availability without nav churn.
+    var canDrawOverlays by remember {
+        mutableStateOf(Settings.canDrawOverlays(context))
+    }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                canDrawOverlays = Settings.canDrawOverlays(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+    }
+
+    // Cached installed-app list (expensive to call, so we do it once).
+    var installedApps by remember { mutableStateOf<List<InstalledApp>>(emptyList()) }
+    var appSearch by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) {
+        installedApps = loadInstalledApps(context)
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(stringResource(R.string.bss_title)) },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = stringResource(R.string.bss_back)
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                )
+            )
+        }
+    ) { inner ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(inner)
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+
+            CapabilityGrantCards(
+                policy = capabilityPolicy,
+                timerMinutes = settings.autoDisableMinutes,
+                enabled = safetyManager != null && connectionId != null,
+                onPermanentChanged = { capability, allowed ->
+                    scope.launch {
+                        safetyManager?.setPermanentCapability(connectionId, capability, allowed)
+                    }
+                },
+                onTimedChanged = { capability, allowed ->
+                    scope.launch {
+                        safetyManager?.setTimedCapability(connectionId, capability, allowed)
+                    }
+                },
+            )
+
+            // ── Blocklist ───────────────────────────────────────────────
+            SectionCard(title = stringResource(R.string.bss_blocked_apps)) {
+                Text(
+                    text = stringResource(R.string.bss_blocked_apps_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.size(8.dp))
+                OutlinedTextField(
+                    value = appSearch,
+                    onValueChange = { appSearch = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text(stringResource(R.string.bss_search_apps)) },
+                )
+                Spacer(Modifier.size(8.dp))
+                val filtered = remember(installedApps, appSearch, settings.blocklist) {
+                    val term = appSearch.trim().lowercase()
+                    val sorted = installedApps.sortedWith(
+                        compareByDescending<InstalledApp> { it.packageName in settings.blocklist }
+                            .thenBy { it.label.lowercase() }
+                    )
+                    if (term.isEmpty()) sorted
+                    else sorted.filter {
+                        it.label.lowercase().contains(term) ||
+                            it.packageName.lowercase().contains(term)
+                    }
+                }
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 340.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    items(filtered, key = { it.packageName }) { app ->
+                        val checked = app.packageName in settings.blocklist
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(
+                                checked = checked,
+                                onCheckedChange = { nowChecked ->
+                                    scope.launch {
+                                        if (nowChecked) repo.addToBlocklist(app.packageName)
+                                        else repo.removeFromBlocklist(app.packageName)
+                                    }
+                                },
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = app.label,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                Text(
+                                    text = app.packageName,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Destructive verbs ───────────────────────────────────────
+            SectionCard(title = stringResource(R.string.bss_destructive_verbs)) {
+                Text(
+                    text = stringResource(R.string.bss_destructive_verbs_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.size(8.dp))
+                var newVerb by remember { mutableStateOf("") }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedTextField(
+                        value = newVerb,
+                        onValueChange = { newVerb = it },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        label = { Text(stringResource(R.string.bss_add_verb)) },
+                    )
+                    IconButton(onClick = {
+                        val v = newVerb.trim()
+                        if (v.isNotEmpty()) {
+                            scope.launch { repo.addDestructiveVerb(v) }
+                            newVerb = ""
+                        }
+                    }) {
+                        Icon(Icons.Filled.Add, contentDescription = stringResource(R.string.bss_add_verb_cd))
+                    }
+                }
+                Spacer(Modifier.size(6.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    settings.destructiveVerbs.sorted().chunked(3).forEach { row ->
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            row.forEach { verb ->
+                                InputChip(
+                                    selected = false,
+                                    onClick = {},
+                                    label = { Text(verb) },
+                                    trailingIcon = {
+                                        IconButton(
+                                            onClick = {
+                                                scope.launch { repo.removeDestructiveVerb(verb) }
+                                            },
+                                            modifier = Modifier.size(18.dp),
+                                        ) {
+                                            Icon(
+                                                Icons.Filled.Close,
+                                                contentDescription = stringResource(R.string.bss_remove_cd),
+                                                modifier = Modifier.size(14.dp),
+                                            )
+                                        }
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Auto-disable timer ──────────────────────────────────────
+            SectionCard(title = stringResource(R.string.bss_auto_disable)) {
+                Text(
+                    text = stringResource(R.string.bss_auto_disable_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.size(4.dp))
+                Text(
+                    text = stringResource(R.string.bss_auto_disable_value, settings.autoDisableMinutes),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Slider(
+                    value = settings.autoDisableMinutes.toFloat(),
+                    onValueChange = { v ->
+                        scope.launch { repo.setAutoDisableMinutes(v.toInt()) }
+                    },
+                    valueRange = MIN_AUTO_DISABLE_MINUTES.toFloat()..MAX_AUTO_DISABLE_MINUTES.toFloat(),
+                    steps = (MAX_AUTO_DISABLE_MINUTES - MIN_AUTO_DISABLE_MINUTES) / 5 - 1,
+                )
+            }
+
+            // ── Status overlay ──────────────────────────────────────────
+            SectionCard(title = stringResource(R.string.bss_status_overlay)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = stringResource(R.string.bss_show_floating),
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        Text(
+                            text = if (canDrawOverlays) {
+                                stringResource(R.string.bss_overlay_granted)
+                            } else {
+                                stringResource(R.string.bss_overlay_not_granted)
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = settings.statusOverlayEnabled && canDrawOverlays,
+                        onCheckedChange = { wanted ->
+                            if (wanted && !canDrawOverlays) {
+                                // Kick off the SYSTEM_ALERT_WINDOW grant flow.
+                                runCatching {
+                                    val intent = Intent(
+                                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                        Uri.parse("package:${context.packageName}")
+                                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    context.startActivity(intent)
+                                }
+                            } else {
+                                scope.launch { repo.setStatusOverlayEnabled(wanted) }
+                            }
+                        }
+                    )
+                }
+            }
+
+            // ── Confirmation timeout ────────────────────────────────────
+            SectionCard(title = stringResource(R.string.bss_confirmation_timeout)) {
+                Text(
+                    text = stringResource(R.string.bss_confirmation_timeout_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.size(4.dp))
+                Text(
+                    text = stringResource(R.string.bss_confirmation_timeout_value, settings.confirmationTimeoutSeconds),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Slider(
+                    value = settings.confirmationTimeoutSeconds.toFloat(),
+                    onValueChange = { v ->
+                        scope.launch { repo.setConfirmationTimeoutSeconds(v.toInt()) }
+                    },
+                    valueRange = MIN_CONFIRMATION_TIMEOUT_SECONDS.toFloat()..MAX_CONFIRMATION_TIMEOUT_SECONDS.toFloat(),
+                    steps = (MAX_CONFIRMATION_TIMEOUT_SECONDS - MIN_CONFIRMATION_TIMEOUT_SECONDS) / 5 - 1,
+                )
+            }
+
+            Spacer(modifier = Modifier.size(24.dp))
+        }
+    }
+}
+
+@Composable
+internal fun CapabilityGrantCards(
+    policy: BridgeCapabilityPolicy,
+    timerMinutes: Int,
+    enabled: Boolean,
+    onPermanentChanged: (BridgeCapability, Boolean) -> Unit,
+    onTimedChanged: (BridgeCapability, Boolean) -> Unit,
+) {
+    SectionCard(title = stringResource(R.string.bridge_access_read_group)) {
+        Text(
+            text = stringResource(R.string.bridge_access_read_group_desc),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (!enabled) {
+            Text(
+                text = stringResource(R.string.bss_capabilities_unavailable),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+        }
+        Spacer(Modifier.size(8.dp))
+        listOf(
+            BridgeCapability.DEVICE_INFO,
+            BridgeCapability.CONTACTS_READ,
+            BridgeCapability.LOCATION_READ,
+            BridgeCapability.CLIPBOARD_READ,
+        ).forEach { capability ->
+            val allowed = capability in policy.permanentGrants
+            CapabilityRow(
+                capability = capability,
+                checked = allowed,
+                stateLabel = stringResource(
+                    if (allowed) R.string.bss_capability_always else R.string.bss_capability_never,
+                ),
+                enabled = enabled,
+                onCheckedChange = { onPermanentChanged(capability, it) },
+            )
+        }
+    }
+
+    SectionCard(title = stringResource(R.string.bridge_access_actions_group)) {
+        Text(
+            text = stringResource(R.string.bridge_access_actions_group_desc),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.size(8.dp))
+        listOf(
+            BridgeCapability.CLIPBOARD_WRITE,
+            BridgeCapability.MEDIA_CONTROL,
+            BridgeCapability.COMMUNICATIONS,
+            BridgeCapability.OUTBOUND_SHARING,
+        ).forEach { capability ->
+            val allowed = capability in policy.permanentGrants
+            CapabilityRow(
+                capability = capability,
+                checked = allowed,
+                stateLabel = stringResource(
+                    if (allowed) R.string.bss_capability_always else R.string.bss_capability_never,
+                ),
+                enabled = enabled,
+                onCheckedChange = { onPermanentChanged(capability, it) },
+            )
+        }
+    }
+
+    SectionCard(title = stringResource(R.string.bss_timed_capabilities_title)) {
+        val now = System.currentTimeMillis()
+        val activeScreenCapabilities = BridgeCapability.entries
+            .filter { it.timed && policy.allows(it, now) }
+        val hasUnlimited = activeScreenCapabilities.any(policy::isUnlimited)
+        Text(
+            text = when {
+                hasUnlimited -> stringResource(R.string.bss_screen_access_unlimited_desc)
+                activeScreenCapabilities.isNotEmpty() ->
+                    stringResource(R.string.bss_timed_capabilities_desc, timerMinutes)
+                else -> stringResource(R.string.bss_screen_access_off_desc, timerMinutes)
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.size(8.dp))
+        BridgeCapability.entries.filter { it.timed }.forEach { capability ->
+            val active = (policy.expiryFor(capability) ?: 0L) > now
+            CapabilityRow(
+                capability = capability,
+                checked = active,
+                stateLabel = when {
+                    policy.isUnlimited(capability) ->
+                        stringResource(R.string.bridge_timed_until_off)
+                    active -> stringResource(R.string.bss_capability_timed_on)
+                    else -> stringResource(R.string.bss_capability_timed_off)
+                },
+                enabled = enabled,
+                onCheckedChange = { onTimedChanged(capability, it) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun CapabilityRow(
+    capability: BridgeCapability,
+    checked: Boolean,
+    stateLabel: String,
+    enabled: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f).padding(vertical = 6.dp)) {
+            Text(
+                text = stringResource(capability.titleResource()),
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            Text(
+                text = stateLabel,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(
+            checked = checked,
+            enabled = enabled,
+            onCheckedChange = onCheckedChange,
+        )
+    }
+}
+
+private fun BridgeCapability.titleResource(): Int = when (this) {
+    BridgeCapability.DEVICE_INFO -> R.string.bss_capability_device_info
+    BridgeCapability.CONTACTS_READ -> R.string.bss_capability_contacts
+    BridgeCapability.LOCATION_READ -> R.string.bss_capability_location
+    BridgeCapability.CLIPBOARD_READ -> R.string.bss_capability_clipboard_read
+    BridgeCapability.CLIPBOARD_WRITE -> R.string.bss_capability_clipboard_write
+    BridgeCapability.MEDIA_CONTROL -> R.string.bss_capability_media
+    BridgeCapability.COMMUNICATIONS -> R.string.bss_capability_communications
+    BridgeCapability.OUTBOUND_SHARING -> R.string.bss_capability_sharing
+    BridgeCapability.SCREEN_INSPECTION -> R.string.bss_capability_screen_inspection
+    BridgeCapability.SCREEN_CONTROL -> R.string.bss_capability_screen_control
+}
+
+@Composable
+private fun SectionCard(title: String, content: @Composable () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            HorizontalDivider(
+                modifier = Modifier.padding(vertical = 8.dp),
+                thickness = DividerDefaults.Thickness,
+                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+            )
+            content()
+        }
+    }
+}
+
+private data class InstalledApp(
+    val packageName: String,
+    val label: String,
+)
+
+/**
+ * Enumerate installed apps that have a launcher intent + all apps in the
+ * default blocklist (even if they're not installed — so users still see
+ * which entries the defaults cover). Deduped by package name.
+ */
+private fun loadInstalledApps(context: Context): List<InstalledApp> {
+    val pm = context.packageManager
+    val launcher = Intent(Intent.ACTION_MAIN).apply { addCategory(Intent.CATEGORY_LAUNCHER) }
+    val launcherable = runCatching { pm.queryIntentActivities(launcher, 0) }
+        .getOrDefault(emptyList())
+        .mapNotNull { resolve ->
+            val info = resolve.activityInfo?.applicationInfo ?: return@mapNotNull null
+            val label = runCatching { pm.getApplicationLabel(info).toString() }
+                .getOrDefault(info.packageName ?: return@mapNotNull null)
+            InstalledApp(packageName = info.packageName, label = label)
+        }
+
+    val defaults = DEFAULT_BLOCKLIST.map { pkg ->
+        val label = runCatching {
+            val ai = pm.getApplicationInfo(pkg, 0)
+            pm.getApplicationLabel(ai).toString()
+        }.getOrDefault(pkg.substringAfterLast('.'))
+        InstalledApp(packageName = pkg, label = label)
+    }
+
+    return (launcherable + defaults)
+        .distinctBy { it.packageName }
+}
+
+@Preview(showBackground = true, backgroundColor = 0xFF1A1A2E)
+@Composable
+private fun BridgeSafetySettingsScreenPreview() {
+    MaterialTheme {
+        // The real screen needs a Context for PackageManager lookups, so
+        // this preview just shows one section to verify styling.
+        Column(Modifier.padding(16.dp)) {
+            SectionCard(title = stringResource(R.string.bss_destructive_verbs)) {
+                Text(
+                    text = stringResource(R.string.bss_destructive_verbs_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+    }
+}

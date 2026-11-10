@@ -1,0 +1,358 @@
+package com.hermesandroid.relay.ui.components
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import com.hermesandroid.relay.R
+import com.hermesandroid.relay.ui.theme.appearanceRoundedCornerShape
+import com.hermesandroid.relay.ui.theme.appearanceTopRoundedCornerShape
+
+/**
+ * Searchable model picker as a bottom sheet — a cleaner surface than the inline
+ * dropdown for the 100+ models the gateway exposes across providers. Mirrors
+ * [CommandPalette]'s pattern (header + search + grouped LazyColumn).
+ *
+ * This is a DETAIL view, so it shows the PROVIDER (group headers) and per-model
+ * availability; the compact chat composer pill stays model-only by design.
+ *
+ * Consumes the same [ChatInputPickerOption] list the inline chip used, so the
+ * "Server default" entry (value == null), current-provider-first ordering,
+ * "Not on your plan" / "Needs setup" secondaries, and disabled (unavailable)
+ * state all carry over unchanged.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ModelPickerSheet(
+    options: List<ChatInputPickerOption>,
+    loading: Boolean = false,
+    refreshing: Boolean = false,
+    error: String? = null,
+    onRefresh: (() -> Unit)? = null,
+    onSelect: (ChatInputPickerOption) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var query by remember { mutableStateOf("") }
+
+    // "Server default" is the pinned, ungrouped option (value == null).
+    val defaultOption = remember(options) { options.firstOrNull { it.value == null } }
+    val modelOptions = remember(options) { options.filter { it.value != null } }
+
+    val filtered = remember(modelOptions, query) {
+        if (query.isBlank()) {
+            modelOptions
+        } else {
+            modelOptions.filter { opt ->
+                opt.label.contains(query, ignoreCase = true) ||
+                    (opt.group?.contains(query, ignoreCase = true) == true)
+            }
+        }
+    }
+    // groupBy preserves key insertion order, so providers stay current-first
+    // (the caller sorts is_current to the front).
+    val otherGroupLabel = stringResource(R.string.model_picker_other)
+    val grouped = remember(filtered, otherGroupLabel) {
+        filtered.groupBy { option ->
+            ModelPickerGroupIdentity(
+                provider = option.provider?.trim()?.lowercase().orEmpty(),
+                label = option.group?.takeIf { it.isNotBlank() } ?: otherGroupLabel,
+            )
+        }
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        shape = appearanceTopRoundedCornerShape(20.dp),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 400.dp)
+                .padding(bottom = 16.dp),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = stringResource(R.string.model_picker_model), style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text = "${modelOptions.size} models",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (onRefresh != null) {
+                    TextButton(
+                        onClick = onRefresh,
+                        enabled = !refreshing,
+                    ) {
+                        if (refreshing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Filled.Refresh,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                        Spacer(modifier = Modifier.size(6.dp))
+                        Text(if (refreshing) stringResource(R.string.model_picker_refreshing) else stringResource(R.string.model_picker_refresh))
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                placeholder = { Text(stringResource(R.string.model_picker_search)) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Filled.Search,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                    )
+                },
+                trailingIcon = {
+                    if (query.isNotEmpty()) {
+                        IconButton(onClick = { query = "" }) {
+                            Icon(
+                                imageVector = Icons.Filled.Close,
+                                contentDescription = stringResource(R.string.model_picker_cd_clear),
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                    }
+                },
+                singleLine = true,
+                shape = appearanceRoundedCornerShape(12.dp),
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+            HorizontalDivider()
+
+            LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                // Server default pinned at the top (only when not searching).
+                if (defaultOption != null && query.isBlank()) {
+                    item(key = "server_default") {
+                        ModelPickerRow(option = defaultOption, onClick = { onSelect(defaultOption) })
+                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                    }
+                }
+
+                grouped.forEach { (group, opts) ->
+                    item(key = modelPickerHeaderKey(group)) {
+                        Text(
+                            text = group.label,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(
+                                start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp,
+                            ),
+                        )
+                    }
+                    items(items = opts, key = ::modelPickerOptionKey) { opt ->
+                        ModelPickerRow(option = opt, onClick = { onSelect(opt) })
+                    }
+                }
+
+                if (filtered.isEmpty()) {
+                    item(key = "empty") {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(32.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            when {
+                                modelOptions.isEmpty() && loading -> Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                ) {
+                                    CircularProgressIndicator()
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text(stringResource(R.string.dashboard_loading_provider_catalog))
+                                }
+                                modelOptions.isEmpty() && error != null -> Text(
+                                    text = stringResource(R.string.dashboard_model_options_load_failed),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                                else -> Text(
+                                    text = stringResource(
+                                        if (modelOptions.isEmpty()) R.string.model_picker_no_models
+                                        else R.string.model_picker_empty,
+                                    ),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+internal data class ModelPickerGroupIdentity(
+    val provider: String,
+    val label: String,
+)
+
+internal fun modelPickerHeaderKey(group: ModelPickerGroupIdentity): String =
+    "provider:${group.provider}:${group.label}"
+
+/** Exact domain identity; duplicate provider/model rows must be repaired upstream. */
+internal fun modelPickerOptionKey(option: ChatInputPickerOption): String =
+    "model:${option.provider?.trim()?.lowercase().orEmpty()}:${option.value}"
+
+/**
+ * Compact sibling of [ModelPickerSheet] for short, ungrouped control lists.
+ * Passport selectors use this so profile, personality, and reasoning choices
+ * share the model picker's modal hierarchy, row rhythm, and selected-state
+ * treatment instead of expanding dense radio lists inside the detail card.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun OptionPickerSheet(
+    title: String,
+    subtitle: String? = null,
+    options: List<ChatInputPickerOption>,
+    onSelect: (ChatInputPickerOption) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        shape = appearanceTopRoundedCornerShape(20.dp),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 16.dp),
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            ) {
+                Text(text = title, style = MaterialTheme.typography.titleMedium)
+                if (!subtitle.isNullOrBlank()) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            HorizontalDivider()
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 520.dp),
+            ) {
+                items(
+                    items = options,
+                    key = { option -> "${option.group}:${option.value}:${option.label}" },
+                ) { option ->
+                    ModelPickerRow(option = option, onClick = { onSelect(option) })
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModelPickerRow(
+    option: ChatInputPickerOption,
+    onClick: () -> Unit,
+) {
+    val enabled = option.enabled
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = option.label,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (enabled) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (!option.secondary.isNullOrBlank()) {
+                Text(
+                    text = option.secondary,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        if (option.selected) {
+            Icon(
+                imageVector = Icons.Filled.Check,
+                contentDescription = stringResource(R.string.cd_selected),
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+    }
+}

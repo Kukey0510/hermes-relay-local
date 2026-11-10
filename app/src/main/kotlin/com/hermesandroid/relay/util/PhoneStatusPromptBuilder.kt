@@ -1,0 +1,234 @@
+package com.hermesandroid.relay.util
+
+// === PHASE3-status: dynamic phone-status system prompt block ===
+//
+// Replaces the static one-sentence "app context prompt" with a transparent,
+// granular block that reflects real bridge/permission state. Each enabled
+// sub-category adds one short line; the master toggle gates all of them.
+//
+// Design goals:
+//   - Pure function, no side effects, no suspend, no I/O. Snapshot is built
+//     by the caller from already-cached state (no `getRunningTasks`, no
+//     reflection in the hot path beyond what ChatViewModel already does).
+//   - Returns `null` when there's literally nothing to say, so the system
+//     message is omitted entirely from the request (no `""` payloads).
+//   - Output capped under ~100 words (~150 tokens). Everything beyond the
+//     minimal preamble lives behind the `android_phone_status` tool the
+//     agent can call on demand.
+//   - Privacy-sensitive fields (current_app, battery) default OFF and only
+//     add lines when the user explicitly opted in via sub-toggle.
+//
+// Output shape examples live in the task brief; the gold-master text is
+// reproduced exactly by `buildPromptBlock` + preview card in ChatSettingsScreen.
+
+/**
+ * User-facing toggle state for the phone-status prompt block. Mirrors the
+ * five DataStore keys in `ConnectionViewModel`:
+ *   - [master]        — master enable (KEY_APP_CONTEXT)
+ *   - [bridgeState]   — advertise bridge channel + permission summary
+ *   - [currentApp]    — advertise foregrounded package name (privacy-sensitive)
+ *   - [battery]       — advertise battery percent (privacy-sensitive)
+ *   - [safetyStatus]  — advertise blocklist / destructive-verb / auto-disable
+ *
+ * `master` off means everything returns `null`, regardless of sub-toggles.
+ */
+data class AppContextSettings(
+    val master: Boolean = true,
+    val bridgeState: Boolean = true,
+    val currentApp: Boolean = false,
+    val battery: Boolean = false,
+    val safetyStatus: Boolean = true,
+)
+
+/**
+ * Snapshot of the phone-side state that can go into a system prompt. All
+ * fields are nullable because the caller populates them from sources that
+ * may not exist yet (Phase 3 accessibility service, bridge safety manager,
+ * media-projection holder). A null field is elided from the output; the
+ * builder never emits "unknown" or "N/A" text.
+ *
+ * None of these fields should be expensive to read — the caller constructs
+ * a PhoneSnapshot on every send() call and we want that to be microseconds,
+ * not milliseconds.
+ */
+data class PhoneSnapshot(
+    // --- Bridge / accessibility ---
+    /** True iff HermesAccessibilityService has a live `instance`. */
+    val bridgeBound: Boolean = false,
+    /** True iff the user's master-enable DataStore key is set. */
+    val masterEnabled: Boolean = false,
+    /** True iff `rootInActiveWindow` is reachable (a11y permission granted). */
+    val accessibilityGranted: Boolean = false,
+    /** True iff `MediaProjectionHolder.projection != null`. */
+    val screenCaptureGranted: Boolean = false,
+    /** True iff `Settings.canDrawOverlays(context)`. */
+    val overlayGranted: Boolean = false,
+    /** True iff the notification listener companion is bound. */
+    val notificationsGranted: Boolean = false,
+
+    // --- v0.4.1 unattended-access ---
+    // Exposed so the agent can reason about whether the phone will be
+    // receptive to commands when the user isn't looking at it. Without
+    // these fields the agent finds out only when a command returns
+    // `keyguard_blocked` — too late to avoid wasted round-trips and
+    // useless gestures on a dark screen.
+
+    /** True iff the user has opted into unattended access. */
+    val unattendedEnabled: Boolean = false,
+    /** True iff the device currently has a PIN / pattern / biometric lock set. */
+    val credentialLockDetected: Boolean = false,
+    /** True iff the phone's screen is currently on (interactive). */
+    val screenOn: Boolean = false,
+
+    // --- Privacy-sensitive (only populated when user opted in) ---
+    /** Foreground package name, e.g. "com.android.chrome". */
+    val currentApp: String? = null,
+    /** Battery percent 0..100. */
+    val batteryPercent: Int? = null,
+
+    // --- Safety manager summary ---
+    /** Count of blocked package names in `BridgeSafetyManager.settings`. */
+    val blocklistCount: Int? = null,
+    /** Count of destructive verbs in `BridgeSafetyManager.settings`. */
+    val destructiveVerbCount: Int? = null,
+    /** Configured auto-disable idle timer in minutes. */
+    val autoDisableMinutes: Int? = null,
+)
+
+private const val PREAMBLE =
+    "The user is chatting via the Hermes-Relay Android app. " +
+    "Keep responses mobile-friendly and concise when possible."
+
+/** Representative capability used only by the Settings preview fixture. */
+internal val PHONE_CONTEXT_PREVIEW_TOOLS = setOf("android_phone_status")
+
+/**
+ * Build the system-prompt block from [settings] + [snapshot]. Relay-only
+ * bridge guidance is emitted only when [availableTools] proves that this exact
+ * selected session/profile can call at least one `android_*` tool. A missing
+ * catalog fails closed for tool claims while preserving neutral mobile context.
+ *
+ * Returns `null` iff:
+ *   1. [AppContextSettings.master] is false, OR
+ *   2. All sub-toggles are off (nothing would be appended beyond the
+ *      preamble AND there's no reason to advertise the mobile client).
+ *
+ * Rule (2) is technically lenient — we always include the preamble when
+ * `master` is on, even if every sub-toggle is off, because the preamble
+ * itself is useful (it's the original v0.1.0 behavior). The "everything
+ * off → null" case in the brief is the `master=false` branch.
+ */
+fun buildPromptBlock(
+    settings: AppContextSettings,
+    snapshot: PhoneSnapshot,
+    availableTools: Set<String>? = null,
+): String? {
+    if (!settings.master) return null
+
+    val lines = mutableListOf<String>()
+    lines += PREAMBLE
+
+    val phoneControlTools = availableTools
+        ?.filterTo(mutableSetOf()) {
+            it.startsWith("android_") && it != "android_setup"
+        }
+        .orEmpty()
+
+    if (settings.bridgeState && phoneControlTools.isNotEmpty()) {
+        lines += buildBridgeLine(
+            snapshot = snapshot,
+            phoneStatusToolAvailable = "android_phone_status" in phoneControlTools,
+        )
+    }
+
+    if (settings.currentApp && snapshot.currentApp != null) {
+        lines += "Foreground app: ${snapshot.currentApp}."
+    }
+
+    if (settings.battery && snapshot.batteryPercent != null) {
+        lines += "Battery: ${snapshot.batteryPercent}%."
+    }
+
+    if (settings.safetyStatus && phoneControlTools.isNotEmpty()) {
+        buildSafetyLine(snapshot)?.let { lines += it }
+    }
+
+    return lines.joinToString("\n\n")
+}
+
+// Note: the gateway path intentionally carries NO phone-context preamble.
+// `prompt.submit` is bare text with no system-message slot, and prepending
+// the preamble to the user's text persists it into the session transcript
+// (ugly on history reload + visible from desktop). The gateway's only
+// call-time system overlay (`ephemeral_system_prompt`) is the personality
+// slot, so it can't carry phone context without clobbering the user's persona.
+// Phone context therefore rides ONLY the SSE `systemMessage` (invisible) and
+// the on-demand `android_phone_status` tool.
+
+/**
+ * Bridge-channel summary. Always emitted when `bridgeState` is on, even if
+ * the bridge isn't bound — "Phone bridge: not installed" is itself useful
+ * context (tells the agent not to try tool calls into the phone).
+ */
+private fun buildBridgeLine(
+    snapshot: PhoneSnapshot,
+    phoneStatusToolAvailable: Boolean,
+): String {
+    if (!snapshot.bridgeBound) {
+        return "Phone bridge: not connected. Tool calls into the phone are unavailable."
+    }
+    if (!snapshot.masterEnabled) {
+        return "Phone bridge: connected but disabled by user. Ask before requesting control."
+    }
+    val perms = mutableListOf<String>()
+    if (snapshot.accessibilityGranted) perms += "accessibility"
+    if (snapshot.screenCaptureGranted) perms += "screen capture"
+    if (snapshot.overlayGranted) perms += "overlay"
+    if (snapshot.notificationsGranted) perms += "notifications"
+
+    val permsText = if (perms.isEmpty()) "no permissions granted yet" else "Permissions: ${perms.joinToString(", ")}"
+
+    // v0.4.1 unattended-access line. Tells the agent proactively whether
+    // commands can reach apps when the user isn't actively on the phone.
+    // Without this, the agent finds out only AFTER a dispatched command
+    // returns `keyguard_blocked` or lands on a dark screen — this lets it
+    // decide upfront to defer ("I'll do it when you're next on your
+    // phone") or warn the user before issuing the command.
+    val unattendedText = when {
+        !snapshot.unattendedEnabled ->
+            "Unattended access: off — commands only land when the screen " +
+                "is already on. If the screen is off, ask the user to wake " +
+                "the phone before issuing bridge commands."
+        snapshot.credentialLockDetected ->
+            "Unattended access: on, but the device has a credential lock " +
+                "(PIN / pattern / biometric). The screen will wake on " +
+                "command, but Android won't let us dismiss the lock — " +
+                "commands will return `keyguard_blocked` and fail."
+        else ->
+            "Unattended access: on — the screen will wake on each " +
+                "command. Safe to send commands while the user is away."
+    }
+
+    val screenText = if (snapshot.screenOn) "Screen: on." else "Screen: off."
+
+    val statusToolHint = if (phoneStatusToolAvailable) {
+        " For full phone status (current app, battery, blocklist), call the android_phone_status tool."
+    } else {
+        ""
+    }
+    return "Phone bridge: enabled. $permsText. $screenText $unattendedText$statusToolHint"
+}
+
+/**
+ * Safety-rails one-liner. Only emitted when at least one safety field is
+ * non-null; returns null if the safety manager hasn't been initialized yet.
+ */
+private fun buildSafetyLine(snapshot: PhoneSnapshot): String? {
+    val parts = mutableListOf<String>()
+    snapshot.blocklistCount?.let { parts += "$it blocked apps" }
+    snapshot.destructiveVerbCount?.let { parts += "$it destructive verbs" }
+    snapshot.autoDisableMinutes?.let { parts += "${it}m auto-disable" }
+    if (parts.isEmpty()) return null
+    return "Safety rails: ${parts.joinToString(", ")}."
+}
+// === END PHASE3-status ===
