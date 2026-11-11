@@ -10,6 +10,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.ActivityCompat
 import com.hermesandroid.relay.data.BuildFlavor
+import com.hermesandroid.relay.BuildConfig
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -549,6 +550,25 @@ fun BridgeScreen(
                     onRequestPhone = { openAppDetailsSettings(context) },
                     onRequestLocation = { openAppDetailsSettings(context) },
                 )
+            }
+
+            if (BuildConfig.DEBUG || BuildConfig.CANDIDATE_BUILD) {
+                androidx.compose.material3.Button(
+                    onClick = {
+                        accessScope.launch {
+                            val result = connectionViewModel?.runLocalVisionOnce()
+                                ?: com.axiomlabs.hermesrelay.localvision.LocalVisionResult("other", 0.0)
+                            android.widget.Toast.makeText(
+                                context,
+                                "${result.page} · ${"%.1f".format(result.elapsedMs)} ms",
+                                android.widget.Toast.LENGTH_SHORT,
+                            ).show()
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Local page detection")
+                }
             }
 
             // 5. Advanced safety controls. Sideload only — these features

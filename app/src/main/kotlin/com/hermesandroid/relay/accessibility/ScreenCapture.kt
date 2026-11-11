@@ -8,6 +8,7 @@ import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.Image
 import android.media.ImageReader
+import android.graphics.ImageFormat
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Handler
@@ -16,6 +17,7 @@ import android.util.DisplayMetrics
 import android.util.Log
 import android.view.WindowManager
 import com.hermesandroid.relay.data.RelayEndpointContract
+import com.axiomlabs.hermesrelay.localvision.RgbImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.withLock
@@ -190,6 +192,9 @@ class ScreenCapture(
     private val pendingCaptureRef = java.util.concurrent.atomic.AtomicReference<
         kotlinx.coroutines.CompletableDeferred<ByteArray>?
     >(null)
+    private val pendingLocalCaptureRef = java.util.concurrent.atomic.AtomicReference<
+        kotlinx.coroutines.CompletableDeferred<RgbImage>?
+    >(null)
     // === END PHASE3-bridge-ui-followup ===
 
     /**
@@ -264,6 +269,34 @@ class ScreenCapture(
         uploadViaMultipart(pngBytes)
     }
 
+    /** Capture one frame as raw RGB pixels without encoding or network I/O. */
+    suspend fun captureLocalFrame(): Result<RgbImage> = withContext(Dispatchers.IO) {
+        val projection = mediaProjectionProvider()
+            ?: return@withContext Result.failure(
+                IllegalStateException("MediaProjection not granted — enable Bridge screenshots in the app")
+            )
+        try {
+            Result.success(captureMutex.withLock {
+                var lastTimeout: CaptureTimeoutException? = null
+                for (attempt in 1..MAX_CAPTURE_ATTEMPTS) {
+                    try {
+                        return@withLock captureRgbFrame(projection)
+                    } catch (e: CaptureTimeoutException) {
+                        lastTimeout = e
+                        if (attempt < MAX_CAPTURE_ATTEMPTS) {
+                            releaseCache()
+                            delay(CAPTURE_RETRY_DELAY_MS)
+                        }
+                    }
+                }
+                throw lastTimeout ?: IOException("screen capture timed out")
+            })
+        } catch (e: Exception) {
+            Log.w(TAG, "local capture failed: ${e.message}")
+            Result.failure(e)
+        }
+    }
+
     /**
      * Release any cached VirtualDisplay / ImageReader / HandlerThread. Call
      * this when the MediaProjection is revoked (the holder's `onStop`
@@ -292,6 +325,9 @@ class ScreenCapture(
         // Fail any pending capture with a descriptive error so the caller
         // doesn't hang for the timeout.
         pendingCaptureRef.getAndSet(null)?.takeIf { it.isActive }?.completeExceptionally(
+            IOException("capture pipeline released before frame arrived")
+        )
+        pendingLocalCaptureRef.getAndSet(null)?.takeIf { it.isActive }?.completeExceptionally(
             IOException("capture pipeline released before frame arrived")
         )
     }
@@ -340,6 +376,30 @@ class ScreenCapture(
             )
         } catch (t: Throwable) {
             pendingCaptureRef.compareAndSet(deferred, null)
+            throw t
+        } finally {
+            detachCaptureSurface()
+        }
+    }
+
+    private suspend fun captureRgbFrame(projection: MediaProjection): RgbImage {
+        val metrics = DisplayMetrics()
+        @Suppress("DEPRECATION")
+        (context.getSystemService(Context.WINDOW_SERVICE) as WindowManager)
+            .defaultDisplay.getRealMetrics(metrics)
+        ensureCacheFor(projection, metrics.widthPixels, metrics.heightPixels, metrics.densityDpi)
+
+        val deferred = kotlinx.coroutines.CompletableDeferred<RgbImage>()
+        pendingLocalCaptureRef.getAndSet(deferred)?.takeIf { it.isActive }
+            ?.completeExceptionally(IOException("capture superseded by a newer request"))
+        return try {
+            attachCaptureSurface()
+            kotlinx.coroutines.withTimeout(captureTimeoutMs()) { deferred.await() }
+        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+            pendingLocalCaptureRef.compareAndSet(deferred, null)
+            throw CaptureTimeoutException("screen capture timed out after ${captureTimeoutMs()}ms")
+        } catch (t: Throwable) {
+            pendingLocalCaptureRef.compareAndSet(deferred, null)
             throw t
         } finally {
             detachCaptureSurface()
@@ -483,7 +543,10 @@ class ScreenCapture(
         // queued at the detach boundary.
         reader.setOnImageAvailableListener({ source ->
             val waiter = pendingCaptureRef.get()
-            if (waiter == null || !waiter.isActive) {
+            val localWaiter = pendingLocalCaptureRef.get()
+            if ((waiter == null || !waiter.isActive) &&
+                (localWaiter == null || !localWaiter.isActive)
+            ) {
                 runCatching { source.acquireLatestImage() }.getOrNull()?.close()
                 return@setOnImageAvailableListener
             }
@@ -491,12 +554,21 @@ class ScreenCapture(
             try {
                 image = source.acquireLatestImage()
                     ?: return@setOnImageAvailableListener
-                val png = imageToPngBytes(image, width, height)
-                if (pendingCaptureRef.compareAndSet(waiter, null)) {
-                    waiter.complete(png)
+                if (localWaiter != null && localWaiter.isActive) {
+                    val rgb = imageToRgbImage(image, width, height)
+                    if (pendingLocalCaptureRef.compareAndSet(localWaiter, null)) {
+                        localWaiter.complete(rgb)
+                    }
+                } else if (waiter != null) {
+                    val png = imageToPngBytes(image, width, height)
+                    if (pendingCaptureRef.compareAndSet(waiter, null)) {
+                        waiter.complete(png)
+                    }
                 }
             } catch (t: Throwable) {
-                if (pendingCaptureRef.compareAndSet(waiter, null)) {
+                if (localWaiter != null && pendingLocalCaptureRef.compareAndSet(localWaiter, null)) {
+                    localWaiter.completeExceptionally(t)
+                } else if (waiter != null && pendingCaptureRef.compareAndSet(waiter, null)) {
                     waiter.completeExceptionally(t)
                 }
             } finally {
@@ -504,6 +576,51 @@ class ScreenCapture(
             }
         }, handler)
         return reader
+    }
+
+    private fun imageToRgbImage(image: Image, width: Int, height: Int): RgbImage =
+        when (image.format) {
+            PixelFormat.RGBA_8888 -> rgbaToRgb(image, width, height)
+            ImageFormat.YUV_420_888 -> yuv420ToRgb(image, width, height)
+            else -> throw IOException("unsupported capture image format: ${image.format}")
+        }
+
+    private fun rgbaToRgb(image: Image, width: Int, height: Int): RgbImage {
+        val plane = image.planes[0]
+        val buffer = plane.buffer
+        val output = IntArray(width * height)
+        for (y in 0 until height) {
+            val row = y * plane.rowStride
+            for (x in 0 until width) {
+                val offset = row + x * plane.pixelStride
+                val red = buffer.get(offset).toInt() and 0xff
+                val green = buffer.get(offset + 1).toInt() and 0xff
+                val blue = buffer.get(offset + 2).toInt() and 0xff
+                output[y * width + x] = red shl 16 or (green shl 8) or blue
+            }
+        }
+        return RgbImage(width, height, output)
+    }
+
+    private fun yuv420ToRgb(image: Image, width: Int, height: Int): RgbImage {
+        val yPlane = image.planes[0]
+        val uPlane = image.planes[1]
+        val vPlane = image.planes[2]
+        val output = IntArray(width * height)
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val yy = yPlane.buffer.get(y * yPlane.rowStride + x * yPlane.pixelStride).toInt() and 0xff
+                val uvX = x / 2
+                val uvY = y / 2
+                val u = (uPlane.buffer.get(uvY * uPlane.rowStride + uvX * uPlane.pixelStride).toInt() and 0xff) - 128
+                val v = (vPlane.buffer.get(uvY * vPlane.rowStride + uvX * vPlane.pixelStride).toInt() and 0xff) - 128
+                val red = (yy + 1.402f * v).toInt().coerceIn(0, 255)
+                val green = (yy - 0.344136f * u - 0.714136f * v).toInt().coerceIn(0, 255)
+                val blue = (yy + 1.772f * u).toInt().coerceIn(0, 255)
+                output[y * width + x] = red shl 16 or (green shl 8) or blue
+            }
+        }
+        return RgbImage(width, height, output)
     }
 
     /**

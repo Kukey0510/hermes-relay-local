@@ -3326,6 +3326,17 @@ class ConnectionViewModel(application: Application) : AndroidViewModel(applicati
         },
     ) else null
 
+    private val localVisionRunner by lazy {
+        com.axiomlabs.hermesrelay.localvision.LocalVisionRunner(application)
+    }
+
+    /** Manual debug path: capture raw pixels and classify entirely on-device. */
+    suspend fun runLocalVisionOnce(): com.axiomlabs.hermesrelay.localvision.LocalVisionResult {
+        val frame = screenCapture?.captureLocalFrame()?.getOrNull()
+            ?: return com.axiomlabs.hermesrelay.localvision.LocalVisionResult("other", 0.0)
+        return localVisionRunner.detect(frame)
+    }
+
     // === PHASE3-safety-rails: safety manager + overlay wiring ===
     // Process-wide singletons — install() is idempotent and the overlay
     // host wires itself into ConfirmationOverlayHost.instance so the
