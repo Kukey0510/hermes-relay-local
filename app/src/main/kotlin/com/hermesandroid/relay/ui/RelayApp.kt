@@ -220,6 +220,7 @@ import com.hermesandroid.relay.viewmodel.resolveChatRuntimeStatus
 import com.hermesandroid.relay.network.relay.RelayVoiceClient
 import com.hermesandroid.relay.auth.AuthState
 import com.hermesandroid.relay.runtime.HermesRuntimeInitializationState
+import com.hermesandroid.relay.ui.state.rememberAppRuntimeState
 
 // Global snackbar host so any screen can surface a HumanError without
 // plumbing a host through every ViewModel. Provided by RelayApp below.
@@ -842,58 +843,29 @@ fun RelayApp() {
         }
     }
 
-    val coldStartAuthState by connectionViewModel.authState.collectAsState()
-    val currentPairedSession by connectionViewModel.currentPairedSession.collectAsState()
-    val selectedProfile by connectionViewModel.selectedProfile.collectAsState()
-    val effectiveSessionProfileName by connectionViewModel.effectiveSessionProfileName.collectAsState()
-    val currentChatSessionId by chatViewModel.currentSessionId.collectAsState()
-    val effectiveDisplayProfile by connectionViewModel.effectiveDisplayProfile.collectAsState()
-    val profileSelectionSettled by connectionViewModel.profileSelectionSettled.collectAsState()
-    val agentProfiles by connectionViewModel.agentProfiles.collectAsState()
-    val activeConnectionId by connectionViewModel.activeConnectionId.collectAsState()
-    val activeConnection by connectionViewModel.activeConnection.collectAsState()
-    val connectionStoreHydrated by
-        connectionViewModel.connectionStore.isHydrated.collectAsState()
-    val supervisedModeStore = remember(applicationContext) {
-        SupervisedModeStore(applicationContext)
-    }
-    val supervisedPolicyState = produceState<Pair<String?, SupervisedModePolicy>?>(
-        initialValue = null,
-        key1 = activeConnectionId,
-        key2 = supervisedModeStore,
-    ) {
-        val connectionId = activeConnectionId
-        if (connectionId == null) {
-            value = null to SupervisedModePolicy()
-        } else {
-            supervisedModeStore.policyFlow(connectionId).collect { policy ->
-                value = connectionId to policy
-            }
-        }
-    }
-    val ownedSupervisedPolicyState = supervisedPolicyState.value
-        ?.takeIf { (ownerConnectionId, _) -> ownerConnectionId == activeConnectionId }
-    // Keep navigation mounted while the new connection owner's supervised
-    // policy loads. Protected destinations are covered later in the NavHost
-    // box; returning here would dispose the controller and replay cold start.
-    val relayNavigationHydrated = isRelayNavigationHydrated(
-        connectionStoreHydrated = connectionStoreHydrated,
-        activeConnectionId = activeConnectionId,
-        supervisedPolicyHydrated = ownedSupervisedPolicyState != null,
+    val appRuntimeState = rememberAppRuntimeState(
+        applicationContext = applicationContext,
+        connectionViewModel = connectionViewModel,
+        chatViewModel = chatViewModel,
     )
-    val supervisedPolicy = ownedSupervisedPolicyState?.second ?: SupervisedModePolicy()
-    val supervisedPinnedProfile = supervisedPolicy.pinnedProfileName?.let { name ->
-        agentProfiles.firstOrNull { it.name.equals(name, ignoreCase = true) }
-    }
-    val supervisedProfileConfirmed = !supervisedPolicy.enabled || (
-        profileSelectionSettled &&
-            supervisedPinnedProfile != null &&
-            selectedProfile?.name.equals(supervisedPinnedProfile.name, ignoreCase = true)
-        )
-    val chatSupervisedPolicy = if (supervisedPolicy.enabled && !supervisedProfileConfirmed) {
-        supervisedPolicy.copy(pinnedProfileName = null)
-    } else supervisedPolicy
-    var parentAccessUnlocked by remember(activeConnectionId) { mutableStateOf(false) }
+    val coldStartAuthState = appRuntimeState.coldStartAuthState
+    val currentPairedSession = appRuntimeState.currentPairedSession
+    val selectedProfile = appRuntimeState.selectedProfile
+    val effectiveSessionProfileName = appRuntimeState.effectiveSessionProfileName
+    val currentChatSessionId = appRuntimeState.currentChatSessionId
+    val effectiveDisplayProfile = appRuntimeState.effectiveDisplayProfile
+    val profileSelectionSettled = appRuntimeState.profileSelectionSettled
+    val agentProfiles = appRuntimeState.agentProfiles
+    val activeConnectionId = appRuntimeState.activeConnectionId
+    val activeConnection = appRuntimeState.activeConnection
+    val connectionStoreHydrated = appRuntimeState.connectionStoreHydrated
+    val supervisedModeStore = appRuntimeState.supervisedModeStore
+    val supervisedPolicyState = appRuntimeState.supervisedPolicyState
+    val relayNavigationHydrated = appRuntimeState.relayNavigationHydrated
+    val supervisedPolicy = appRuntimeState.supervisedPolicy
+    val supervisedPinnedProfile = appRuntimeState.supervisedPinnedProfile
+    val chatSupervisedPolicy = appRuntimeState.chatSupervisedPolicy
+    var parentAccessUnlocked by appRuntimeState.parentAccessUnlocked
 
     LaunchedEffect(
         relayNavigationHydrated,
@@ -916,10 +888,9 @@ fun RelayApp() {
             chatViewModel.activateGatewayProfile(pinned)
         }
     }
-    val connections by connectionViewModel.connections.collectAsState()
-
-    val standardVoiceAvailability by connectionViewModel.standardVoiceAvailability.collectAsState()
-    val relayVoiceReady by connectionViewModel.relayVoiceReady.collectAsState()
+    val connections = appRuntimeState.connections
+    val standardVoiceAvailability = appRuntimeState.standardVoiceAvailability
+    val relayVoiceReady = appRuntimeState.relayVoiceReady
 
     val profileInspectorHttpClient = remember {
         okhttp3.OkHttpClient.Builder()
