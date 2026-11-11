@@ -1,0 +1,69 @@
+name: localvision-apk
+
+# 只为 IDEA-011 出安装包：sideload 跟踪的 debug + candidate 两个变体，
+# candidate 包名带 .candidate 后缀，可以和线上 relay 共存。
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'app/src/main/assets/**'
+      - 'app/src/main/kotlin/com/axiomlabs/hermesrelay/localvision/**'
+      - '.github/workflows/localvision-apk.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK platform
+        run: |
+          set -uo pipefail
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          echo "SDK=$SDK"
+          SM="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SM" --licenses >/dev/null 2>&1 || true
+          for pkg in "platforms;android-37.0" "platforms;android-37.1" "platforms;android-37.2" "platforms;android-37"; do
+            echo "--- try $pkg"
+            if "$SM" "$pkg" >/dev/null 2>&1; then echo "installed $pkg"; break; fi
+          done
+          "$SM" "platform-tools" >/dev/null 2>&1 || true
+          echo "--- installed platforms:"
+          ls "$SDK/platforms" || true
+          # AGP 的 compileSdk = 37 会找 platforms/android-37
+          if [ ! -e "$SDK/platforms/android-37" ]; then
+            CAND=$(ls -d "$SDK"/platforms/android-37.* 2>/dev/null | head -1 || true)
+            if [ -n "$CAND" ]; then ln -sfn "$CAND" "$SDK/platforms/android-37"; echo "linked android-37 -> $CAND"; else echo "no android-37* found"; fi
+          fi
+
+      - name: Build sideload debug + candidate
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleSideloadDebug :app:assembleSideloadCandidate --no-daemon --stacktrace
+
+      - name: List APKs
+        if: always()
+        run: find app/build/outputs/apk -name '*.apk' -printf '%p  %s bytes\n' 2>/dev/null || echo "no apk dir"
+
+      - name: Upload to release
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-r${{ github.run_number }}
+          name: localvision apk r${{ github.run_number }}
+          body: |
+            自动构建（${{ github.sha }}）
+            candidate 变体包名带 .candidate 后缀，可与现有 relay 共存。
+          files: app/build/outputs/apk/**/*.apk
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
