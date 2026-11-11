@@ -189,10 +189,10 @@ JAVA_HOME=/opt/jdk17 ANDROID_HOME=/opt/android-sdk ./gradlew :app:compileCandida
 
 要求：
 
-1. candidate 变体 `applicationIdSuffix` `.candidate` → `.script`（包名变 `com.axiomlabs.hermesrelay.sideload.script`）
-2. candidate 变体加 `resValue("string", "app_name", "Hermes Script")`（debug/sideload 变体的名字不要变）
-3. `versionCode` 支持 `providers.gradleProperty("hermes.versionCode")` 覆盖，`libs.versions.toml` 里的值作基线
-4. candidate 的 `versionNameSuffix` 改成 `-script-r<批次号>`，批次号取同一个 `hermes.versionCode` 属性（缺省时用原后缀）
+1. candidate 是 `buildTypes` 里的构建类型（不是 flavor），`applicationIdSuffix` `.candidate` → `.script`（最终包名变 `com.axiomlabs.hermesrelay.sideload.script`）
+2. candidate 加 `resValue("string", "app_name", "Hermes Script")`（`sideload` flavor 与 `debug` 构建类型里的名字不要变）
+3. `versionCode` 现在是 `libs.versions.appVersionCode.get().toInt()`，改成可被 `providers.gradleProperty("hermes.versionCode")` 覆盖，toml 里的值作基线
+4. candidate 的 `versionNameSuffix` 改成 `-script-r<批次号>`，批次号取同一个 `hermes.versionCode` 属性（没传属性时保持原后缀）
 5. workflow 里给 gradle 传 `-Phermes.versionCode=$((10000 + github.run_number))`
 
 ### 验收
