@@ -100,9 +100,10 @@ class LocalVisionBenchTest {
     }
 
     private fun Path.unixPath(): String = joinToString("/") { it.name }
-    private fun String.jsonEscape(): String = replace("\\", "\\\\").replace("\"", "\\\"")
-    private fun Double.formatMillis(): String = java.lang.String.format(java.util.Locale.ROOT, "%.3f", this)
-    private fun summaryJson(total: Int, correct: Int, median: Double, p99: Double): String =
-        "{\"total\":$total,\"correct\":$correct,\"median_ms\":${median.formatMillis()}," +
-            "\"p99_ms\":${p99.formatMillis()}}"
 }
+
+private fun String.jsonEscape(): String = replace("\\", "\\\\").replace("\"", "\\\"")
+private fun Double.formatMillis(): String = java.lang.String.format(java.util.Locale.ROOT, "%.3f", this)
+private fun summaryJson(total: Int, correct: Int, median: Double, p99: Double): String =
+    "{\"total\":$total,\"correct\":$correct,\"median_ms\":${median.formatMillis()}," +
+        "\"p99_ms\":${p99.formatMillis()}}"
