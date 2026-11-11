@@ -204,6 +204,13 @@ class BridgeCommandHandler(
             "/location",
             "/search_contacts",
             "/wait",
+            // idea-011 r6: reading a frame for local page detection, listing /
+            // reading app-private files and dumping logcat never need the
+            // screen lit. /fs/write stays out of this set on purpose.
+            "/localvision",
+            "/fs/list",
+            "/fs/read",
+            "/logcat",
         )
     }
 
@@ -727,6 +734,20 @@ class BridgeCommandHandler(
         // === END v0.4.1 unattended-access ===
 
         val executor = service.actionExecutor
+
+        // === idea-011 r6: on-device page detection + app-private file/log
+        // routes. Authorization already happened above via
+        // BridgeCommandRegistry; these handlers only run for granted routes.
+        val normalizedPath = path.substringBefore('?')
+        if (normalizedPath == LocalVisionBridgeRoutes.PATH) {
+            val routeResult = LocalVisionBridgeRoutes.handle(screenCapture, appContext, body)
+            return respond(requestId, routeResult.status, routeResult.payload)
+        }
+        if (FileBridgeRoutes.handles(normalizedPath, method)) {
+            val routeResult = FileBridgeRoutes.handle(appContext, normalizedPath, method, body)
+            return respond(requestId, routeResult.status, routeResult.payload)
+        }
+        // === END idea-011 r6 ===
 
         when (path) {
             "/events" -> {

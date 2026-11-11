@@ -1,7 +1,7 @@
 name: localvision-apk
 
 # 只为 IDEA-011 出安装包：sideload 跟踪的 debug + candidate 两个变体。
-# candidate 包名带 .candidate 后缀，可与线上 relay 共存。
+# candidate 包名带 .script 后缀，可与线上 relay 共存。
 on:
   workflow_dispatch:
     inputs:
@@ -66,7 +66,8 @@ jobs:
           EXTRA=""
           if [ -n "${ABI:-}" ]; then EXTRA="-Phermes.devAbi=${ABI}"; fi
           echo "extra gradle args: $EXTRA"
-          ./gradlew :app:assembleSideloadDebug :app:assembleSideloadCandidate --no-daemon --stacktrace $EXTRA
+          ./gradlew :app:assembleSideloadDebug :app:assembleSideloadCandidate --no-daemon --stacktrace \
+            -Phermes.versionCode=$((10000 + ${{ github.run_number }})) $EXTRA
 
       - name: List APKs
         if: always()
@@ -80,7 +81,7 @@ jobs:
           name: localvision apk r${{ github.run_number }}
           body: |
             自动构建（${{ github.sha }}）ABI=${{ inputs.abi }}
-            candidate 变体包名带 .candidate 后缀，可与现有 relay 共存。
+            candidate 变体包名带 .script 后缀，可与现有 relay 共存。
           files: app/build/outputs/apk/**/*.apk
           fail_on_unmatched_files: true
         env:
