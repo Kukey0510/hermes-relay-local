@@ -1,9 +1,14 @@
 name: localvision-apk
 
-# 只为 IDEA-011 出安装包：sideload 跟踪的 debug + candidate 两个变体，
-# candidate 包名带 .candidate 后缀，可以和线上 relay 共存。
+# 只为 IDEA-011 出安装包：sideload 跟踪的 debug + candidate 两个变体。
+# candidate 包名带 .candidate 后缀，可与线上 relay 共存。
 on:
   workflow_dispatch:
+    inputs:
+      abi:
+        description: '只编单个 ABI（arm64-v8a / armeabi-v7a），留空=全 ABI 通用包'
+        required: false
+        default: ''
   push:
     branches: [main]
     paths:
@@ -25,6 +30,15 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('**/*.gradle*', '**/libs.versions.toml', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-
+
       - name: Install Android SDK platform
         run: |
           set -uo pipefail
@@ -39,16 +53,20 @@ jobs:
           "$SM" "platform-tools" >/dev/null 2>&1 || true
           echo "--- installed platforms:"
           ls "$SDK/platforms" || true
-          # AGP 的 compileSdk = 37 会找 platforms/android-37
           if [ ! -e "$SDK/platforms/android-37" ]; then
             CAND=$(ls -d "$SDK"/platforms/android-37.* 2>/dev/null | head -1 || true)
             if [ -n "$CAND" ]; then ln -sfn "$CAND" "$SDK/platforms/android-37"; echo "linked android-37 -> $CAND"; else echo "no android-37* found"; fi
           fi
 
       - name: Build sideload debug + candidate
+        env:
+          ABI: ${{ inputs.abi }}
         run: |
           chmod +x gradlew
-          ./gradlew :app:assembleSideloadDebug :app:assembleSideloadCandidate --no-daemon --stacktrace
+          EXTRA=""
+          if [ -n "${ABI:-}" ]; then EXTRA="-Phermes.devAbi=${ABI}"; fi
+          echo "extra gradle args: $EXTRA"
+          ./gradlew :app:assembleSideloadDebug :app:assembleSideloadCandidate --no-daemon --stacktrace $EXTRA
 
       - name: List APKs
         if: always()
@@ -61,7 +79,7 @@ jobs:
           tag_name: apk-r${{ github.run_number }}
           name: localvision apk r${{ github.run_number }}
           body: |
-            自动构建（${{ github.sha }}）
+            自动构建（${{ github.sha }}）ABI=${{ inputs.abi }}
             candidate 变体包名带 .candidate 后缀，可与现有 relay 共存。
           files: app/build/outputs/apk/**/*.apk
           fail_on_unmatched_files: true
