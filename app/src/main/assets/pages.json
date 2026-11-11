@@ -2,7 +2,8 @@
   "pages": {
     "list": {
       "checks": [
-        {"type": "color", "area": [608, 400, 8, 8], "expect": [75, 97, 138], "tol": 8}
+        {"type": "color", "area": [608, 400, 8, 8], "expect": [75, 97, 138], "tol": 8},
+        {"type": "template", "file": "list-back-arrow.png", "area": [64, 16, 80, 80], "min": 0.85}
       ]
     },
     "info": {
