@@ -2,6 +2,7 @@ package com.hermesandroid.relay.network.relay
 
 import android.content.Context
 import android.os.SystemClock
+import com.axiomlabs.hermesrelay.localvision.FrameArchive
 import com.axiomlabs.hermesrelay.localvision.LocalVisionRunner
 import com.hermesandroid.relay.accessibility.ScreenCapture
 import kotlinx.coroutines.delay
@@ -28,6 +29,8 @@ object LocalVisionBridgeRoutes {
 
         val delayMs = ((body["delay_ms"] as? JsonPrimitive)?.intOrNull ?: 0).coerceIn(0, 5_000)
         val withFrame = (body["with_frame"] as? JsonPrimitive)?.booleanOrNull ?: true
+        val saveFrame = (body["save_frame"] as? JsonPrimitive)?.booleanOrNull ?: false
+        val saveUnknown = (body["save_unknown"] as? JsonPrimitive)?.booleanOrNull ?: true
         if (delayMs > 0) delay(delayMs.toLong())
 
         val started = SystemClock.elapsedRealtime()
@@ -42,11 +45,19 @@ object LocalVisionBridgeRoutes {
             LocalVisionRunner(ctx, java.io.File(ctx.filesDir, "localvision")).detect(image)
         }
         val frame = screenCapture.lastFrameInfo
+        val page = detection?.page ?: "other"
+        val archiveTag = when {
+            saveFrame -> "manual"
+            page == "other" && saveUnknown -> "unknown"
+            else -> null
+        }
+        val archived = archiveTag?.let { FrameArchive.save(appContext, image, it) }
         return Result(200, buildJsonObject {
             put("ok", true)
-            put("page", detection?.page ?: "other")
+            put("page", page)
             put("elapsed_ms", SystemClock.elapsedRealtime() - started)
             put("source", detection?.source ?: "assets")
+            if (archived != null) put("frame_saved", archived.file.name)
             if (withFrame && frame != null) {
                 putJsonObject("frame") {
                     put("width", frame.width)
