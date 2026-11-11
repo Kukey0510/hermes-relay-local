@@ -578,12 +578,35 @@ class ScreenCapture(
         return reader
     }
 
-    private fun imageToRgbImage(image: Image, width: Int, height: Int): RgbImage =
-        when (image.format) {
+    /** Diagnostic string for the most recent local-frame conversion (debug UI only). */
+    @Volatile
+    var lastFrameDebug: String = ""
+        private set
+
+    private fun imageToRgbImage(image: Image, width: Int, height: Int): RgbImage {
+        val rgb = when (image.format) {
             PixelFormat.RGBA_8888 -> rgbaToRgb(image, width, height)
             ImageFormat.YUV_420_888 -> yuv420ToRgb(image, width, height)
             else -> throw IOException("unsupported capture image format: ${image.format}")
         }
+        lastFrameDebug = buildString {
+            append(if (image.format == PixelFormat.RGBA_8888) "RGBA" else "YUV420")
+            append(" ").append(width).append("x").append(height)
+            image.planes.forEachIndexed { index, plane ->
+                append(" p").append(index)
+                    .append("(rs=").append(plane.rowStride)
+                    .append(",ps=").append(plane.pixelStride).append(")")
+            }
+            val pixels = rgb.rgb
+            if (pixels.isNotEmpty()) {
+                append(" px@").append(pixels.size / 2).append("=")
+                    .append(String.format("#%06X", pixels[pixels.size / 2] and 0xFFFFFF))
+                append(" px@").append(pixels.size / 4).append("=")
+                    .append(String.format("#%06X", pixels[pixels.size / 4] and 0xFFFFFF))
+            }
+        }
+        return rgb
+    }
 
     private fun rgbaToRgb(image: Image, width: Int, height: Int): RgbImage {
         val plane = image.planes[0]

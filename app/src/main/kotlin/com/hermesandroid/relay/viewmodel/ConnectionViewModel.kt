@@ -3337,6 +3337,42 @@ class ConnectionViewModel(application: Application) : AndroidViewModel(applicati
         return localVisionRunner.detect(frame)
     }
 
+    /**
+     * Debug probe used by the Bridge screen button: waits [delayMs] so the
+     * caller can switch to the target app, then captures one raw frame and
+     * classifies it locally. Runs on [viewModelScope] so backgrounding the
+     * app does not cancel the probe. Never throws — failures come back as a
+     * diagnostic line.
+     */
+    fun startLocalVisionProbe(
+        delayMs: Long = 3000L,
+        onResult: (String) -> Unit,
+    ) {
+        viewModelScope.launch {
+            if (delayMs > 0L) kotlinx.coroutines.delay(delayMs)
+            val capture = screenCapture
+            val stamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+                .format(java.util.Date())
+            if (capture == null) {
+                onResult("$stamp  n/a  (sideload build only)")
+                return@launch
+            }
+            val frame = capture.captureLocalFrame()
+            val line = frame.fold(
+                onSuccess = { image ->
+                    val result = localVisionRunner.detect(image)
+                    "$stamp  ${result.page}  ${"%.1f".format(result.elapsedMs)}ms  " +
+                        "${image.width}x${image.height}  ${capture.lastFrameDebug}"
+                },
+                onFailure = { error ->
+                    "$stamp  error  ${error.javaClass.simpleName}: ${error.message}  " +
+                        capture.lastFrameDebug
+                },
+            )
+            onResult(line)
+        }
+    }
+
     // === PHASE3-safety-rails: safety manager + overlay wiring ===
     // Process-wide singletons — install() is idempotent and the overlay
     // host wires itself into ConfirmationOverlayHost.instance so the

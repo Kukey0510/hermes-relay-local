@@ -167,6 +167,7 @@ fun BridgeScreen(
 
     val context = LocalContext.current
     val accessScope = androidx.compose.runtime.rememberCoroutineScope()
+    var probeLines by remember { mutableStateOf(emptyList<String>()) }
     val accessSavedMessage = stringResource(R.string.bridge_access_saved_review_android)
     val timedAccessEndedMessage = stringResource(R.string.bridge_timed_ended_snackbar)
 
@@ -555,19 +556,26 @@ fun BridgeScreen(
             if (BuildConfig.DEBUG || BuildConfig.CANDIDATE_BUILD) {
                 androidx.compose.material3.Button(
                     onClick = {
-                        accessScope.launch {
-                            val result = connectionViewModel?.runLocalVisionOnce()
-                                ?: com.axiomlabs.hermesrelay.localvision.LocalVisionResult("other", 0.0)
-                            android.widget.Toast.makeText(
-                                context,
-                                "${result.page} · ${"%.1f".format(result.elapsedMs)} ms",
-                                android.widget.Toast.LENGTH_SHORT,
-                            ).show()
+                        android.widget.Toast.makeText(
+                            context,
+                            "3 秒后抓帧，请立刻切到目标页面",
+                            android.widget.Toast.LENGTH_SHORT,
+                        ).show()
+                        connectionViewModel?.startLocalVisionProbe(3000L) { line ->
+                            probeLines = (listOf(line) + probeLines).take(8)
                         }
                     },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text("Local page detection")
+                    Text("Local page detection (3s delay)")
+                }
+                probeLines.forEach { line ->
+                    Text(
+                        text = line,
+                        style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                    )
                 }
             }
 
