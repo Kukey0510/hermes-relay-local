@@ -159,6 +159,11 @@ class BridgeCommandHandler(
     // handler no-ops (used by tests that don't care about the log).
     private val onActivity: ((com.hermesandroid.relay.data.BridgeActivityEntry) -> Unit)? = null,
     // === END v0.4.1 polish ===
+    // Application context for routes that need on-device storage roots
+    // (/localvision hot-reload dir, /fs/*, /logcat). Optional so unit tests
+    // that build the handler without an app graph keep compiling; routes
+    // that need it fail closed with a 503 when it is null.
+    private val appContext: android.content.Context? = null,
 ) {
 
     companion object {
