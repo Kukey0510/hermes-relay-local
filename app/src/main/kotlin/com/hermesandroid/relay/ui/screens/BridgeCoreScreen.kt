@@ -20,6 +20,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Notifications
@@ -41,6 +42,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -72,6 +74,7 @@ fun BridgeCoreScreen(
     onNavigateToChat: () -> Unit = {},
     onNavigateToManage: () -> Unit = {},
     onNavigateToTerminal: () -> Unit,
+    onNavigateToBotMode: () -> Unit = {},
     onNavigateToVoiceSettings: () -> Unit,
     onNavigateToNotificationCompanion: () -> Unit,
     onNavigateToMediaSettings: () -> Unit,
@@ -247,6 +250,14 @@ fun BridgeCoreScreen(
                 subtitle = stringResource(R.string.bridge_core_terminal_sub),
                 onClick = onNavigateToTerminal,
                 selected = relayConnected,
+                modifier = Modifier.testTag("bridge.terminal"),
+            )
+            RelayNavTile(
+                icon = Icons.Filled.Groups,
+                title = stringResource(R.string.bridge_quick_botmode),
+                subtitle = stringResource(R.string.bridge_quick_botmode_subtitle),
+                onClick = onNavigateToBotMode,
+                modifier = Modifier.testTag("bridge.botmode"),
             )
             RelayNavTile(
                 icon = Icons.Filled.GraphicEq,

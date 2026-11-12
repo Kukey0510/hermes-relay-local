@@ -1658,85 +1658,6 @@ internal fun AppScaffold() {
                     shouldShowConnectionFooter(voiceUiState.voiceMode, voicePresentationMode)
                 ) {
                     Column {
-                        if (
-                            !supervisedPolicy.enabled ||
-                            supervisedPolicy.visibility.resolved().showTechnicalRoute
-                        ) {
-                            val footerRoute = resolveFooterRouteCandidate(
-                                runtimeStatus = appChatRuntimeStatus,
-                                activeEndpoint = activeEndpoint,
-                                connection = activeConnection,
-                                effectiveDashboardUrl = effectiveDashboardUrl,
-                            )
-                            val routeLabel = resolveFooterRouteLabel(
-                                runtimeStatus = appChatRuntimeStatus,
-                                route = footerRoute,
-                                fallbackLabel = activeConnection?.label
-                                    ?: stringResource(R.string.status_no_route),
-                            )
-                            val transportStatus = resolveChatTransportStatus(
-                                streamingEndpoint = connectionViewModel.resolveActiveStreamingEndpoint(
-                                    streamingEndpoint,
-                                ),
-                                gatewayAvailability = gatewayAvailability,
-                                serverCapabilities = serverCapabilities,
-                            )
-                            val transportRouteLabel = if (
-                                transportStatus.tier == ChatTransportTier.Offline
-                            ) "" else routeLabel
-                            val profileLabel = AgentDisplay.profileDisplayName(effectiveDisplayProfile)
-                                ?: stringResource(R.string.status_profile_default)
-                            val displayProfile = effectiveDisplayProfile
-                            val modelLabel = AgentDisplay.displayModelName(gatewayCurrentModel)
-                                ?: AgentDisplay.displayModelName(displayProfile?.model)
-                                ?: AgentDisplay.displayModelName(serverModelName)
-                                ?: stringResource(R.string.status_model_pending)
-                            val footerModelLabel = compactFooterModelLabel(modelLabel)
-                            val openConnections: (() -> Unit)? = if (
-                                isSupervisedRouteContentAllowed(
-                                    supervisedEnabled = supervisedPolicy.enabled,
-                                    parentAccessUnlocked = parentAccessForCurrentRoute,
-                                    currentRoute = Screen.ConnectionsSettings.route,
-                                )
-                            ) {
-                                {
-                                    navController.navigate(Screen.ConnectionsSettings.route) {
-                                        launchSingleTop = true
-                                    }
-                                }
-                            } else {
-                                null
-                            }
-                            RelayStatusStrip(
-                                leadingBadge = {
-                                    ChatTransportStatusBadge(
-                                        status = transportStatus,
-                                        onClick = openConnections,
-                                    )
-                                },
-                                routeLabel = transportRouteLabel,
-                                trailing = "$footerModelLabel / $profileLabel",
-                                // Tap the persistent status/route readout to open
-                                // Connections — preserves the affordance the dropped
-                                // header endpoint chip used to provide.
-                                onClick = openConnections,
-                                securityGlyph = if (transportStatus.tier != ChatTransportTier.Offline) {
-                                    { ConnectionSecurityGlyph(connectionSecurity) }
-                                } else {
-                                    null
-                                },
-                                // Routine in-progress reconnect surfaces here (amber cue)
-                                // instead of a take-space banner or a floating toast.
-                                reconnecting = connectionReconnecting,
-                                maxContentWidth = chatResponsiveLayout(
-                                    LocalConfiguration.current.screenWidthDp,
-                                ).chromeMaxWidth,
-                                modifier = Modifier.petPerchSurface(
-                                    key = APP_STATUS_PET_WALK_REGION,
-                                    routes = APP_STATUS_PET_ROUTES,
-                                ),
-                            )
-                        }
                         if (currentRoute?.substringBefore('?') != "chat") NavigationBar {
                             BottomTab.entries.forEach { tab ->
                                 NavigationBarItem(
@@ -2440,6 +2361,76 @@ internal fun AppScaffold() {
                     }
                 }
                 composable(Screen.Bridge.route) {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        if (
+                            !supervisedPolicy.enabled ||
+                            supervisedPolicy.visibility.resolved().showTechnicalRoute
+                        ) {
+                            val footerRoute = resolveFooterRouteCandidate(
+                                runtimeStatus = appChatRuntimeStatus,
+                                activeEndpoint = activeEndpoint,
+                                connection = activeConnection,
+                                effectiveDashboardUrl = effectiveDashboardUrl,
+                            )
+                            val routeLabel = resolveFooterRouteLabel(
+                                runtimeStatus = appChatRuntimeStatus,
+                                route = footerRoute,
+                                fallbackLabel = activeConnection?.label
+                                    ?: stringResource(R.string.status_no_route),
+                            )
+                            val transportStatus = resolveChatTransportStatus(
+                                streamingEndpoint = connectionViewModel.resolveActiveStreamingEndpoint(
+                                    streamingEndpoint,
+                                ),
+                                gatewayAvailability = gatewayAvailability,
+                                serverCapabilities = serverCapabilities,
+                            )
+                            val transportRouteLabel = if (
+                                transportStatus.tier == ChatTransportTier.Offline
+                            ) "" else routeLabel
+                            val profileLabel = AgentDisplay.profileDisplayName(effectiveDisplayProfile)
+                                ?: stringResource(R.string.status_profile_default)
+                            val modelLabel = AgentDisplay.displayModelName(gatewayCurrentModel)
+                                ?: AgentDisplay.displayModelName(effectiveDisplayProfile?.model)
+                                ?: AgentDisplay.displayModelName(serverModelName)
+                                ?: stringResource(R.string.status_model_pending)
+                            val openConnections: (() -> Unit)? = if (
+                                isSupervisedRouteContentAllowed(
+                                    supervisedEnabled = supervisedPolicy.enabled,
+                                    parentAccessUnlocked = parentAccessForCurrentRoute,
+                                    currentRoute = Screen.ConnectionsSettings.route,
+                                )
+                            ) {
+                                {
+                                    navController.navigate(Screen.ConnectionsSettings.route) {
+                                        launchSingleTop = true
+                                    }
+                                }
+                            } else null
+                            RelayStatusStrip(
+                                leadingBadge = {
+                                    ChatTransportStatusBadge(
+                                        status = transportStatus,
+                                        onClick = openConnections,
+                                    )
+                                },
+                                routeLabel = transportRouteLabel,
+                                trailing = "${compactFooterModelLabel(modelLabel)} / $profileLabel",
+                                onClick = openConnections,
+                                securityGlyph = if (transportStatus.tier != ChatTransportTier.Offline) {
+                                    { ConnectionSecurityGlyph(connectionSecurity) }
+                                } else null,
+                                reconnecting = connectionReconnecting,
+                                maxContentWidth = chatResponsiveLayout(
+                                    LocalConfiguration.current.screenWidthDp,
+                                ).chromeMaxWidth,
+                                modifier = Modifier.petPerchSurface(
+                                    key = APP_STATUS_PET_WALK_REGION,
+                                    routes = APP_STATUS_PET_ROUTES,
+                                ),
+                            )
+                        }
+                        Box(modifier = Modifier.weight(1f)) {
                     if (coldStartAuthState !is AuthState.Paired) {
                         PowerFeatureGateScreen(
                             title = stringResource(R.string.power_gate_bridge_title),
@@ -2486,6 +2477,15 @@ internal fun AppScaffold() {
                                         launchSingleTop = true
                                     }
                                 },
+                                onNavigateToTerminal = {
+                                    navController.navigate(Screen.Terminal.route) { launchSingleTop = true }
+                                },
+                                onNavigateToBotMode = {
+                                    navController.navigate(Screen.BotMode.route) { launchSingleTop = true }
+                                },
+                                onNavigateToPermissions = {
+                                    navController.navigate(Screen.PermissionsSettings.route) { launchSingleTop = true }
+                                },
                             )
                         } else {
                             BridgeCoreScreen(
@@ -2519,12 +2519,11 @@ internal fun AppScaffold() {
                                 },
                                 onNavigateToTerminal = {
                                     navController.navigate(Screen.Terminal.route) {
-                                        popUpTo(navController.graph.findStartDestination().id) {
-                                            saveState = true
-                                        }
                                         launchSingleTop = true
-                                        restoreState = true
                                     }
+                                },
+                                onNavigateToBotMode = {
+                                    navController.navigate(Screen.BotMode.route) { launchSingleTop = true }
                                 },
                                 onNavigateToVoiceSettings = {
                                     navController.navigate(Screen.VoiceSettings.route)
@@ -2544,6 +2543,8 @@ internal fun AppScaffold() {
                                     }
                                 },
                             )
+                        }
+                    }
                         }
                     }
                 }

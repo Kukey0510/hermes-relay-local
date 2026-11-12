@@ -4562,4 +4562,11 @@
     <string name="tab_settings">设置</string>
     <string name="scripts_placeholder">游戏脚本清单即将上线</string>
     <string name="session_list_title">全部会话</string>
+    <string name="bridge_quick_screenshot">截图 / 读屏</string>
+    <string name="bridge_quick_tap">点按 / 手势</string>
+    <string name="bridge_quick_terminal">终端</string>
+    <string name="bridge_quick_botmode">Bot 模式</string>
+    <string name="bridge_quick_botmode_subtitle">打开多代理工作区</string>
+    <string name="bridge_quick_permissions">权限</string>
+    <string name="bridge_quick_manage">管理</string>
 </resources>

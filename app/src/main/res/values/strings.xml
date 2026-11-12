@@ -4696,4 +4696,11 @@
     <string name="tab_settings">Settings</string>
     <string name="scripts_placeholder">Game scripts are coming soon</string>
     <string name="session_list_title">Conversations</string>
+    <string name="bridge_quick_screenshot">Screenshot / read</string>
+    <string name="bridge_quick_tap">Tap / gestures</string>
+    <string name="bridge_quick_terminal">Terminal</string>
+    <string name="bridge_quick_botmode">Bot Mode</string>
+    <string name="bridge_quick_botmode_subtitle">Open the multi-agent workspace</string>
+    <string name="bridge_quick_permissions">Permissions</string>
+    <string name="bridge_quick_manage">Manage</string>
 </resources>

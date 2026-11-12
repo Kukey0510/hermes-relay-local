@@ -29,6 +29,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Dashboard
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -51,6 +57,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
@@ -134,6 +141,9 @@ fun BridgeScreen(
     onNavigateToChat: () -> Unit = {},
     onNavigateToManage: () -> Unit = {},
     onNavigateToSettings: () -> Unit = {},
+    onNavigateToTerminal: () -> Unit = {},
+    onNavigateToBotMode: () -> Unit = {},
+    onNavigateToPermissions: () -> Unit = {},
     returnTitle: String? = null,
     returnSubtitle: String = "",
     returnLabel: String = "",
@@ -331,6 +341,14 @@ fun BridgeScreen(
                     onClick = onReturn,
                 )
             }
+            BridgeQuickActions(
+                onScreenshot = { openTimedSheet() },
+                onTap = { openTimedSheet() },
+                onTerminal = onNavigateToTerminal,
+                onBotMode = onNavigateToBotMode,
+                onPermissions = onNavigateToPermissions,
+                onManage = onNavigateToManage,
+            )
             RelayHeroPanel(
                 title = if (relayReady) stringResource(R.string.bridge_paired_title) else stringResource(R.string.bridge_staged_title),
                 subtitle = if (relayReady) {
@@ -713,6 +731,66 @@ fun BridgeScreen(
                 }
             },
         )
+    }
+}
+
+@Composable
+private fun BridgeQuickActions(
+    onScreenshot: () -> Unit,
+    onTap: () -> Unit,
+    onTerminal: () -> Unit,
+    onBotMode: () -> Unit,
+    onPermissions: () -> Unit,
+    onManage: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        listOf(
+            listOf(
+                Triple(Icons.Filled.CameraAlt, R.string.bridge_quick_screenshot, "bridge.screenshot") to onScreenshot,
+                Triple(Icons.Filled.TouchApp, R.string.bridge_quick_tap, "bridge.tap") to onTap,
+            ),
+            listOf(
+                Triple(Icons.Filled.Terminal, R.string.bridge_quick_terminal, "bridge.terminal") to onTerminal,
+                Triple(Icons.Filled.SmartToy, R.string.bridge_quick_botmode, "bridge.botmode") to onBotMode,
+            ),
+            listOf(
+                Triple(Icons.Filled.Security, R.string.bridge_quick_permissions, "bridge.permissions") to onPermissions,
+                Triple(Icons.Filled.Dashboard, R.string.bridge_quick_manage, "bridge.manage") to onManage,
+            ),
+        ).forEach { actions ->
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                actions.forEach { (action, onClick) ->
+                    Card(
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag(action.third)
+                            .clickable(onClick = onClick),
+                        colors = CardDefaults.cardColors(
+                            containerColor = RelayRefresh.Navy2.copy(alpha = 0.78f),
+                        ),
+                        shape = RoundedCornerShape(10.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Icon(
+                                imageVector = action.first,
+                                contentDescription = null,
+                                tint = RelayRefresh.Relay,
+                                modifier = Modifier.size(20.dp),
+                            )
+                            Text(
+                                text = stringResource(action.second),
+                                style = MaterialTheme.typography.labelLarge,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
