@@ -27,7 +27,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Dashboard
@@ -312,21 +311,6 @@ fun BridgeScreen(
         topBar = {
             TopAppBar(
                 title = { Text(stringResource(R.string.bridge_title)) },
-                navigationIcon = {
-                    RelayChromeIconButton(
-                        icon = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = stringResource(R.string.bridge_back_to_chat),
-                        onClick = onNavigateToChat,
-                    )
-                },
-                actions = {
-                    RelayChromeIconButton(
-                        icon = Icons.Filled.Tune,
-                        contentDescription = stringResource(R.string.bridge_settings),
-                        onClick = onNavigateToSettings,
-                        modifier = Modifier.padding(end = 4.dp),
-                    )
-                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = RelayRefresh.Background.copy(alpha = 0.96f)
                 )
