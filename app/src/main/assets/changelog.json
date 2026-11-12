@@ -1,0 +1,81 @@
+{
+  "versions": [
+    {
+      "version": "1.19.0",
+      "title": "底部四栏改版",
+      "date": "2026-11-12",
+      "summary": "主界面改成对话 / 脚本 / Bridge / 设置四个标签页，常用能力一屏直达。",
+      "changes": [
+        {
+          "id": "tab-navigation",
+          "kind": "added",
+          "title": "底部四栏导航",
+          "summary": "对话、脚本、Bridge、设置常驻底部",
+          "highlight": true
+        },
+        {
+          "id": "tab-sessions",
+          "kind": "added",
+          "title": "对话页整页会话列表",
+          "summary": "落地页就是全部会话，点进去才进聊天",
+          "highlight": true
+        },
+        {
+          "id": "tab-bridge",
+          "kind": "improved",
+          "title": "Bridge 一屏直达",
+          "summary": "常用能力摊在一屏，状态条挪到页面顶部",
+          "highlight": true
+        },
+        {
+          "id": "tab-scripts",
+          "kind": "added",
+          "title": "脚本页",
+          "summary": "展示游戏脚本清单与详情，只展示不执行"
+        },
+        {
+          "id": "bridge-intent-split",
+          "kind": "fixed",
+          "title": "截图与点按入口分开",
+          "summary": "截图只申请读屏，点按才申请控制"
+        },
+        {
+          "id": "edge-to-edge",
+          "kind": "fixed",
+          "title": "全面屏适配",
+          "summary": "内容不再压住状态栏和底部导航条"
+        },
+        {
+          "id": "bridge-chrome",
+          "kind": "improved",
+          "title": "Bridge 顶栏精简",
+          "summary": "去掉多余的返回与设置图标，底部标签页直达"
+        }
+      ],
+      "compatibility": [
+        "Android 15 及以上",
+        "sideload 自用版"
+      ],
+      "highlight": {
+        "title": "底部四栏",
+        "summary": "常用的东西一屏直达，不用再一层层点菜单",
+        "bullets": [
+          "对话：会话列表即首页",
+          "脚本：清单与详情",
+          "Bridge：能力一屏直达",
+          "设置：全部入口收一页"
+        ]
+      },
+      "toastDigest": {
+        "additionalFeatureCount": 3,
+        "improvementCount": 3,
+        "fixCount": 2,
+        "preview": [
+          "底部四栏导航",
+          "Bridge 一屏直达",
+          "全面屏适配"
+        ]
+      }
+    }
+  ]
+}
