@@ -449,6 +449,7 @@ sealed class Screen(
     val icon: ImageVector
 ) {
     data object Onboarding : Screen("onboarding", "Onboarding", Icons.Filled.Settings)
+    data object SessionList : Screen("sessions", "Sessions", Icons.AutoMirrored.Filled.Chat)
     // `openAgentSheet` — optional flag that tells ChatScreen to auto-open
     // its consolidated AgentInfoSheet on first composition. Added so the
     // Settings → Active Agent card can bounce the user straight to Chat

@@ -323,6 +323,151 @@ fun SessionDrawerContent(
     onTogglePin: (() -> Unit)? = null,
     /** Whether the sidebar pin is currently active (drives the control's state). */
     pinned: Boolean = false,
+    modifier: Modifier = Modifier,
+    itemTestTag: String? = null,
+    asFullPage: Boolean = false,
+    newButtonTestTag: String? = null,
+) {
+    SessionListBody(
+        sessions = sessions,
+        currentSessionId = currentSessionId,
+        scopeTitle = scopeTitle,
+        scopeSubtitle = scopeSubtitle,
+        activeProfileName = activeProfileName,
+        isLoading = isLoading,
+        loadFailed = loadFailed,
+        isLoadingMore = isLoadingMore,
+        hasMore = hasMore,
+        loadMoreFailed = loadMoreFailed,
+        isOpen = isOpen,
+        activityStates = activityStates,
+        unreadSessionIds = unreadSessionIds,
+        unreadProfileSessions = unreadProfileSessions,
+        animationEnabled = animationEnabled,
+        autoTitlesSupported = autoTitlesSupported,
+        archiveSupported = archiveSupported,
+        supervisedSessionActions = supervisedSessionActions,
+        newChatEnabled = newChatEnabled,
+        onRefresh = onRefresh,
+        onLoadMore = onLoadMore,
+        onRetryLoadMore = onRetryLoadMore,
+        onOpenBotMode = onOpenBotMode,
+        onNewChat = onNewChat,
+        onSelectSession = onSelectSession,
+        onDeleteSession = onDeleteSession,
+        onRenameSession = onRenameSession,
+        onSetSessionPinned = onSetSessionPinned,
+        onSetSessionArchived = onSetSessionArchived,
+        onCopySessionId = onCopySessionId,
+        threadsCapabilityActive = threadsCapabilityActive,
+        onNewThread = onNewThread,
+        provisionalThreads = provisionalThreads,
+        onSelectProvisionalThread = onSelectProvisionalThread,
+        onDeleteProvisionalThread = onDeleteProvisionalThread,
+        hiddenSources = hiddenSources,
+        onToggleSourceHidden = onToggleSourceHidden,
+        allProfilesSupported = allProfilesSupported,
+        allProfileSessions = allProfileSessions,
+        allProfileSessionsLoading = allProfileSessionsLoading,
+        allProfileSessionsLoadFailed = allProfileSessionsLoadFailed,
+        profileColors = profileColors,
+        onProfileColorChange = onProfileColorChange,
+        onRefreshAllProfiles = onRefreshAllProfiles,
+        onSelectProfileSession = onSelectProfileSession,
+        onDeleteProfileSession = onDeleteProfileSession,
+        onRenameProfileSession = onRenameProfileSession,
+        onSetProfileSessionPinned = onSetProfileSessionPinned,
+        onSetProfileSessionArchived = onSetProfileSessionArchived,
+        asSidebar = asSidebar,
+        onTogglePin = onTogglePin,
+        pinned = pinned,
+        modifier = modifier,
+        itemTestTag = itemTestTag,
+        asFullPage = asFullPage,
+        newButtonTestTag = newButtonTestTag,
+    )
+}
+
+@Composable
+fun SessionListBody(
+    sessions: List<ChatSession>,
+    currentSessionId: String?,
+    scopeTitle: String = "",
+    scopeSubtitle: String? = null,
+    activeProfileName: String = "default",
+    isLoading: Boolean = false,
+    loadFailed: Boolean = false,
+    isLoadingMore: Boolean = false,
+    hasMore: Boolean = false,
+    loadMoreFailed: Boolean = false,
+    isOpen: Boolean = true,
+    activityStates: Map<String, SessionActivityState> = emptyMap(),
+    unreadSessionIds: Set<String> = emptySet(),
+    unreadProfileSessions: Set<Pair<String, String>> = emptySet(),
+    animationEnabled: Boolean = true,
+    autoTitlesSupported: Boolean = true,
+    archiveSupported: Boolean = true,
+    supervisedSessionActions: SupervisedSessionActions? = null,
+    newChatEnabled: Boolean = true,
+    onRefresh: (() -> Unit)? = null,
+    onLoadMore: (() -> Unit)? = null,
+    onRetryLoadMore: (() -> Unit)? = null,
+    /** Opens the separate Bot Mode messenger workspace; never changes drawer filters. */
+    onOpenBotMode: (() -> Unit)? = null,
+    onNewChat: () -> Unit,
+    onSelectSession: (String) -> Unit,
+    onDeleteSession: (String) -> Unit,
+    onRenameSession: (String, String) -> Unit,
+    onSetSessionPinned: (String, Boolean) -> Unit = { _, _ -> },
+    onSetSessionArchived: (String, Boolean) -> Unit = { _, _ -> },
+    onCopySessionId: ((String) -> Unit)? = null,
+    /**
+     * When true, the Threads affordance (header spool + filter chip) shows even with no
+     * Thread sessions present yet — i.e. the relay Threads capability is paired + opted in
+     * (slice 5 wires this from ConnectionViewModel). Until then the affordance is purely
+     * data-driven: it appears whenever at least one `source=phone` session is in the list.
+     */
+    threadsCapabilityActive: Boolean = false,
+    /**
+     * Create a new agent Thread with the given name (Discord-style "+ New
+     * Thread"). Null hides the affordance; when set it shows in the Threads
+     * filter view. The first message the user types opens the conversation.
+     */
+    onNewThread: ((String) -> Unit)? = null,
+    provisionalThreads: List<ProvisionalThreadRow> = emptyList(),
+    onSelectProvisionalThread: ((String) -> Unit)? = null,
+    /** Deletes only the local provisional inbox row; never a server session. */
+    onDeleteProvisionalThread: ((String) -> Unit)? = null,
+    /** Gateway sources currently hidden from the drawer (default: cron+webhook). */
+    hiddenSources: Set<String> = emptySet(),
+    /** Toggle a source's visibility (persisted). Null hides the source filter. */
+    onToggleSourceHidden: ((String, Boolean) -> Unit)? = null,
+    allProfilesSupported: Boolean = false,
+    allProfileSessions: List<ProfileSessionRow> = emptyList(),
+    allProfileSessionsLoading: Boolean = false,
+    allProfileSessionsLoadFailed: Boolean = false,
+    profileColors: Map<String, String> = emptyMap(),
+    onProfileColorChange: ((String, String?) -> Unit)? = null,
+    onRefreshAllProfiles: (() -> Unit)? = null,
+    onSelectProfileSession: ((String, String) -> Unit)? = null,
+    onDeleteProfileSession: ((String, String) -> Unit)? = null,
+    onRenameProfileSession: ((String, String, String) -> Unit)? = null,
+    onSetProfileSessionPinned: ((String, String, Boolean) -> Unit)? = null,
+    onSetProfileSessionArchived: ((String, String, Boolean) -> Unit)? = null,
+    /**
+     * True renders the sessions UI as a persistent 320dp sidebar (wide layout);
+     * false keeps the existing modal drawer sheet presentation. Default false
+     * preserves the compact drawer behavior and every existing call site.
+     */
+    asSidebar: Boolean = false,
+    /** Pin/unpin affordance below the panel header. Null hides the control. */
+    onTogglePin: (() -> Unit)? = null,
+    /** Whether the sidebar pin is currently active (drives the control's state). */
+    pinned: Boolean = false,
+    modifier: Modifier = Modifier,
+    itemTestTag: String? = null,
+    asFullPage: Boolean = false,
+    newButtonTestTag: String? = null,
 ) {
     var renameDialogTarget by remember { mutableStateOf<Pair<ProfileSessionRow, Boolean>?>(null) }
     var newThreadDialog by remember { mutableStateOf(false) }
@@ -500,6 +645,18 @@ fun SessionDrawerContent(
                     style = MaterialTheme.typography.titleLarge,
                     modifier = Modifier.weight(1f),
                 )
+                if (asFullPage) {
+                    IconButton(
+                        onClick = onNewChat,
+                        enabled = newChatEnabled,
+                        modifier = newButtonTestTag?.let { Modifier.testTag(it) } ?: Modifier,
+                    ) {
+                        Icon(
+                            Icons.Filled.Add,
+                            contentDescription = stringResource(R.string.drawer_new_chat),
+                        )
+                    }
+                }
                 // Source filter — show/hide gateway sources (default hides the
                 // noisy cron+webhook). Only when external sources are present.
                 if (supervisedSessionActions == null && onToggleSourceHidden != null && presentSources.isNotEmpty()) {
@@ -651,14 +808,16 @@ fun SessionDrawerContent(
             Spacer(modifier = Modifier.height(8.dp))
 
             // New Chat button
-            Button(
-                onClick = onNewChat,
-                modifier = Modifier.fillMaxWidth(),
-                enabled = newChatEnabled,
-            ) {
-                Icon(Icons.Filled.Add, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(stringResource(R.string.drawer_new_chat))
+            if (!asFullPage) {
+                Button(
+                    onClick = onNewChat,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = newChatEnabled,
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(stringResource(R.string.drawer_new_chat))
+                }
             }
 
             onOpenBotMode?.let { openBotMode ->
@@ -938,7 +1097,8 @@ fun SessionDrawerContent(
                         val provisional = session.sessionId.startsWith(PROVISIONAL_THREAD_PREFIX)
                         val activityState = scopedActivityStates[sessionRowKey(row)]
                         SessionItem(
-                            modifier = if (isProjectGroup) Modifier.padding(start = 42.dp) else Modifier,
+                            modifier = (if (isProjectGroup) Modifier.padding(start = 42.dp) else Modifier)
+                                .then(itemTestTag?.let { Modifier.testTag(it) } ?: Modifier),
                             session = session,
                             hideProjectBadge = isProjectGroup,
                             profileLabel = row.profile.takeIf {
@@ -1044,9 +1204,17 @@ fun SessionDrawerContent(
     // (compact layouts, unchanged) or as a persistent 320dp leading sidebar
     // (wide layouts with the pin active). Filters, search, rows, and dialogs
     // are defined once above so both presentations stay behaviorally identical.
-    if (asSidebar) {
+    if (asFullPage) {
         Surface(
-            modifier = Modifier.width(320.dp).fillMaxHeight(),
+            modifier = modifier.fillMaxWidth().fillMaxHeight(),
+            color = RelayRefresh.Background,
+            contentColor = RelayRefresh.Ink,
+        ) {
+            Column(modifier = Modifier.fillMaxHeight()) { panel() }
+        }
+    } else if (asSidebar) {
+        Surface(
+            modifier = modifier.width(320.dp).fillMaxHeight(),
             color = RelayRefresh.Background,
             contentColor = RelayRefresh.Ink,
         ) {
@@ -1056,7 +1224,7 @@ fun SessionDrawerContent(
         }
     } else {
         ModalDrawerSheet(
-            modifier = Modifier.width(320.dp),
+            modifier = modifier.width(320.dp),
             drawerContainerColor = RelayRefresh.Background,
             drawerContentColor = RelayRefresh.Ink,
         ) {

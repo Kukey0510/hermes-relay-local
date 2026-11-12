@@ -4561,4 +4561,5 @@
     <string name="tab_bridge">Bridge</string>
     <string name="tab_settings">设置</string>
     <string name="scripts_placeholder">游戏脚本清单即将上线</string>
+    <string name="session_list_title">全部会话</string>
 </resources>

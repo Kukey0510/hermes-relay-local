@@ -231,7 +231,7 @@ private enum class BottomTab(
     val icon: ImageVector,
     val testTag: String,
 ) {
-    Chat(Screen.Chat.route(openAgentSheet = false), R.string.tab_chat, Screen.Chat.icon, "tab.chat"),
+    Chat(Screen.SessionList.route, R.string.tab_chat, Screen.Chat.icon, "tab.chat"),
     Scripts(Screen.Scripts.route, R.string.tab_scripts, Screen.Scripts.icon, "tab.scripts"),
     Bridge(Screen.Bridge.route, R.string.tab_bridge, Screen.Bridge.icon, "tab.bridge"),
     Settings(Screen.Settings.route, R.string.tab_settings, Screen.Settings.icon, "tab.settings"),
@@ -240,7 +240,7 @@ private enum class BottomTab(
 private fun bottomTabForRoute(route: String?): BottomTab? {
     val normalized = route?.substringBefore('?') ?: return null
     return when {
-        normalized == "chat" -> BottomTab.Chat
+        normalized == "chat" || normalized == Screen.SessionList.route -> BottomTab.Chat
         normalized == Screen.Scripts.route -> BottomTab.Scripts
         normalized == Screen.Bridge.route ||
             normalized == Screen.Manage.route ||
@@ -864,7 +864,7 @@ internal fun AppScaffold() {
 
         // startDestination uses the route TEMPLATE so it matches the
         // composable registered below; optional args default to null/false.
-        val startDestination = if (onboardingCompleted) Screen.Chat.route else Screen.Onboarding.route
+        val startDestination = if (onboardingCompleted) Screen.SessionList.route else Screen.Onboarding.route
 
         // Offline Demo / Explore mode. Treated like "onboarding complete" for
         // CHROME purposes (so the demo Chat shows the normal scaffold + status
@@ -1737,7 +1737,7 @@ internal fun AppScaffold() {
                                 ),
                             )
                         }
-                        NavigationBar {
+                        if (currentRoute?.substringBefore('?') != "chat") NavigationBar {
                             BottomTab.entries.forEach { tab ->
                                 NavigationBarItem(
                                     selected = bottomTabForRoute(currentRoute) == tab,
@@ -1825,11 +1825,7 @@ internal fun AppScaffold() {
                                     return@launch
                                 }
                                 connectionViewModel.completeOnboarding()
-                                // Concrete bare-"chat" URI — the Screen.Chat.route
-                                // field is the route TEMPLATE (contains
-                                // `{openAgentSheet}`) and must not be navigated
-                                // to directly; build the URI via Screen.Chat.route(...).
-                                navController.navigate(Screen.Chat.route(openAgentSheet = false)) {
+                                navController.navigate(Screen.SessionList.route) {
                                     popUpTo(Screen.Onboarding.route) { inclusive = true }
                                 }
                             }
@@ -1873,6 +1869,18 @@ internal fun AppScaffold() {
                             navController.navigate(Screen.PermissionsSettings.route)
                         },
                         onTryDemo = enterDemo,
+                    )
+                }
+                composable(Screen.SessionList.route) {
+                    com.hermesandroid.relay.ui.screens.SessionListScreen(
+                        chatViewModel = chatViewModel,
+                        supervisedPolicy = supervisedPolicy,
+                        onOpenSession = { sessionId ->
+                            navController.navigate(Screen.Chat.route(sessionId = sessionId))
+                        },
+                        onNewSession = {
+                            navController.navigate(Screen.Chat.route())
+                        },
                     )
                 }
                 composable(
