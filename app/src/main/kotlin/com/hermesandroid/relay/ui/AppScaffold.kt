@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.ui.Alignment
@@ -1651,7 +1652,10 @@ internal fun AppScaffold() {
                         Modifier
                     }
                 ),
-            contentWindowInsets = WindowInsets(0),
+            // Android 15+ enforces edge-to-edge for our target SDK. Use the
+            // dynamic safe-drawing insets as the app-wide fallback so route
+            // content stays clear of status/navigation bars and cutouts.
+            contentWindowInsets = WindowInsets.safeDrawing,
             bottomBar = {
                 if (
                     !suppressGlobalChrome &&
@@ -1695,7 +1699,11 @@ internal fun AppScaffold() {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(innerPadding),
+                    .padding(innerPadding)
+                    // The padding above has already applied Scaffold's safe
+                    // area. Mark it consumed so route-local TopAppBars and the
+                    // existing status-aware banners do not add it a second time.
+                    .consumeWindowInsets(innerPadding),
             ) {
                 val routeContentAllowed = isSupervisedRouteContentAllowed(
                     supervisedEnabled = supervisedPolicy.enabled,
