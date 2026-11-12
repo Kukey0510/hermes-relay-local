@@ -525,6 +525,10 @@ sealed class Screen(
     data object Terminal : Screen("terminal", "Terminal", Icons.Filled.Code)
     data object Bridge : Screen("bridge", "Bridge", Icons.Filled.PhoneAndroid)
     data object Scripts : Screen("scripts", "Scripts", Icons.Filled.Code)
+    data object ScriptDetail : Screen("scripts/{scriptId}", "Script detail", Icons.Filled.Code) {
+        const val ARG_SCRIPT_ID: String = "scriptId"
+        fun route(scriptId: String): String = "scripts/${android.net.Uri.encode(scriptId)}"
+    }
     data object Manage : Screen("manage", "Manage", Icons.Filled.Settings)
     data object DashboardSignIn : Screen(
         "dashboard_sign_in?source={source}",

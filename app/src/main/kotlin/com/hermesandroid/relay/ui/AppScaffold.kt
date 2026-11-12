@@ -186,6 +186,8 @@ import com.hermesandroid.relay.ui.screens.PermissionsStatusScreen
 import com.hermesandroid.relay.ui.screens.ProfileInspectorScreen
 import com.hermesandroid.relay.ui.screens.RealtimeVoiceTestScreen
 import com.hermesandroid.relay.ui.screens.SettingsScreen
+import com.hermesandroid.relay.ui.screens.ScriptDetailScreen
+import com.hermesandroid.relay.ui.screens.ScriptsScreen
 import com.hermesandroid.relay.ui.screens.SupervisedControlsScreen
 import com.hermesandroid.relay.ui.screens.SupervisedAppearanceSettingsScreen
 import com.hermesandroid.relay.ui.screens.UsageLimitsScreen
@@ -241,7 +243,7 @@ private fun bottomTabForRoute(route: String?): BottomTab? {
     val normalized = route?.substringBefore('?') ?: return null
     return when {
         normalized == "chat" || normalized == Screen.SessionList.route -> BottomTab.Chat
-        normalized == Screen.Scripts.route -> BottomTab.Scripts
+        normalized == Screen.Scripts.route || normalized.startsWith("scripts/") -> BottomTab.Scripts
         normalized == Screen.Bridge.route ||
             normalized == Screen.Manage.route ||
             normalized == Screen.Terminal.route ||
@@ -2350,15 +2352,24 @@ internal fun AppScaffold() {
                     }
                 }
                 composable(Screen.Scripts.route) {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = stringResource(R.string.scripts_placeholder),
-                            style = MaterialTheme.typography.bodyLarge,
-                        )
-                    }
+                    ScriptsScreen(
+                        onOpenScript = { scriptId ->
+                            navController.navigate(Screen.ScriptDetail.route(scriptId))
+                        },
+                    )
+                }
+                composable(
+                    route = Screen.ScriptDetail.route,
+                    arguments = listOf(
+                        navArgument(Screen.ScriptDetail.ARG_SCRIPT_ID) { type = NavType.StringType },
+                    ),
+                ) { backStackEntry ->
+                    ScriptDetailScreen(
+                        scriptId = backStackEntry.arguments
+                            ?.getString(Screen.ScriptDetail.ARG_SCRIPT_ID)
+                            .orEmpty(),
+                        onBack = { navController.popBackStack() },
+                    )
                 }
                 composable(Screen.Bridge.route) {
                     Column(modifier = Modifier.fillMaxSize()) {
