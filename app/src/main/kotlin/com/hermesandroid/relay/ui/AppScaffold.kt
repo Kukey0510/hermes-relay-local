@@ -1669,12 +1669,16 @@ internal fun AppScaffold() {
                                 NavigationBarItem(
                                     selected = bottomTabForRoute(currentRoute) == tab,
                                     onClick = {
-                                        navController.navigate(tab.destination) {
-                                            popUpTo(navController.graph.findStartDestination().id) {
-                                                saveState = true
+                                        if (bottomTabForRoute(currentRoute) == tab) {
+                                            navController.popBackStack(tab.destination, inclusive = false)
+                                        } else {
+                                            navController.navigate(tab.destination) {
+                                                popUpTo(navController.graph.findStartDestination().id) {
+                                                    saveState = true
+                                                }
+                                                launchSingleTop = true
+                                                restoreState = true
                                             }
-                                            launchSingleTop = true
-                                            restoreState = true
                                         }
                                     },
                                     icon = {

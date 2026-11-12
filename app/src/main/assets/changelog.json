@@ -1,6 +1,69 @@
 {
   "versions": [
     {
+      "version": "0.1.0",
+      "title": "自用版起点",
+      "date": "2026-11-12",
+      "summary": "换成自己的包名和名字，去掉开发版痕迹，强制白天模式，默认能用。",
+      "changes": [
+        {
+          "id": "rename",
+          "kind": "improved",
+          "title": "改了包名和显示名",
+          "summary": "com.hermesandroid.hermes_relay_script，桌面叫 hermes",
+          "highlight": true
+        },
+        {
+          "id": "light",
+          "kind": "fixed",
+          "title": "默认白天模式",
+          "summary": "不再跟随系统深色",
+          "highlight": true
+        },
+        {
+          "id": "tab-root",
+          "kind": "improved",
+          "title": "点 tab 回一级",
+          "summary": "再点当前 tab 回到它的根页面"
+        },
+        {
+          "id": "no-debug-entry",
+          "kind": "improved",
+          "title": "去掉判页调试入口",
+          "summary": "界面上不再有那个按钮"
+        },
+        {
+          "id": "fixed-signing",
+          "kind": "fixed",
+          "title": "固定签名",
+          "summary": "以后覆盖升级不用卸载重装"
+        }
+      ],
+      "compatibility": [
+        "Android 15 及以上"
+      ],
+      "highlight": {
+        "title": "自用版",
+        "summary": "名字、包名、模式都换成自己的",
+        "bullets": [
+          "包名 hermes_relay_script",
+          "桌面叫 hermes",
+          "默认白色",
+          "固定签名可覆盖升级"
+        ]
+      },
+      "toastDigest": {
+        "additionalFeatureCount": 0,
+        "improvementCount": 3,
+        "fixCount": 2,
+        "preview": [
+          "包名改名",
+          "默认白天",
+          "固定签名"
+        ]
+      }
+    },
+    {
       "version": "1.19.1",
       "title": "全面屏与顶栏修正",
       "date": "2026-11-12",

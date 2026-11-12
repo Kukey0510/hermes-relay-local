@@ -477,7 +477,7 @@ data class AppTheme(
         ThemeMode.BOTH -> when (modePref) {
             "dark" -> true
             "light" -> false
-            else -> systemDark
+            else -> false
         }
     }
 

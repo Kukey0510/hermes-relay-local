@@ -36,7 +36,7 @@ internal object AppearanceNightMode {
             ThemeMode.BOTH -> when (normalizePreference(themePreference)) {
                 "light" -> AppCompatDelegate.MODE_NIGHT_NO
                 "dark" -> AppCompatDelegate.MODE_NIGHT_YES
-                else -> AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
+                else -> AppCompatDelegate.MODE_NIGHT_NO
             }
         }
     }

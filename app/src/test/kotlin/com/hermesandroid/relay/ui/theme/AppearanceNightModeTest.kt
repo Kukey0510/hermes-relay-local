@@ -19,7 +19,7 @@ class AppearanceNightModeTest {
             AppearanceNightMode.nightModeFor("dark", ThemeMode.BOTH),
         )
         assertEquals(
-            AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM,
+            AppCompatDelegate.MODE_NIGHT_NO,
             AppearanceNightMode.nightModeFor("auto", ThemeMode.BOTH),
         )
     }
@@ -77,7 +77,7 @@ class AppearanceNightModeTest {
 
         saved[AppearancePreferences.themeKey] = "auto"
         assertEquals(
-            AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM,
+            AppCompatDelegate.MODE_NIGHT_NO,
             AppearanceNightMode.nightModeFor(AppearancePreferences.decode(saved)),
         )
 

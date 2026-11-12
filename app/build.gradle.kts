@@ -50,7 +50,7 @@ android {
         // migration. The old Internal-testing listing under Bailey's personal
         // account is being deleted; the DUNS-verified Axiom-Labs account is
         // exempt from Play's 14-day closed-testing rule. See RELEASE.md.
-        applicationId = "com.axiomlabs.hermesrelay"
+        applicationId = "com.hermesandroid.hermes_relay_script"
         minSdk = 26
         targetSdk = 36
         versionCode = libs.versions.appVersionCode.get().toInt()
@@ -79,6 +79,12 @@ android {
     }
 
     signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
         create("release") {
             val localProps = rootProject.file("local.properties")
             val props: Properties? = if (localProps.exists()) {
