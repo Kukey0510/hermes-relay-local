@@ -4556,4 +4556,9 @@
     <string name="paired_devices_policy_failed">无法缩短会话有效期。请刷新 Relay 会话并尝试更短的时长，或使用经操作员批准的新配对码重新配对以续期访问权限。</string>
     <string name="paired_devices_updating">正在更新会话…</string>
     <string name="paired_devices_no_shorter_duration">没有更短的预设时长。你可以撤销此会话，或重新配对以续期访问权限。</string>
+    <string name="tab_chat">对话</string>
+    <string name="tab_scripts">脚本</string>
+    <string name="tab_bridge">Bridge</string>
+    <string name="tab_settings">设置</string>
+    <string name="scripts_placeholder">游戏脚本清单即将上线</string>
 </resources>

@@ -523,6 +523,7 @@ sealed class Screen(
     }
     data object Terminal : Screen("terminal", "Terminal", Icons.Filled.Code)
     data object Bridge : Screen("bridge", "Bridge", Icons.Filled.PhoneAndroid)
+    data object Scripts : Screen("scripts", "Scripts", Icons.Filled.Code)
     data object Manage : Screen("manage", "Manage", Icons.Filled.Settings)
     data object DashboardSignIn : Screen(
         "dashboard_sign_in?source={source}",

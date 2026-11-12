@@ -34,6 +34,8 @@ import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
 import com.hermesandroid.relay.ui.components.ThemedMessageHost
@@ -65,6 +67,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -221,6 +224,38 @@ import com.hermesandroid.relay.network.relay.RelayVoiceClient
 import com.hermesandroid.relay.auth.AuthState
 import com.hermesandroid.relay.runtime.HermesRuntimeInitializationState
 import com.hermesandroid.relay.ui.state.rememberAppRuntimeState
+
+private enum class BottomTab(
+    val destination: String,
+    val labelRes: Int,
+    val icon: ImageVector,
+    val testTag: String,
+) {
+    Chat(Screen.Chat.route(openAgentSheet = false), R.string.tab_chat, Screen.Chat.icon, "tab.chat"),
+    Scripts(Screen.Scripts.route, R.string.tab_scripts, Screen.Scripts.icon, "tab.scripts"),
+    Bridge(Screen.Bridge.route, R.string.tab_bridge, Screen.Bridge.icon, "tab.bridge"),
+    Settings(Screen.Settings.route, R.string.tab_settings, Screen.Settings.icon, "tab.settings"),
+}
+
+private fun bottomTabForRoute(route: String?): BottomTab? {
+    val normalized = route?.substringBefore('?') ?: return null
+    return when {
+        normalized == "chat" -> BottomTab.Chat
+        normalized == Screen.Scripts.route -> BottomTab.Scripts
+        normalized == Screen.Bridge.route ||
+            normalized == Screen.Manage.route ||
+            normalized == Screen.Terminal.route ||
+            normalized.startsWith("bot_mode") -> BottomTab.Bridge
+        normalized == Screen.Settings.route ||
+            normalized.startsWith("settings/") ||
+            normalized == Screen.VoiceSettings.route ||
+            normalized == Screen.PairedDevices.route ||
+            normalized == Screen.Plugins.route ||
+            normalized.startsWith("plugins/") ||
+            normalized == Screen.GitState.route -> BottomTab.Settings
+        else -> null
+    }
+}
 
 // App 主界面的稳定骨架：集中承载全局 Scaffold、NavHost 与既有路由行为。
 @Composable
@@ -1620,84 +1655,113 @@ internal fun AppScaffold() {
                     !suppressGlobalChrome &&
                     !isKeyboardVisible &&
                     !showStartupSphere &&
-                    (!supervisedPolicy.enabled ||
-                        supervisedPolicy.visibility.resolved().showTechnicalRoute) &&
                     shouldShowConnectionFooter(voiceUiState.voiceMode, voicePresentationMode)
                 ) {
-                    val footerRoute = resolveFooterRouteCandidate(
-                        runtimeStatus = appChatRuntimeStatus,
-                        activeEndpoint = activeEndpoint,
-                        connection = activeConnection,
-                        effectiveDashboardUrl = effectiveDashboardUrl,
-                    )
-                    val routeLabel = resolveFooterRouteLabel(
-                        runtimeStatus = appChatRuntimeStatus,
-                        route = footerRoute,
-                        fallbackLabel = activeConnection?.label
-                            ?: stringResource(R.string.status_no_route),
-                    )
-                    val transportStatus = resolveChatTransportStatus(
-                        streamingEndpoint = connectionViewModel.resolveActiveStreamingEndpoint(
-                            streamingEndpoint,
-                        ),
-                        gatewayAvailability = gatewayAvailability,
-                        serverCapabilities = serverCapabilities,
-                    )
-                    val transportRouteLabel = if (
-                        transportStatus.tier == ChatTransportTier.Offline
-                    ) "" else routeLabel
-                    val profileLabel = AgentDisplay.profileDisplayName(effectiveDisplayProfile)
-                        ?: stringResource(R.string.status_profile_default)
-                    val displayProfile = effectiveDisplayProfile
-                    val modelLabel = AgentDisplay.displayModelName(gatewayCurrentModel)
-                        ?: AgentDisplay.displayModelName(displayProfile?.model)
-                        ?: AgentDisplay.displayModelName(serverModelName)
-                        ?: stringResource(R.string.status_model_pending)
-                    val footerModelLabel = compactFooterModelLabel(modelLabel)
-                    val openConnections: (() -> Unit)? = if (
-                        isSupervisedRouteContentAllowed(
-                            supervisedEnabled = supervisedPolicy.enabled,
-                            parentAccessUnlocked = parentAccessForCurrentRoute,
-                            currentRoute = Screen.ConnectionsSettings.route,
-                        )
-                    ) {
-                        {
-                            navController.navigate(Screen.ConnectionsSettings.route) {
-                                launchSingleTop = true
+                    Column {
+                        if (
+                            !supervisedPolicy.enabled ||
+                            supervisedPolicy.visibility.resolved().showTechnicalRoute
+                        ) {
+                            val footerRoute = resolveFooterRouteCandidate(
+                                runtimeStatus = appChatRuntimeStatus,
+                                activeEndpoint = activeEndpoint,
+                                connection = activeConnection,
+                                effectiveDashboardUrl = effectiveDashboardUrl,
+                            )
+                            val routeLabel = resolveFooterRouteLabel(
+                                runtimeStatus = appChatRuntimeStatus,
+                                route = footerRoute,
+                                fallbackLabel = activeConnection?.label
+                                    ?: stringResource(R.string.status_no_route),
+                            )
+                            val transportStatus = resolveChatTransportStatus(
+                                streamingEndpoint = connectionViewModel.resolveActiveStreamingEndpoint(
+                                    streamingEndpoint,
+                                ),
+                                gatewayAvailability = gatewayAvailability,
+                                serverCapabilities = serverCapabilities,
+                            )
+                            val transportRouteLabel = if (
+                                transportStatus.tier == ChatTransportTier.Offline
+                            ) "" else routeLabel
+                            val profileLabel = AgentDisplay.profileDisplayName(effectiveDisplayProfile)
+                                ?: stringResource(R.string.status_profile_default)
+                            val displayProfile = effectiveDisplayProfile
+                            val modelLabel = AgentDisplay.displayModelName(gatewayCurrentModel)
+                                ?: AgentDisplay.displayModelName(displayProfile?.model)
+                                ?: AgentDisplay.displayModelName(serverModelName)
+                                ?: stringResource(R.string.status_model_pending)
+                            val footerModelLabel = compactFooterModelLabel(modelLabel)
+                            val openConnections: (() -> Unit)? = if (
+                                isSupervisedRouteContentAllowed(
+                                    supervisedEnabled = supervisedPolicy.enabled,
+                                    parentAccessUnlocked = parentAccessForCurrentRoute,
+                                    currentRoute = Screen.ConnectionsSettings.route,
+                                )
+                            ) {
+                                {
+                                    navController.navigate(Screen.ConnectionsSettings.route) {
+                                        launchSingleTop = true
+                                    }
+                                }
+                            } else {
+                                null
+                            }
+                            RelayStatusStrip(
+                                leadingBadge = {
+                                    ChatTransportStatusBadge(
+                                        status = transportStatus,
+                                        onClick = openConnections,
+                                    )
+                                },
+                                routeLabel = transportRouteLabel,
+                                trailing = "$footerModelLabel / $profileLabel",
+                                // Tap the persistent status/route readout to open
+                                // Connections — preserves the affordance the dropped
+                                // header endpoint chip used to provide.
+                                onClick = openConnections,
+                                securityGlyph = if (transportStatus.tier != ChatTransportTier.Offline) {
+                                    { ConnectionSecurityGlyph(connectionSecurity) }
+                                } else {
+                                    null
+                                },
+                                // Routine in-progress reconnect surfaces here (amber cue)
+                                // instead of a take-space banner or a floating toast.
+                                reconnecting = connectionReconnecting,
+                                maxContentWidth = chatResponsiveLayout(
+                                    LocalConfiguration.current.screenWidthDp,
+                                ).chromeMaxWidth,
+                                modifier = Modifier.petPerchSurface(
+                                    key = APP_STATUS_PET_WALK_REGION,
+                                    routes = APP_STATUS_PET_ROUTES,
+                                ),
+                            )
+                        }
+                        NavigationBar {
+                            BottomTab.entries.forEach { tab ->
+                                NavigationBarItem(
+                                    selected = bottomTabForRoute(currentRoute) == tab,
+                                    onClick = {
+                                        navController.navigate(tab.destination) {
+                                            popUpTo(navController.graph.findStartDestination().id) {
+                                                saveState = true
+                                            }
+                                            launchSingleTop = true
+                                            restoreState = true
+                                        }
+                                    },
+                                    icon = {
+                                        androidx.compose.material3.Icon(
+                                            imageVector = tab.icon,
+                                            contentDescription = null,
+                                        )
+                                    },
+                                    label = { Text(stringResource(tab.labelRes)) },
+                                    modifier = Modifier.testTag(tab.testTag),
+                                )
                             }
                         }
-                    } else {
-                        null
                     }
-                    RelayStatusStrip(
-                        leadingBadge = {
-                            ChatTransportStatusBadge(
-                                status = transportStatus,
-                                onClick = openConnections,
-                            )
-                        },
-                        routeLabel = transportRouteLabel,
-                        trailing = "$footerModelLabel / $profileLabel",
-                        // Tap the persistent status/route readout to open
-                        // Connections — preserves the affordance the dropped
-                        // header endpoint chip used to provide.
-                        onClick = openConnections,
-                        securityGlyph = if (transportStatus.tier != ChatTransportTier.Offline) {
-                            { ConnectionSecurityGlyph(connectionSecurity) }
-                        } else {
-                            null
-                        },
-                        // Routine in-progress reconnect surfaces here (amber cue)
-                        // instead of a take-space banner or a floating toast.
-                        reconnecting = connectionReconnecting,
-                        maxContentWidth = chatResponsiveLayout(
-                            LocalConfiguration.current.screenWidthDp,
-                        ).chromeMaxWidth,
-                        modifier = Modifier.petPerchSurface(
-                            key = APP_STATUS_PET_WALK_REGION,
-                            routes = APP_STATUS_PET_ROUTES,
-                        ),
-                    )
                 }
             }
         ) { innerPadding ->
@@ -2353,6 +2417,17 @@ internal fun AppScaffold() {
                                 navController.navigate(Screen.Pair.route())
                             },
                             onBack = { navController.popBackStack() },
+                        )
+                    }
+                }
+                composable(Screen.Scripts.route) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = stringResource(R.string.scripts_placeholder),
+                            style = MaterialTheme.typography.bodyLarge,
                         )
                     }
                 }
