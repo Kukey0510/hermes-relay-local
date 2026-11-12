@@ -1,6 +1,50 @@
 {
   "versions": [
     {
+      "version": "1.19.1",
+      "title": "全面屏与顶栏修正",
+      "date": "2026-11-12",
+      "summary": "修掉全面屏上内容被状态栏和导航条压住的问题，Bridge 顶栏去掉冗余入口。",
+      "changes": [
+        {
+          "id": "insets-fix",
+          "kind": "fixed",
+          "title": "全面屏适配",
+          "summary": "内容不再压住状态栏和底部导航条",
+          "highlight": true
+        },
+        {
+          "id": "bridge-chrome-slim",
+          "kind": "improved",
+          "title": "Bridge 顶栏精简",
+          "summary": "去掉返回箭头和设置图标，底部标签页直达",
+          "highlight": true
+        }
+      ],
+      "compatibility": [
+        "Android 15 及以上",
+        "sideload 自用版"
+      ],
+      "highlight": {
+        "title": "全面屏修好了",
+        "summary": "状态栏和金刚键不再压着内容",
+        "bullets": [
+          "顶部内容让开状态栏",
+          "底部内容让开导航条",
+          "Bridge 顶栏去掉冗余图标"
+        ]
+      },
+      "toastDigest": {
+        "additionalFeatureCount": 0,
+        "improvementCount": 1,
+        "fixCount": 1,
+        "preview": [
+          "全面屏适配",
+          "Bridge 顶栏精简"
+        ]
+      }
+    },
+    {
       "version": "1.19.0",
       "title": "底部四栏改版",
       "date": "2026-11-12",

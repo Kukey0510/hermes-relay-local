@@ -7,7 +7,6 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
-    alias(libs.plugins.play.publisher)
 }
 
 val supportedHermesDevAbis = setOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
@@ -99,55 +98,16 @@ android {
         }
     }
 
-    // ─── Bridge release tracks ─────────────────────────────────────────────────
-    // Google Play ships Bridge Core and user-started voice-only overlay: pairing, chat, voice, terminal/TUI,
-    // media, notification companion, relay sessions, and status. It does not
-    // declare AccessibilityService, MediaProjection, wake-lock device
-    // control, SMS/call/contact/location, or unattended-control permissions.
-    //
-    //   googlePlay  — canonical Play Store install. Bridge Core only.
-    //
-    //   sideload    — Device Control for users who install directly (GitHub
-    //                 Releases, F-Droid, ADB). AccessibilityService, gestures,
-    //                 screenshots, overlay/status chip, and phone utilities are
-    //                 declared in the sideload manifest.
-    //
-    // applicationIdSuffix decision: sideload gets `.sideload` so both tracks can
-    // coexist on the same device. The Play build keeps the base
-    // `com.axiomlabs.hermesrelay` applicationId as the canonical Play Store
-    // install; sideload becomes `com.axiomlabs.hermesrelay.sideload`. Cost:
-    // anyone with both installed sees two launcher icons — we differentiate
-    // via the flavored strings.xml label suffix.
-    //
-    // Note: the previous `com.hermesandroid.relay` applicationId (Internal
-    // testing under Bailey's personal Play account) is being retired as part
-    // of the Axiom-Labs org-account migration. Play Store package names are
-    // permanently reserved once used, so the old ID can never be reclaimed —
-    // existing Internal-testing installs won't auto-upgrade to the new listing
-    // and will need a manual reinstall (limited blast radius, single tester).
+    // ─── Bridge distribution track ───────────────────────────────────────────────
+    // The self-hosted app is distributed only through sideload channels. Keep
+    // the dimension so the existing sideload source set and variant names stay
+    // stable, including the `.sideload` application ID used by installations.
     flavorDimensions += "track"
     productFlavors {
-        create("googlePlay") {
-            dimension = "track"
-            // No applicationIdSuffix — this IS the canonical Play Store install.
-        }
         create("sideload") {
             dimension = "track"
             applicationIdSuffix = ".sideload"
             versionNameSuffix = "-sideload"
-        }
-    }
-
-    // Structural guard: the sideload flavor is distributed via GitHub Releases /
-    // F-Droid / ADB and must NEVER be uploaded to Play Console (it declares the
-    // unattended Device Control surface Play forbids). gradle-play-publisher
-    // generates a publish task per variant, so the aggregate `publishReleaseBundle`
-    // would otherwise try BOTH flavors. Disabling sideload here means only
-    // `publishGooglePlayReleaseBundle` can ever reach Play — see the `play { }`
-    // block below and .github/workflows/release-android.yml.
-    playConfigs {
-        register("sideload") {
-            enabled.set(false)
         }
     }
 
@@ -307,18 +267,6 @@ android {
     }
 }
 
-// Google Play Publisher — optional automated upload to Play Console.
-// The plugin adds tasks like `publishReleaseBundle` that talk to the Play
-// Developer API. Requires a service account JSON at <repo-root>/play-service-account.json.
-// Normal builds (assembleRelease, bundleRelease) work without it; only the
-// publish tasks require it. See RELEASE.md for service account setup.
-play {
-    serviceAccountCredentials.set(rootProject.file("play-service-account.json"))
-    track.set("internal")
-    defaultToAppBundles.set(true)
-    releaseStatus.set(com.github.triplet.gradle.androidpublisher.ReleaseStatus.DRAFT)
-}
-
 kotlin {
     jvmToolchain(17)
 }
@@ -383,15 +331,6 @@ dependencies {
     // Keep the shared runtime aligned with sherpa-onnx v1.13.4.
     implementation(libs.onnxruntime.android)
     implementation(libs.sherpa.onnx)
-
-    // Google Play In-App Update — googlePlay flavor ONLY (FLEXIBLE flow).
-    // Scoped via the `googlePlayImplementation` configuration so it never
-    // ships in the sideload APK, which updates via the GitHub-releases
-    // UpdateChecker instead. The `app/src/googlePlay/.../update/` impl
-    // references AppUpdateManager; the `app/src/sideload/.../update/` impl
-    // never touches this library.
-    "googlePlayImplementation"(libs.play.app.update)
-    "googlePlayImplementation"(libs.play.app.update.ktx)
 
     // Markdown rendering
     implementation(libs.markdown.renderer.m3)

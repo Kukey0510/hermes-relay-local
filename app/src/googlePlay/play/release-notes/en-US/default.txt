@@ -1,3 +1,0 @@
-v1.18.1 - Reliable browser sign-in
-
-Browser sign-in stays connected while you complete your provider's flow and return to Hermes-Relay. The sign-in notification ends when the attempt finishes or is canceled, and callback pages identify the selected provider.
