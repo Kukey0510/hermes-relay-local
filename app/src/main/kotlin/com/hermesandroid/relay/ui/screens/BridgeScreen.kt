@@ -56,6 +56,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -273,12 +274,22 @@ fun BridgeScreen(
     var timedMinutes by remember { mutableStateOf(safetySettings.autoDisableMinutes) }
     var timedUnlimited by remember { mutableStateOf(false) }
     val timedCurrentlyActive = activeCapabilityPolicy.activeTimedCapabilities(nowMs).isNotEmpty()
-    fun openTimedSheet() {
+    fun openTimedSheet(intent: TimedSheetIntent = TimedSheetIntent.Neutral) {
         val current = activeCapabilityPolicy.activeTimedCapabilities(nowMs)
-        timedInspect = if (current.isEmpty()) true else
+        val currentInspect = if (current.isEmpty()) true else
             com.hermesandroid.relay.bridge.BridgeCapability.SCREEN_INSPECTION in current
-        timedControl = if (current.isEmpty()) true else
+        val currentControl = if (current.isEmpty()) true else
             com.hermesandroid.relay.bridge.BridgeCapability.SCREEN_CONTROL in current
+        timedInspect = when (intent) {
+            TimedSheetIntent.Screenshot -> true
+            TimedSheetIntent.Tap,
+            TimedSheetIntent.Neutral -> currentInspect
+        }
+        timedControl = when (intent) {
+            TimedSheetIntent.Screenshot -> false
+            TimedSheetIntent.Tap -> true
+            TimedSheetIntent.Neutral -> currentControl
+        }
         timedMinutes = safetySettings.autoDisableMinutes
         timedUnlimited = current.any(activeCapabilityPolicy::isUnlimited)
         showTimedSheet = true
@@ -342,8 +353,8 @@ fun BridgeScreen(
                 )
             }
             BridgeQuickActions(
-                onScreenshot = { openTimedSheet() },
-                onTap = { openTimedSheet() },
+                onScreenshot = { openTimedSheet(TimedSheetIntent.Screenshot) },
+                onTap = { openTimedSheet(TimedSheetIntent.Tap) },
                 onTerminal = onNavigateToTerminal,
                 onBotMode = onNavigateToBotMode,
                 onPermissions = onNavigateToPermissions,
@@ -734,6 +745,20 @@ fun BridgeScreen(
     }
 }
 
+private enum class TimedSheetIntent {
+    Screenshot,
+    Tap,
+    Neutral,
+}
+
+private data class BridgeQuickAction(
+    val icon: ImageVector,
+    val titleRes: Int,
+    val subtitleRes: Int? = null,
+    val testTag: String,
+    val onClick: () -> Unit,
+)
+
 @Composable
 private fun BridgeQuickActions(
     onScreenshot: () -> Unit,
@@ -746,25 +771,25 @@ private fun BridgeQuickActions(
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         listOf(
             listOf(
-                Triple(Icons.Filled.CameraAlt, R.string.bridge_quick_screenshot, "bridge.screenshot") to onScreenshot,
-                Triple(Icons.Filled.TouchApp, R.string.bridge_quick_tap, "bridge.tap") to onTap,
+                BridgeQuickAction(Icons.Filled.CameraAlt, R.string.bridge_quick_screenshot, R.string.bridge_quick_screenshot_subtitle, "bridge.screenshot", onScreenshot),
+                BridgeQuickAction(Icons.Filled.TouchApp, R.string.bridge_quick_tap, R.string.bridge_quick_tap_subtitle, "bridge.tap", onTap),
             ),
             listOf(
-                Triple(Icons.Filled.Terminal, R.string.bridge_quick_terminal, "bridge.terminal") to onTerminal,
-                Triple(Icons.Filled.SmartToy, R.string.bridge_quick_botmode, "bridge.botmode") to onBotMode,
+                BridgeQuickAction(Icons.Filled.Terminal, R.string.bridge_quick_terminal, testTag = "bridge.terminal", onClick = onTerminal),
+                BridgeQuickAction(Icons.Filled.SmartToy, R.string.bridge_quick_botmode, testTag = "bridge.botmode", onClick = onBotMode),
             ),
             listOf(
-                Triple(Icons.Filled.Security, R.string.bridge_quick_permissions, "bridge.permissions") to onPermissions,
-                Triple(Icons.Filled.Dashboard, R.string.bridge_quick_manage, "bridge.manage") to onManage,
+                BridgeQuickAction(Icons.Filled.Security, R.string.bridge_quick_permissions, testTag = "bridge.permissions", onClick = onPermissions),
+                BridgeQuickAction(Icons.Filled.Dashboard, R.string.bridge_quick_manage, testTag = "bridge.manage", onClick = onManage),
             ),
         ).forEach { actions ->
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                actions.forEach { (action, onClick) ->
+                actions.forEach { action ->
                     Card(
                         modifier = Modifier
                             .weight(1f)
-                            .testTag(action.third)
-                            .clickable(onClick = onClick),
+                            .testTag(action.testTag)
+                            .clickable(onClick = action.onClick),
                         colors = CardDefaults.cardColors(
                             containerColor = RelayRefresh.Navy2.copy(alpha = 0.78f),
                         ),
@@ -776,16 +801,26 @@ private fun BridgeQuickActions(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             Icon(
-                                imageVector = action.first,
+                                imageVector = action.icon,
                                 contentDescription = null,
                                 tint = RelayRefresh.Relay,
                                 modifier = Modifier.size(20.dp),
                             )
-                            Text(
-                                text = stringResource(action.second),
-                                style = MaterialTheme.typography.labelLarge,
-                                maxLines = 1,
-                            )
+                            Column {
+                                Text(
+                                    text = stringResource(action.titleRes),
+                                    style = MaterialTheme.typography.labelLarge,
+                                    maxLines = 1,
+                                )
+                                action.subtitleRes?.let { subtitleRes ->
+                                    Text(
+                                        text = stringResource(subtitleRes),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                    )
+                                }
+                            }
                         }
                     }
                 }

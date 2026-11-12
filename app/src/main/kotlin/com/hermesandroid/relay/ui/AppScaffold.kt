@@ -2536,6 +2536,15 @@ internal fun AppScaffold() {
                                 onNavigateToBotMode = {
                                     navController.navigate(Screen.BotMode.route) { launchSingleTop = true }
                                 },
+                                onOpenScreenshot = {
+                                    navController.navigate(Screen.PermissionsSettings.route) { launchSingleTop = true }
+                                },
+                                onOpenTap = {
+                                    navController.navigate(Screen.PermissionsSettings.route) { launchSingleTop = true }
+                                },
+                                onNavigateToPermissions = {
+                                    navController.navigate(Screen.PermissionsSettings.route) { launchSingleTop = true }
+                                },
                                 onNavigateToVoiceSettings = {
                                     navController.navigate(Screen.VoiceSettings.route)
                                 },
@@ -2864,6 +2873,15 @@ internal fun AppScaffold() {
                             },
                             onNavigateToTerminal = {
                                 navController.navigate(Screen.Terminal.route)
+                            },
+                            onOpenScreenshot = {
+                                navController.navigate(Screen.PermissionsSettings.route) { launchSingleTop = true }
+                            },
+                            onOpenTap = {
+                                navController.navigate(Screen.PermissionsSettings.route) { launchSingleTop = true }
+                            },
+                            onNavigateToPermissions = {
+                                navController.navigate(Screen.PermissionsSettings.route) { launchSingleTop = true }
                             },
                             onNavigateToVoiceSettings = {
                                 navController.navigate(Screen.VoiceSettings.route)

@@ -18,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Groups
@@ -26,6 +27,7 @@ import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -75,6 +77,9 @@ fun BridgeCoreScreen(
     onNavigateToManage: () -> Unit = {},
     onNavigateToTerminal: () -> Unit,
     onNavigateToBotMode: () -> Unit = {},
+    onOpenScreenshot: (() -> Unit)? = null,
+    onOpenTap: (() -> Unit)? = null,
+    onNavigateToPermissions: (() -> Unit)? = null,
     onNavigateToVoiceSettings: () -> Unit,
     onNavigateToNotificationCompanion: () -> Unit,
     onNavigateToMediaSettings: () -> Unit,
@@ -238,6 +243,24 @@ fun BridgeCoreScreen(
                 title = stringResource(R.string.bridge_core_surface_title),
                 meta = stringResource(R.string.bridge_core_surface_meta),
             )
+            onOpenScreenshot?.let { onClick ->
+                RelayNavTile(
+                    icon = Icons.Filled.CameraAlt,
+                    title = stringResource(R.string.bridge_quick_screenshot),
+                    subtitle = stringResource(R.string.bridge_quick_screenshot_subtitle),
+                    onClick = onClick,
+                    modifier = Modifier.testTag("bridge.screenshot"),
+                )
+            }
+            onOpenTap?.let { onClick ->
+                RelayNavTile(
+                    icon = Icons.Filled.TouchApp,
+                    title = stringResource(R.string.bridge_quick_tap),
+                    subtitle = stringResource(R.string.bridge_quick_tap_subtitle),
+                    onClick = onClick,
+                    modifier = Modifier.testTag("bridge.tap"),
+                )
+            }
             RelayNavTile(
                 icon = Icons.Filled.Link,
                 title = stringResource(R.string.bridge_core_connections),
@@ -259,6 +282,15 @@ fun BridgeCoreScreen(
                 onClick = onNavigateToBotMode,
                 modifier = Modifier.testTag("bridge.botmode"),
             )
+            onNavigateToPermissions?.let { onClick ->
+                RelayNavTile(
+                    icon = Icons.Filled.Security,
+                    title = stringResource(R.string.bridge_quick_permissions),
+                    subtitle = stringResource(R.string.bridge_quick_permissions_subtitle),
+                    onClick = onClick,
+                    modifier = Modifier.testTag("bridge.permissions"),
+                )
+            }
             RelayNavTile(
                 icon = Icons.Filled.GraphicEq,
                 title = stringResource(R.string.bridge_core_voice),

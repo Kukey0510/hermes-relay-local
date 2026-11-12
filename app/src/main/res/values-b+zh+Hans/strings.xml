@@ -4582,10 +4582,13 @@
     <string name="scripts_read_only_notice">本版本只展示脚本，不执行。</string>
     <string name="session_list_title">全部会话</string>
     <string name="bridge_quick_screenshot">截图 / 读屏</string>
+    <string name="bridge_quick_screenshot_subtitle">只读屏幕内容</string>
     <string name="bridge_quick_tap">点按 / 手势</string>
+    <string name="bridge_quick_tap_subtitle">模拟点击与手势</string>
     <string name="bridge_quick_terminal">终端</string>
     <string name="bridge_quick_botmode">Bot 模式</string>
     <string name="bridge_quick_botmode_subtitle">打开多代理工作区</string>
     <string name="bridge_quick_permissions">权限</string>
+    <string name="bridge_quick_permissions_subtitle">检查 Android 权限</string>
     <string name="bridge_quick_manage">管理</string>
 </resources>
