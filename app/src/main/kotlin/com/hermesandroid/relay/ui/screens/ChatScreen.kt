@@ -36,6 +36,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imeNestedScroll
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -91,6 +92,7 @@ import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
@@ -591,6 +593,61 @@ internal fun shouldFollowConversationViewportResize(
     !userDragging &&
     !voiceDockAnchorTransitionActive &&
     (followImeResize || imeBottomPx == 0)
+
+/** Keeps animated inset reads out of the screen's composition scope. */
+@Composable
+private fun RememberImeFollowEffect(
+    listState: LazyListState,
+    sessionId: String?,
+    atBottomSlopPx: Int,
+    userScrolledAway: () -> Boolean,
+    isUserDragging: () -> Boolean,
+    hasMessages: Boolean,
+    imeBottomPxState: MutableState<Int>,
+    followImeResizeState: MutableState<Boolean>,
+    settleToBottom: suspend () -> Unit,
+) {
+    val density = LocalDensity.current
+    val imeBottomPx = WindowInsets.ime.getBottom(density)
+    // Start closed so a session composed with the keyboard already visible
+    // still makes its initial bottom-follow ownership decision.
+    var previousImeBottomPx by remember(sessionId) { mutableStateOf(0) }
+    SideEffect {
+        imeBottomPxState.value = imeBottomPx
+        followImeResizeState.value = shouldFollowImeAfterInsetChange(
+            wasFollowing = followImeResizeState.value,
+            previousImeBottomPx = previousImeBottomPx,
+            currentImeBottomPx = imeBottomPx,
+            // Capture ownership against the pre-resize list layout.
+            wasAtBottom = !userScrolledAway() &&
+                listState.isAtConversationBottom(atBottomSlopPx),
+            userDragging = isUserDragging(),
+        )
+        previousImeBottomPx = imeBottomPx
+    }
+
+    val latestHasMessages by rememberUpdatedState(hasMessages)
+    val latestUserScrolledAway by rememberUpdatedState(userScrolledAway)
+    val latestIsUserDragging by rememberUpdatedState(isUserDragging)
+    val latestSettleToBottom by rememberUpdatedState(settleToBottom)
+    // Insets arrive as an animation. Settle only after updates pause, keeping
+    // readers who have scrolled away in place during opening and closing.
+    var lastImeSettleTargetPx by remember(sessionId) { mutableStateOf(imeBottomPx) }
+    LaunchedEffect(imeBottomPx) {
+        if (imeBottomPx == lastImeSettleTargetPx) return@LaunchedEffect
+        lastImeSettleTargetPx = imeBottomPx
+        delay(96)
+        if (shouldExactlySettleConversation(
+                autoFollowEnabled = true,
+                userScrolledAway = latestUserScrolledAway(),
+                userDragging = latestIsUserDragging(),
+                hasMessages = latestHasMessages,
+            )
+        ) {
+            latestSettleToBottom()
+        }
+    }
+}
 
 private fun LazyListState.isAtConversationBottom(slopPx: Int): Boolean {
     val layout = layoutInfo
@@ -1372,7 +1429,8 @@ fun ChatScreen(
         label = "toolBurst"
     )
 
-    var inputText by remember { mutableStateOf("") }
+    val inputTextState = remember { mutableStateOf("") }
+    var inputText by inputTextState
     val composerDraftKey = remember(
         activeConnection?.id,
         selectedProfile?.name,
@@ -1920,28 +1978,10 @@ fun ChatScreen(
     var userScrolledAway by userScrolledAwayState
     var isUserDragging by remember(currentSessionId) { mutableStateOf(false) }
     var programmaticBottomScroll by remember { mutableStateOf(false) }
-    val density = LocalDensity.current
-    val imeBottomPx = WindowInsets.ime.getBottom(density)
-    val latestImeBottomPx by rememberUpdatedState(imeBottomPx)
-    // Start from the closed state so a chat/session first composed while the
-    // keyboard is already visible still gets one ownership decision. Starting
-    // at the current non-zero inset left followImeResize false forever.
-    var previousImeBottomPx by remember(currentSessionId) { mutableStateOf(0) }
-    var followImeResize by remember(currentSessionId) { mutableStateOf(false) }
-    SideEffect {
-        followImeResize = shouldFollowImeAfterInsetChange(
-            wasFollowing = followImeResize,
-            previousImeBottomPx = previousImeBottomPx,
-            currentImeBottomPx = imeBottomPx,
-            // At the first non-zero IME inset, LazyColumn still exposes the
-            // pre-resize layout. Capture bottom ownership before the viewport
-            // starts losing height.
-            wasAtBottom = !userScrolledAway &&
-                listState.isAtConversationBottom(atBottomSlopPx),
-            userDragging = isUserDragging,
-        )
-        previousImeBottomPx = imeBottomPx
-    }
+    // These holders are read by effects, never by ChatScreen's composition.
+    val latestImeBottomPx = remember { mutableStateOf(0) }
+    val followImeResizeState = remember(currentSessionId) { mutableStateOf(false) }
+    var followImeResize by followImeResizeState
     val currentUnreadSnapshot = remember(messages) { messages.toUnreadSnapshot() }
     var lastReadSnapshot by remember(currentSessionId) {
         mutableStateOf(currentUnreadSnapshot)
@@ -2049,26 +2089,17 @@ fun ChatScreen(
         }
     }
 
-    // IME insets arrive as an animation, not one layout. Wait until inset
-    // updates pause, then remove any rounding/late-measurement residue if the
-    // conversation still owns bottom-follow. This runs for both opening and
-    // closing without moving a transcript whose reader scrolled away.
-    var lastImeSettleTargetPx by remember(currentSessionId) { mutableStateOf(imeBottomPx) }
-    LaunchedEffect(imeBottomPx) {
-        if (imeBottomPx == lastImeSettleTargetPx) return@LaunchedEffect
-        lastImeSettleTargetPx = imeBottomPx
-        delay(96)
-        if (
-            shouldExactlySettleConversation(
-                autoFollowEnabled = true,
-                userScrolledAway = userScrolledAway,
-                userDragging = isUserDragging,
-                hasMessages = messages.isNotEmpty(),
-            )
-        ) {
-            scrollConversationToBottom(animated = false)
-        }
-    }
+    RememberImeFollowEffect(
+        listState = listState,
+        sessionId = currentSessionId,
+        atBottomSlopPx = atBottomSlopPx,
+        userScrolledAway = { userScrolledAway },
+        isUserDragging = { isUserDragging },
+        hasMessages = messages.isNotEmpty(),
+        imeBottomPxState = latestImeBottomPx,
+        followImeResizeState = followImeResizeState,
+        settleToBottom = { scrollConversationToBottom(animated = false) },
+    )
 
     // The latest affordance reflects user intent, not a transient layout gap.
     // Same-row Markdown promotion can briefly put the footer below the viewport
@@ -2336,7 +2367,7 @@ fun ChatScreen(
                 followViewportResize = shouldFollowConversationViewportResize(
                     userScrolledAway = userScrolledAway,
                     userDragging = isUserDragging,
-                    imeBottomPx = latestImeBottomPx,
+                    imeBottomPx = latestImeBottomPx.value,
                     followImeResize = followImeResize,
                     voiceDockAnchorTransitionActive = voiceDockAnchorTransitionActive,
                 ),
@@ -3717,6 +3748,7 @@ fun ChatScreen(
                         modifier = Modifier
                             .align(Alignment.Center)
                             .fillMaxHeight()
+                            .imeNestedScroll()
                             .then(
                                 responsiveLayout.transcriptMaxWidth?.let {
                                     Modifier.widthIn(max = it)
@@ -3909,7 +3941,9 @@ fun ChatScreen(
                                         { msg ->
                                             val envelope = parseChatQuotedPrompt(msg.content)
                                             editingMessage = msg
-                                            inputText = (envelope?.body ?: msg.content).take(charLimit)
+                                            // Capture the holder, without reading the draft
+                                            // in the transcript's item composition.
+                                            inputTextState.value = (envelope?.body ?: msg.content).take(charLimit)
                                             quotedMessage = envelope?.reference?.messageId?.let { id ->
                                                 messages.firstOrNull { it.id == id }
                                             }
