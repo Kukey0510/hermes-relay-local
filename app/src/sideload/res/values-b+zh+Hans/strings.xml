@@ -4,4 +4,26 @@
     <string name="a11y_service_label">Hermes-Bridge 开发版</string>
     <string name="notification_companion_label">Hermes 开发版通知助手</string>
     <string name="a11y_description_sideload">Hermes Bridge 允许代理通过语音和视觉对手机进行完整读写，实现免手动控制。所有操作都会记录在活动日志中，破坏性操作需要您的确认。</string>
+
+    <!-- Local session groups and tags -->
+    <string name="session_group_qq">QQ</string>
+    <string name="session_group_mobile">手机</string>
+    <string name="session_group_web_desktop">网页/桌面</string>
+    <string name="session_group_cron">定时任务</string>
+    <string name="session_group_api">外部接口</string>
+    <string name="session_group_other">其它</string>
+    <string name="session_group_collapse">折叠分组</string>
+    <string name="session_group_expand">展开分组</string>
+    <string name="session_tags_all">全部</string>
+    <string name="session_tags_manage">管理标签</string>
+    <string name="session_tags_edit">编辑标签</string>
+    <string name="session_tags_new">新标签</string>
+    <string name="session_tags_create">确认新建</string>
+    <string name="session_tags_save">保存</string>
+    <string name="session_tags_cancel">取消</string>
+    <string name="session_tags_delete">删除</string>
+    <string name="session_tags_done">完成</string>
+    <string name="session_tags_empty">暂无标签</string>
+    <string name="session_tags_more">+%1$d</string>
+    <string name="session_tags_storage_failed">无法保存本地会话设置，请重试。</string>
 </resources>
