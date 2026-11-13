@@ -69,6 +69,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -77,6 +78,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -86,6 +88,7 @@ import com.hermesandroid.relay.R
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -129,6 +132,7 @@ import kotlinx.coroutines.delay
 
 private const val SETTINGS_PET_SURFACE_ROUTE = "settings"
 private val SETTINGS_PET_SURFACE_ROUTES = setOf(SETTINGS_PET_SURFACE_ROUTE)
+private val LocalSettingsCategoryRowsInGroup = staticCompositionLocalOf { false }
 
 /** A settings card is a walkable top edge and a forbidden interactive body. */
 private fun Modifier.settingsPetSurface(key: String): Modifier =
@@ -589,9 +593,12 @@ fun SettingsScreen(
                 isDarkTheme = isDarkTheme,
             )
 
-            SettingsSectionHeader(stringResource(R.string.settings_hermes))
-
-            SettingsCategoryRow(
+            SettingsGroupCard(
+                title = stringResource(R.string.settings_hermes),
+                testTag = "settings.group.hermes",
+                isDarkTheme = isDarkTheme,
+            ) {
+                SettingsCategoryRow(
                 icon = Icons.Filled.Link,
                 title = stringResource(R.string.settings_hermes_management),
                 subtitle = stringResource(R.string.settings_hermes_management_desc),
@@ -655,9 +662,15 @@ fun SettingsScreen(
                 isDarkTheme = isDarkTheme,
             )
 
-            SettingsSectionHeader(stringResource(R.string.settings_power_tools), trailing = pluginBadge)
+            }
 
-            SettingsCategoryRow(
+            SettingsGroupCard(
+                title = stringResource(R.string.settings_power_tools),
+                testTag = "settings.group.power_tools",
+                isDarkTheme = isDarkTheme,
+                trailing = pluginBadge,
+            ) {
+                SettingsCategoryRow(
                 icon = Icons.AutoMirrored.Filled.Message,
                 title = stringResource(R.string.settings_threads),
                 subtitle = stringResource(R.string.settings_threads_desc),
@@ -715,9 +728,14 @@ fun SettingsScreen(
                 // === END PHASE3-safety-rails ===
             }
 
-            SettingsSectionHeader("App")
+            }
 
-            SettingsCategoryRow(
+            SettingsGroupCard(
+                title = stringResource(R.string.settings_app),
+                testTag = "settings.group.app",
+                isDarkTheme = isDarkTheme,
+            ) {
+                SettingsCategoryRow(
                 icon = Icons.Filled.Security,
                 title = stringResource(R.string.settings_permissions),
                 subtitle = stringResource(R.string.settings_permissions_desc),
@@ -800,6 +818,7 @@ fun SettingsScreen(
                 onClick = onNavigateToAbout,
                 isDarkTheme = isDarkTheme,
             )
+            }
 
             Spacer(modifier = Modifier.height(16.dp))
         }
@@ -1558,24 +1577,46 @@ private fun ProviderUsageSkeleton(modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun SettingsSectionHeader(
-    label: String,
+private fun SettingsGroupCard(
+    title: String,
+    testTag: String,
+    isDarkTheme: Boolean,
     trailing: SettingsStatusPillModel? = null,
+    content: @Composable () -> Unit,
 ) {
-    Row(
+    Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 8.dp, bottom = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .testTag(testTag)
+            .gradientBorder(
+                shape = appearanceRoundedCornerShape(12.dp),
+                isDarkTheme = isDarkTheme,
+            ),
+        shape = appearanceRoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+        ),
     ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.weight(1f),
-        )
-        if (trailing != null) {
-            SettingsStatusPill(trailing)
+        Column {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, top = 14.dp, end = 16.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.weight(1f),
+                )
+                if (trailing != null) {
+                    SettingsStatusPill(trailing)
+                }
+            }
+            CompositionLocalProvider(LocalSettingsCategoryRowsInGroup provides true) {
+                content()
+            }
         }
     }
 }
@@ -1595,27 +1636,21 @@ internal fun SettingsCategoryRow(
     badge: SettingsStatusPillModel? = null,
     petPerchKey: String? = title,
 ) {
+    val isInGroup = LocalSettingsCategoryRowsInGroup.current
     val surfaceModifier = if (petPerchKey != null) {
         Modifier.settingsPetSurface("settings-category:$petPerchKey")
     } else {
         Modifier
     }
-    Card(
-        modifier = surfaceModifier
-            .fillMaxWidth()
-            .gradientBorder(
-                shape = appearanceRoundedCornerShape(12.dp),
-                isDarkTheme = isDarkTheme
-            ),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        )
-    ) {
+    val rowContent: @Composable () -> Unit = {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable(onClick = onClick)
-                .padding(horizontal = 16.dp, vertical = 14.dp),
+                .padding(
+                    horizontal = if (isInGroup) 20.dp else 16.dp,
+                    vertical = if (isInGroup) 10.dp else 14.dp,
+                ),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
@@ -1651,6 +1686,26 @@ internal fun SettingsCategoryRow(
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+    }
+    if (isInGroup) {
+        Box(modifier = surfaceModifier.fillMaxWidth()) {
+            rowContent()
+        }
+    } else {
+        Card(
+            modifier = surfaceModifier
+                .fillMaxWidth()
+                .gradientBorder(
+                    shape = appearanceRoundedCornerShape(12.dp),
+                    isDarkTheme = isDarkTheme,
+                ),
+            shape = appearanceRoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            ),
+        ) {
+            rowContent()
         }
     }
 }

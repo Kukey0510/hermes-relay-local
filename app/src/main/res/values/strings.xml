@@ -790,6 +790,7 @@
     <string name="settings_voice_mode_desc">Dashboard voice, realtime relay options, providers</string>
     <string name="settings_threads">Threads</string>
     <string name="settings_threads_desc">Relay-started conversations and proactive delivery (off by default)</string>
+    <string name="settings_app">App</string>
     <string name="settings_power_tools">Relay tools</string>
     <string name="settings_terminal">Terminal</string>
     <string name="settings_terminal_desc">Server shell access through a paired relay session</string>

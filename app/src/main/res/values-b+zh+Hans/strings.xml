@@ -714,6 +714,7 @@
     <string name="settings_voice_mode_desc">仪表盘语音、实时 Relay 选项、提供商</string>
     <string name="settings_threads">话题</string>
     <string name="settings_threads_desc">由 Relay 发起的对话和主动推送（默认关闭）</string>
+    <string name="settings_app">应用</string>
     <string name="settings_power_tools">Relay 工具</string>
     <string name="settings_terminal">终端</string>
     <string name="settings_terminal_desc">通过已配对的 Relay 会话访问服务器 shell</string>
