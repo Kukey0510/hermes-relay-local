@@ -2103,6 +2103,12 @@ internal fun AppScaffold() {
                                     launchSingleTop = true
                                 }
                             },
+                            onNavigateBack = {
+                                navController.navigate(Screen.SessionList.route) {
+                                    popUpTo(Screen.SessionList.route) { inclusive = false }
+                                    launchSingleTop = true
+                                }
+                            },
                             onNavigateToBridge = {
                                 rememberBridgeReturn(
                                     route = Screen.Chat.route(openAgentSheet = false),

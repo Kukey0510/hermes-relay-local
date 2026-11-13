@@ -35,6 +35,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Message
 import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.AccountTree
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.Extension
@@ -604,6 +605,14 @@ fun SettingsScreen(
                 title = stringResource(R.string.plugins_title),
                 subtitle = stringResource(R.string.settings_plugins_desc),
                 onClick = onNavigateToPlugins,
+                isDarkTheme = isDarkTheme,
+            )
+
+            SettingsCategoryRow(
+                icon = Icons.Filled.Bolt,
+                title = stringResource(R.string.settings_agent_approvals),
+                subtitle = stringResource(R.string.settings_agent_approvals_desc),
+                onClick = { showAgentSheet = true },
                 isDarkTheme = isDarkTheme,
             )
 

@@ -4745,4 +4745,6 @@
     <string name="bridge_core_allowed">Allowed</string>
     <string name="bridge_core_not_allowed">Not allowed</string>
     <string name="bridge_core_enable_master_first">Turn on the Bridge master switch first</string>
+    <string name="settings_agent_approvals">Agent approvals</string>
+    <string name="settings_agent_approvals_desc">Review and configure the active agent approval policy</string>
 </resources>

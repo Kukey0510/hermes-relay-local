@@ -22,7 +22,6 @@ import com.hermesandroid.relay.ui.components.ChatDebugOverlay
 import com.hermesandroid.relay.ui.components.chatDebugHeaderGesture
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -53,18 +52,16 @@ import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.ChatBubble
-import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.AlertDialog
@@ -74,7 +71,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Surface
-import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedCard
@@ -82,12 +78,10 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -769,6 +763,7 @@ fun ChatScreen(
     onTryDemo: (() -> Unit)? = null,
     onNavigateToDashboardSignIn: () -> Unit = {},
     onNavigateToBridge: () -> Unit = {},
+    onNavigateBack: () -> Unit = {},
     onNavigateToTerminal: () -> Unit = {},
     onNavigateToSettings: () -> Unit = {},
     onNavigateToAppearanceSettings: () -> Unit = {},
@@ -1181,7 +1176,6 @@ fun ChatScreen(
         showChildHistory = !supervised,
     )
     val smoothAutoScroll by connectionViewModel.smoothAutoScroll.collectAsState()
-    val closeDrawerOnSend by connectionViewModel.closeDrawerOnSend.collectAsState()
     val keepComposerFocusedOnSend by
         connectionViewModel.keepComposerFocusedOnSend.collectAsState()
     val physicalKeyboardEnterBehavior by
@@ -1193,8 +1187,6 @@ fun ChatScreen(
     val visibleGitWorkspaceSummary = gitWorkspaceSummary?.takeIf {
         !supervised && showGitWorkspaceInChat && it.branch.isNotBlank()
     }
-    val showGitWorkspaceContextEntry =
-        !supervised && showGitWorkspaceInChat && gitWorkspaceAvailable
 
     val availableSkills by chatViewModel.availableSkills.collectAsState()
     val queuedMessages by chatViewModel.queuedMessages.collectAsState()
@@ -1501,6 +1493,7 @@ fun ChatScreen(
     }
     var showEffortSheet by remember { mutableStateOf(false) }
     var showAgentInfo by remember { mutableStateOf(false) }
+    var showChatBackground by remember { mutableStateOf(false) }
     var showProfileShelf by remember { mutableStateOf(false) }
     var showChatDebug by remember { mutableStateOf(false) }
     var chatHeaderHeightPx by remember { mutableStateOf(0) }
@@ -1568,24 +1561,11 @@ fun ChatScreen(
     }
     val listState = rememberLazyListState()
     val userScrolledAwayState = remember(currentSessionId) { mutableStateOf(false) }
-    val drawerState = rememberDrawerState(DrawerValue.Closed)
-    // Pinned Sessions sidebar intent (persisted). Only takes effect when the
-    // available chat width is wide enough; see resolveSessionSidebarLayout.
-    val sessionsSidebarPinned by connectionViewModel.sessionsSidebarPinned.collectAsState()
-    LaunchedEffect(chatViewModel, drawerState) {
-        chatViewModel.sessionDirectoryRefreshRequests.collect {
-            if (drawerState.isOpen || allProfileSessions.isNotEmpty()) {
-                refreshAllProfileSessions(showError = false)
-            }
-        }
-    }
     PetInteractionLayer(
         owner = "chat-interaction-layer",
         active = shouldHideChatPet(
             voiceMode = voiceUiState.voiceMode,
-            drawerOpenOrMoving =
-                drawerState.currentValue != DrawerValue.Closed ||
-                    drawerState.targetValue != DrawerValue.Closed,
+            drawerOpenOrMoving = false,
             commandPaletteVisible = showCommandPalette,
             modelSheetVisible = showModelSheet,
             effortSheetVisible = showEffortSheet,
@@ -1656,9 +1636,6 @@ fun ChatScreen(
             chatViewModel.removeComposerDraft(key)
         }
         quotedMessage = null
-        if (closeDrawerOnSend && drawerState.isOpen) {
-            scope.launch { drawerState.close() }
-        }
         if (!keepComposerFocusedOnSend) {
             focusManager.clearFocus()
         }
@@ -2221,36 +2198,6 @@ fun ChatScreen(
         }
     }
 
-    // The drawer and composer share this screen's focus owner. Clear the
-    // composer's input focus as soon as an open transition is committed so
-    // menu activation, accessibility activation, and edge swipes all dismiss
-    // the IME without leaving the obscured composer ready for hardware input.
-    // Observe the target rather than isOpen so the keyboard closes alongside
-    // the drawer animation, not after it settles.
-    LaunchedEffect(drawerState, focusManager) {
-        snapshotFlow { drawerState.targetValue }
-            .distinctUntilChanged()
-            .collect { target ->
-                if (target == DrawerValue.Open) {
-                    focusManager.clearFocus(force = true)
-                }
-            }
-    }
-
-    // Opening the drawer re-syncs the list — so a session created on another
-    // device (or one whose optimistic row was dropped on a profile switch)
-    // shows up without a manual reload. Cheap dashboard read; the optimistic
-    // row for the active session is preserved by ChatHandler.updateSessions.
-    LaunchedEffect(drawerState.isOpen) {
-        chatViewModel.setSessionActivityDrawerOpen(drawerState.isOpen)
-        // Session history is Dashboard HTTP state and remains usable while the
-        // independent Gateway socket is reconnecting. Never gate drawer-open
-        // refresh on chatReady; owner/generation fencing lives in ChatViewModel.
-        if (drawerState.isOpen) {
-            chatViewModel.refreshSessionsIfStale()
-        }
-    }
-
     var positionedSessionId by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(currentSessionId, isLoadingHistory, messages.isNotEmpty()) {
         if (
@@ -2516,345 +2463,8 @@ fun ChatScreen(
     val hasLiveConversationSurface = messages.isNotEmpty() || isStreaming
     val isChatConnecting = chatConnectState == ChatConnectState.Connecting &&
         !hasLiveConversationSurface
-    val sessionsHistoryAllowed = !supervised || supervisedPolicy.capabilities.conversationHistory
-    val toggleSessionsSidebarPin: () -> Unit = {
-        scope.launch {
-            if (!sessionsSidebarPinned) drawerState.close()
-            connectionViewModel.setSessionsSidebarPinned(!sessionsSidebarPinned)
-        }
-    }
+    val isDarkTheme = LocalBrand.current.isDark
 
-    BoxWithConstraints {
-        // Available chat width in dp drives the wide-layout threshold; the
-        // pure resolver decides Sidebar vs Modal from it + the pin intent.
-        val availableWidthDp = maxWidth.value.toInt()
-        val isWideLayout =
-            availableWidthDp >= SESSIONS_SIDEBAR_WIDTH_THRESHOLD_DP
-        val sidebarLayout = resolveSessionSidebarLayout(
-            availableWidthDp,
-            sessionsSidebarPinned,
-            historyAllowed = sessionsHistoryAllowed,
-        )
-        val isPinnedSidebar = sidebarLayout == SessionSidebarLayout.Sidebar
-        val sessionsDrawerContent: @Composable (Boolean) -> Unit = { renderAsSidebar ->
-            val drawerProfileName = explicitBindingProfileName ?: effectiveProfile?.name
-            val drawerTitle = if (drawerProfileName != null) {
-                stringResource(R.string.chat_profile_sessions, agentDisplayName)
-            } else {
-                stringResource(R.string.chat_server_default_sessions)
-            }
-            val drawerSubtitle = when {
-                selectedProfile?.hasIsolatedApi == true ->
-                    "${stringResource(R.string.chat_profile_api_label)}: ${selectedProfile?.apiServerUrl}"
-                selectedProfile != null ->
-                    stringResource(R.string.chat_compatibility_overlay, activeConnection?.label ?: stringResource(R.string.chat_active_connection))
-                activeConnection?.label?.isNotBlank() == true ->
-                    stringResource(R.string.chat_connection_label, activeConnection?.label ?: "")
-                else -> stringResource(R.string.chat_active_connection)
-            }
-            val threadsProactiveEnabled by connectionViewModel.proactiveEnabled.collectAsState()
-            val threadsAuthState by connectionViewModel.authState.collectAsState()
-            // Threads capability = "Let Hermes message me" on + relay paired.
-            // Shows the drawer's Threads affordance even before the first Thread
-            // arrives (the drawer also self-shows it when a source=phone session
-            // is already present).
-            val threadsCapabilityActive = threadsProactiveEnabled &&
-                threadsAuthState is com.hermesandroid.relay.auth.AuthState.Paired
-            val hiddenSources by connectionViewModel.hiddenSources.collectAsState()
-            val proactiveInboxEntries by connectionViewModel.inboxMessages.collectAsState()
-            val phoneThreadChatIds by connectionViewModel.phoneThreadChatIds.collectAsState()
-            val provisionalThreadEntries = buildProvisionalThreadRows(
-                entries = proactiveInboxEntries,
-                activeConnectionId = activeConnection?.id,
-                realThreadChatIds = phoneThreadChatIds.values,
-            )
-            val realPhoneSessionIds = remember(sessions) {
-                sessions.asSequence()
-                    .filter { it.source.equals("phone", ignoreCase = true) }
-                    .map { it.sessionId }
-                    .toSet()
-            }
-            val provisionalThreadChatIds = provisionalThreadEntries.keys
-            LaunchedEffect(
-                activeConnection?.id,
-                realPhoneSessionIds,
-                provisionalThreadChatIds,
-            ) {
-                // A reply promotes the local provisional row to a real Gateway
-                // source=phone session. Refresh the relay-owned chat_id index at
-                // that boundary so the local duplicate disappears immediately,
-                // without guessing a chat_id from the opaque session id.
-                if (realPhoneSessionIds.isNotEmpty() && provisionalThreadChatIds.isNotEmpty()) {
-                    connectionViewModel.refreshPhoneThreadChatIds()
-                }
-            }
-            val provisionalThreads = provisionalThreadEntries.map { (chatId, entries) ->
-                val latest = entries.maxBy { it.receivedAt }
-                ProvisionalThreadRow(
-                    chatId = chatId,
-                    title = latest.title.ifBlank { "Hermes" },
-                    messageCount = entries.size,
-                    lastActivityAt = latest.receivedAt,
-                )
-            }
-
-            SessionDrawerContent(
-                sessions = if (
-                    supervised && !supervisedPolicy.capabilities.conversationHistory
-                ) emptyList() else sessions,
-                currentSessionId = currentSessionId,
-                scopeTitle = drawerTitle,
-                scopeSubtitle = drawerSubtitle,
-                activeProfileName = drawerProfileName ?: "default",
-                isLoading = isLoadingSessions,
-                loadFailed = sessionListUnavailable,
-                isLoadingMore = isLoadingMoreSessions,
-                hasMore = hasMoreSessions,
-                loadMoreFailed = sessionPageLoadFailed,
-                isOpen = drawerState.isOpen || isPinnedSidebar,
-                activityStates = sessionActivityStates,
-                unreadSessionIds = unreadForConnection.filter { it.contextKey == activityOwner.contextKey }
-                    .mapTo(mutableSetOf()) { it.sessionId },
-                unreadProfileSessions = unreadForConnection.mapTo(mutableSetOf()) {
-                    requireNotNull(AgentDisplay.parseProfileContextKey(it.contextKey)).profileKey to it.sessionId
-                },
-                animationEnabled = animationEnabled,
-                autoTitlesSupported = serverAutoTitles,
-                archiveSupported = sessionArchivingSupported,
-                supervisedSessionActions = supervisedPolicy.capabilities.sessionActions
-                    .takeIf { supervised },
-                newChatEnabled = !supervised || supervisedPolicy.capabilities.newChat,
-                onRefresh = { chatViewModel.refreshSessions() },
-                onLoadMore = { chatViewModel.loadMoreSessions() },
-                onRetryLoadMore = { chatViewModel.retryLoadMoreSessions() },
-                onOpenBotMode = {
-                    scope.launch { drawerState.close() }
-                    onNavigateToBotMode()
-                },
-                onNewChat = {
-                    if (!supervised || supervisedPolicy.capabilities.newChat) {
-                        chatViewModel.createNewChat()
-                        scope.launch { drawerState.close() }
-                    }
-                },
-                onSelectSession = { sessionId ->
-                    chatViewModel.switchSession(sessionId)
-                    scope.launch { drawerState.close() }
-                },
-                onDeleteSession = { sessionId ->
-                    if (supervised && !supervisedPolicy.allowsSessionAction(SupervisedSessionAction.Delete)) {
-                        return@SessionDrawerContent
-                    }
-                    val connectionId = activeConnection?.id
-                    val profileId = explicitBindingProfileName ?: selectedProfile?.name
-                    chatViewModel.deleteSession(sessionId) {
-                        if (!connectionId.isNullOrBlank() && !profileId.isNullOrBlank()) {
-                            chatViewModel.removeComposerDraftSession(
-                                connectionId,
-                                profileId,
-                                sessionId,
-                            )
-                        }
-                    }
-                },
-                onRenameSession = { sessionId, title ->
-                    if (supervised && !supervisedPolicy.allowsSessionAction(SupervisedSessionAction.Rename)) {
-                        return@SessionDrawerContent
-                    }
-                    chatViewModel.renameSession(sessionId, title)
-                },
-                onSetSessionPinned = { sessionId, pinned ->
-                    if (!supervised || supervisedPolicy.allowsSessionAction(SupervisedSessionAction.Pin)) {
-                        chatViewModel.setSessionPinned(sessionId, pinned)
-                    }
-                },
-                onSetSessionArchived = { sessionId, archived ->
-                    if (!supervised || supervisedPolicy.allowsSessionAction(SupervisedSessionAction.Archive)) {
-                        chatViewModel.setSessionArchived(sessionId, archived)
-                    }
-                },
-                onCopySessionId = { sessionId ->
-                    scope.launch {
-                        clipboard.setClipEntry(
-                            ClipEntry(ClipData.newPlainText(copySessionIdLabel, sessionId))
-                        )
-                        UiMessageBus.success(copiedToClipboardMsg)
-                    }
-                },
-                threadsCapabilityActive = threadsCapabilityActive,
-                onNewThread = { name ->
-                    chatViewModel.startNewThread(name)
-                    scope.launch { drawerState.close() }
-                },
-                provisionalThreads = provisionalThreads,
-                onSelectProvisionalThread = { chatId ->
-                    chatViewModel.openProactiveThread(
-                        chatId,
-                        provisionalThreadEntries[chatId].orEmpty(),
-                    )
-                    scope.launch { drawerState.close() }
-                },
-                onDeleteProvisionalThread = { chatId ->
-                    activeConnection?.id?.let { connectionId ->
-                        connectionViewModel.removeProvisionalThread(chatId, connectionId)
-                    }
-                },
-                hiddenSources = hiddenSources,
-                onToggleSourceHidden = { source, hidden ->
-                    connectionViewModel.setSourceHidden(source, hidden)
-                },
-                allProfilesSupported = !supervised && !isProfileLocked &&
-                    !activeConnection?.resolvedDashboardUrl.isNullOrBlank(),
-                allProfileSessions = allProfileSessions,
-                allProfileSessionsLoading = allProfileSessionsLoading,
-                allProfileSessionsLoadFailed = allProfileSessionsUnavailable,
-                profileColors = profilePresentation.colors,
-                onProfileColorChange = connectionViewModel::setProfileColor,
-                onRefreshAllProfiles = {
-                    if (!isProfileLocked && !allProfileSessionsLoading) scope.launch {
-                        refreshAllProfileSessions(showError = true)
-                    }
-                },
-                onSelectProfileSession = { profileName, sessionId ->
-                    if (!connectionViewModel.isProfileSelectionAllowed(profileName)) {
-                        return@SessionDrawerContent
-                    }
-                    val target = agentProfiles.firstOrNull {
-                        it.name.equals(profileName, ignoreCase = true)
-                    }
-                    if (target != null || profileName.equals("default", ignoreCase = true)) {
-                        val ownerProfile = target ?: allProfileSessions.firstOrNull {
-                            it.profile.equals(profileName, ignoreCase = true) &&
-                                it.session.sessionId == sessionId
-                        }?.session?.let { session ->
-                            com.hermesandroid.relay.data.Profile(
-                                name = profileName,
-                                model = session.model.orEmpty(),
-                                description = profileName,
-                            )
-                        } ?: com.hermesandroid.relay.data.Profile(
-                            name = profileName,
-                            model = "",
-                            description = profileName,
-                        )
-                        val opened = chatViewModel.openProfileSession(
-                            profileName = profileName,
-                            profile = ownerProfile,
-                            contextKey = AgentDisplay.profileContextKey(
-                                connectionId = activeConnection?.id,
-                                profileName = profileName,
-                            ),
-                            sessionId = sessionId,
-                        )
-                        if (opened) scope.launch { drawerState.close() }
-                    } else {
-                        scope.launch {
-                            snackbarHostState.showSnackbar("Profile $profileName is not available.")
-                        }
-                    }
-                },
-                onDeleteProfileSession = { profileName, sessionId ->
-                    scope.launch {
-                        if (connectionViewModel.deleteSession(profileName, sessionId)) {
-                            allProfileSessions = allProfileSessions.filterNot {
-                                it.profile == profileName && it.session.sessionId == sessionId
-                            }
-                            activeConnection?.id?.let { connectionId ->
-                                chatViewModel.removeComposerDraftSession(
-                                    connectionId,
-                                    profileName,
-                                    sessionId,
-                                )
-                            }
-                        }
-                    }
-                },
-                onRenameProfileSession = { profileName, sessionId, title ->
-                    scope.launch {
-                        if (connectionViewModel.renameSession(profileName, sessionId, title)) {
-                            allProfileSessions = allProfileSessions.map { row ->
-                                if (row.profile == profileName && row.session.sessionId == sessionId) {
-                                    row.copy(session = row.session.copy(title = title))
-                                } else {
-                                    row
-                                }
-                            }
-                        }
-                    }
-                },
-                onSetProfileSessionPinned = { profileName, sessionId, pinned ->
-                    scope.launch {
-                        if (connectionViewModel.setSessionPinned(profileName, sessionId, pinned)) {
-                            allProfileSessions = allProfileSessions.map { row ->
-                                if (row.profile == profileName && row.session.sessionId == sessionId) {
-                                    row.copy(session = row.session.copy(pinned = pinned))
-                                } else {
-                                    row
-                                }
-                            }
-                        }
-                    }
-                },
-                onSetProfileSessionArchived = { profileName, sessionId, archived ->
-                    scope.launch {
-                        if (connectionViewModel.setSessionArchived(profileName, sessionId, archived)) {
-                            allProfileSessions = allProfileSessions.map { row ->
-                                if (row.profile == profileName && row.session.sessionId == sessionId) {
-                                    row.copy(session = row.session.copy(archived = archived))
-                                } else {
-                                    row
-                                }
-                            }
-                        }
-                    }
-                },
-                asSidebar = renderAsSidebar,
-                // Pin affordance lives below the panel header; shown only
-                // where the pin can take effect (wide layout).
-                onTogglePin = if (isWideLayout && sessionsHistoryAllowed) toggleSessionsSidebarPin else null,
-                pinned = isPinnedSidebar,
-            )
-        }
-        // A pinned sidebar behaves as an always-open drawer: entering the
-        // wide pinned layout re-syncs the session list the same way opening
-        // the modal drawer does. It also replaces the modal drawer as THE
-        // sessions surface, so a drawer left open at pin time is closed —
-        // otherwise it overlays a duplicate sessions panel.
-        LaunchedEffect(isPinnedSidebar) {
-            // Unpinning returns to the closed, on-demand drawer as well.
-            drawerState.close()
-            if (isPinnedSidebar) {
-                chatViewModel.setSessionActivityDrawerOpen(true)
-                chatViewModel.refreshSessionsIfStale()
-            }
-        }
-        Box(modifier = Modifier.fillMaxSize()) {
-            if (isPinnedSidebar) {
-                Box(modifier = Modifier.width(SESSIONS_SIDEBAR_WIDTH_DP.dp)) {
-                    sessionsDrawerContent(true)
-                }
-            }
-            Box(
-                modifier = Modifier.fillMaxSize()
-                    .padding(start = if (isPinnedSidebar) SESSIONS_SIDEBAR_WIDTH_DP.dp else 0.dp)
-            ) {
-            ModalNavigationDrawer(
-                drawerState = drawerState,
-                // Material routes scrim taps through the drawer's gesture handler.
-                // Keep it enabled so tapping outside always dismisses the drawer; the
-                // voice overlay already owns input while voice mode is visible.
-                // Edge-swipe is also disabled while the pinned sidebar owns the
-                // leading edge, so a swipe can't open a second sessions surface.
-                gesturesEnabled = resolveDrawerGesturesEnabled(
-                    supervisedHistoryAllowed = sessionsHistoryAllowed,
-                    pinnedSidebar = isPinnedSidebar,
-                ),
-                // Do not compose a second session browser behind the sidebar.
-                drawerContent = {
-                    if (!isPinnedSidebar) sessionsDrawerContent(false)
-                },
-    ) {
-        val isDarkTheme = LocalBrand.current.isDark
 
         Box(modifier = Modifier.fillMaxSize()) {
         val backgroundContext = LocalContext.current.applicationContext
@@ -2878,18 +2488,11 @@ fun ChatScreen(
             TopAppBar(
                 modifier = Modifier.onSizeChanged { chatHeaderHeightPx = it.height },
                 navigationIcon = {
-                    // While the pinned sidebar is the sessions surface the
-                    // hamburger would only stack a second modal sessions
-                    // drawer over it — the pin/unpin affordance lives in the
-                    // sidebar header instead, so the control is omitted.
-                    if (!isPinnedSidebar && sessionsHistoryAllowed) {
-                        IconButton(onClick = { scope.launch { drawerState.open() } }) {
-                            Icon(Icons.Filled.Menu, contentDescription = stringResource(R.string.cd_sessions))
-                        }
-                    } else if (supervised && !sessionsHistoryAllowed && supervisedPolicy.capabilities.newChat) {
-                        IconButton(onClick = { chatViewModel.createNewChat() }) {
-                            Icon(Icons.Filled.Edit, contentDescription = "New chat")
-                        }
+                    IconButton(onClick = onNavigateBack) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = stringResource(R.string.onboarding_back),
+                        )
                     }
                 },
                 title = {
@@ -3152,73 +2755,26 @@ fun ChatScreen(
                     }
                 },
                 actions = {
-                    // Approval-bypass marker, demoted from the subtitle to a
-                    // single amber ⚡ icon: present only when approvals are
-                    // effectively off, tapping into the agent sheet where the
-                    // full explanation (global mode / --yolo / per-session)
-                    // lives. Keeps the risk visible without eating subtitle
-                    // width on every turn.
-                    if (!supervised && yoloEnabled == true) {
+                    var showOverflowMenu by remember { mutableStateOf(false) }
+                    Box {
                         RelayChromeIconButton(
-                            icon = Icons.Filled.Bolt,
-                            contentDescription = stringResource(R.string.cd_approvals_off),
-                            onClick = { showAgentInfo = true },
-                            tint = RelayRefresh.Amber,
-                            borderColor = RelayRefresh.Amber.copy(alpha = 0.5f),
+                            icon = Icons.Filled.MoreVert,
+                            contentDescription = stringResource(R.string.chat_more_actions_a11y),
+                            onClick = { showOverflowMenu = true },
                             modifier = Modifier.padding(end = 4.dp),
                         )
-                    }
-                    // (The ADR-24 LAN/Tailscale/Public endpoint-role chip that
-                    // used to live here was redundant with the global footer
-                    // status strip, which already renders "<status> / <route>"
-                    // from the same activeEndpoint.displayLabel() — and shows it
-                    // on every screen, not just chat. The footer strip is now
-                    // tappable → Connections, so the affordance moved with the
-                    // info. Dropping it here declutters the actions row and frees
-                    // width for the title subtitle.)
-                    if (!supervised) {
-                        if (showGitWorkspaceContextEntry) {
-                            ChatGitContextButton(
-                                onClick = onNavigateToGitWorkspace,
-                                modifier = Modifier.padding(end = 4.dp),
+                        DropdownMenu(
+                            expanded = showOverflowMenu,
+                            onDismissRequest = { showOverflowMenu = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.chat_background_title)) },
+                                leadingIcon = { Icon(Icons.Filled.Image, contentDescription = null) },
+                                onClick = {
+                                    showOverflowMenu = false
+                                    showChatBackground = true
+                                },
                             )
-                        }
-                        RelayChromeIconButton(
-                            icon = Icons.Filled.Code,
-                            contentDescription = stringResource(R.string.cd_terminal),
-                            onClick = onNavigateToTerminal,
-                            modifier = Modifier.padding(end = 4.dp),
-                        )
-                    }
-                    RelayChromeIconButton(
-                        icon = Icons.Filled.Tune,
-                        contentDescription = stringResource(R.string.cd_settings),
-                        onClick = onNavigateToSettings,
-                        modifier = Modifier.padding(end = 4.dp),
-                    )
-                    // Share is the least-used trailing action (and only valid
-                    // once there's a conversation), so it folds into a ⋮
-                    // overflow instead of competing for width with Terminal +
-                    // Settings — which is what was squeezing the title subtitle.
-                    // Session identity is useful before the first message; sharing only appears
-                    // once the conversation has content.
-                    if (
-                        (!supervised && (messages.isNotEmpty() || !currentSessionId.isNullOrBlank())) ||
-                        (supervised && messages.isNotEmpty() &&
-                            supervisedPolicy.allowsSessionAction(SupervisedSessionAction.ShareTranscript))
-                    ) {
-                        var showOverflowMenu by remember { mutableStateOf(false) }
-                        Box {
-                            RelayChromeIconButton(
-                                icon = Icons.Filled.MoreVert,
-                                contentDescription = stringResource(R.string.chat_more_actions_a11y),
-                                onClick = { showOverflowMenu = true },
-                                modifier = Modifier.padding(end = 4.dp),
-                            )
-                            DropdownMenu(
-                                expanded = showOverflowMenu,
-                                onDismissRequest = { showOverflowMenu = false },
-                            ) {
                                 currentSessionId?.takeIf { !supervised && it.isNotBlank() }?.let { sessionId ->
                                     DropdownMenuItem(
                                         text = { Text(copySessionIdLabel) },
@@ -3285,7 +2841,6 @@ fun ChatScreen(
                                         },
                                     )
                                 }
-                            }
                         }
                     }
                 },
@@ -5029,8 +4584,6 @@ fun ChatScreen(
         }
 
         } // end chat Box
-            } // end ModalNavigationDrawer
-        } // end padded chat Box
 
         // Voice mode covers both Chat and the pinned Sessions sidebar.
         AnimatedVisibility(
@@ -5103,8 +4656,6 @@ fun ChatScreen(
                 // === END v0.4.1 ===
             )
         }
-    }
-    }
 
     // Command palette bottom sheet
     if (showCommandPalette && !supervised) {
@@ -5138,6 +4689,17 @@ fun ChatScreen(
                 showBackgroundProcesses = false
             },
         )
+    }
+
+    if (showChatBackground) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showChatBackground = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            com.hermesandroid.relay.ui.settings.ChatBackgroundSettingsScreen(
+                onClose = { showChatBackground = false },
+            )
+        }
     }
 
     // Agent info sheet — one consolidated surface for agent state (profile,

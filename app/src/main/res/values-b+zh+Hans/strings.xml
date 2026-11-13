@@ -4600,4 +4600,6 @@
     <string name="bridge_quick_permissions">权限</string>
     <string name="bridge_quick_permissions_subtitle">检查 Android 权限</string>
     <string name="bridge_quick_manage">管理</string>
+    <string name="settings_agent_approvals">Agent 审批</string>
+    <string name="settings_agent_approvals_desc">查看并配置当前 Agent 的审批策略</string>
 </resources>
