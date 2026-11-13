@@ -33,30 +33,14 @@ private class GitHubUpdateAvailabilitySource(
     @Volatile private var pending: UpdateStatus.Available? = null
 
     override suspend fun check(): UpdateStatus {
-        return when (val result = UpdateChecker.check()) {
-            is UpdateCheckResult.Available -> {
-                val upd = result.update
-                val status = UpdateStatus.Available(
-                    // Raw version string — doubles as the per-version dismiss
-                    // key (versionCode is null on this track), so it must stay
-                    // parseable by compareVersions. The banner formats display.
-                    versionLabel = upd.latestVersion,
-                    versionCode = null, // GitHub releases tracked by version string, not code
-                    openUrl = upd.apkUrl ?: upd.releasePageUrl,
-                )
-                pending = status
-                status
-            }
-            // Errors degrade to UpToDate — the banner just stays hidden, the
-            // About-screen "Check for updates" row still surfaces the error.
-            UpdateCheckResult.Idle,
-            UpdateCheckResult.Checking,
-            UpdateCheckResult.UpToDate,
-            is UpdateCheckResult.Error -> {
-                pending = null
-                UpdateStatus.UpToDate
-            }
-        }
+        // Self-hosted build: the bundled UpdateChecker probes the UPSTREAM
+        // Codename-11/hermes-relay releases. Their version (1.19.x) is always
+        // higher than this fork's (0.1.0), so the banner claimed "update
+        // available" on every launch — and following it would install the
+        // official package over this build. Updates ship through our own CI
+        // releases, so this track reports UpToDate unconditionally.
+        pending = null
+        return UpdateStatus.UpToDate
     }
 
     override fun startUpdate(activity: Activity?): Boolean {
