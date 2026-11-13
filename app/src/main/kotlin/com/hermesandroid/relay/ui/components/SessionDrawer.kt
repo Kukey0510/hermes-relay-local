@@ -15,6 +15,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -113,6 +114,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.hermesandroid.relay.R
 import com.hermesandroid.relay.data.AgentDisplay
+import com.hermesandroid.relay.data.SessionOrganization
 import com.hermesandroid.relay.data.ChatSession
 import com.hermesandroid.relay.data.SessionActivityState
 import com.hermesandroid.relay.data.SupervisedSessionActions
@@ -468,6 +470,10 @@ fun SessionListBody(
     itemTestTag: String? = null,
     asFullPage: Boolean = false,
     newButtonTestTag: String? = null,
+    organization: SessionOrganization = SessionOrganization(),
+    onSaveSessionTags: (String, Set<String>) -> Unit = { _, _ -> },
+    onDeleteTag: (String) -> Unit = {},
+    onToggleGroup: (String) -> Unit = {},
 ) {
     var renameDialogTarget by remember { mutableStateOf<Pair<ProfileSessionRow, Boolean>?>(null) }
     var newThreadDialog by remember { mutableStateOf(false) }
@@ -482,78 +488,123 @@ fun SessionListBody(
     var showAllProfiles by rememberSaveable { mutableStateOf(false) }
     var customizeOpen by remember { mutableStateOf(false) }
     var viewOptions by remember { mutableStateOf(SessionDrawerViewOptions()) }
+    var selectedSourceGroups by remember { mutableStateOf(emptySet<SessionSourceGroup>()) }
+    var selectedTags by remember { mutableStateOf(emptySet<String>()) }
+    var editingTagsFor by remember { mutableStateOf<String?>(null) }
+    var managingTags by remember { mutableStateOf(false) }
+    val userTags = remember(organization.tags) { organization.tags.sorted() }
+    LaunchedEffect(organization.tags) {
+        selectedTags = selectedTags.intersect(organization.tags)
+    }
     val listState = rememberLazyListState()
     val trimmedQuery = query.trim()
     // Threads affordance shows when the capability is active OR there's already at least one
     // agent Thread (source=phone) in the list. If the filter is on Threads but they've
     // vanished, fall back to All so the drawer never gets stuck on an empty hidden filter.
-    val provisionalSessions = provisionalThreads.map { thread ->
-        ChatSession(
-            sessionId = "$PROVISIONAL_THREAD_PREFIX${thread.chatId}",
-            title = thread.title,
-            model = null,
-            messageCount = thread.messageCount,
-            updatedAt = thread.lastActivityAt,
-            startedAt = thread.lastActivityAt,
-            lastActivityAt = thread.lastActivityAt,
-            source = "phone",
+    val provisionalSessions = remember(provisionalThreads) {
+        provisionalThreads.map { thread ->
+            ChatSession(
+                sessionId = "$PROVISIONAL_THREAD_PREFIX${thread.chatId}",
+                title = thread.title,
+                model = null,
+                messageCount = thread.messageCount,
+                updatedAt = thread.lastActivityAt,
+                startedAt = thread.lastActivityAt,
+                lastActivityAt = thread.lastActivityAt,
+                source = "phone",
+            )
+        }
+    }
+    val scopedRows = remember(sessions, provisionalSessions, activeProfileName) {
+        (sessions + provisionalSessions).map { ProfileSessionRow(activeProfileName, it) }
+    }
+    val sourceRows = if (showAllProfiles) allProfileSessions else scopedRows
+    val scopedActivityStates = remember(sourceRows, activityStates, showAllProfiles) {
+        scopedSessionActivityStates(
+            rows = sourceRows,
+            activityStates = activityStates,
+            allowBareSessionIds = !showAllProfiles,
         )
     }
-    val scopedRows = (sessions + provisionalSessions).map { ProfileSessionRow(activeProfileName, it) }
-    val sourceRows = if (showAllProfiles) allProfileSessions else scopedRows
-    val scopedActivityStates = scopedSessionActivityStates(
-        rows = sourceRows,
-        activityStates = activityStates,
-        allowBareSessionIds = !showAllProfiles,
-    )
-    val sourceSessions = sourceRows.map { it.session }
-    val showThreads = supervisedSessionActions == null &&
-        (threadsCapabilityActive || sourceSessions.any { isThreadSource(it.source) })
+    val sourceSessions = remember(sourceRows) { sourceRows.map { it.session } }
+    val hasThreadSessions = remember(sourceSessions) { sourceSessions.any { isThreadSource(it.source) } }
+    val showThreads = supervisedSessionActions == null && (threadsCapabilityActive || hasThreadSessions)
     val effectiveArchiveSupported = archiveSupported && supervisedSessionActions?.archive != false
     val activeFilter = resolveSessionDrawerFilter(filter, showThreads, effectiveArchiveSupported)
+    val organizeAll = asFullPage && activeFilter == SessionDrawerFilter.All
     // External gateway sources present (discord/telegram/cron/…) for the source
     // filter dropdown. Own chats (tui/api_server) + phone Threads aren't listed.
-    val presentSources = (
-        sourceSessions.mapNotNull { it.source?.trim()?.lowercase()?.takeIf { s -> s.isNotBlank() } } +
+    val presentSources = remember(sourceSessions, hiddenSources) {
+        (sourceSessions.mapNotNull { it.source?.trim()?.lowercase()?.takeIf { s -> s.isNotBlank() } } +
             hiddenSources
         )
         .distinct()
         .filter { sourceBadge(it) != null }
         .sorted()
-    val categoryRows = sourceRows
-        .asSequence()
-        .filter { row ->
-            val session = row.session
-            when (activeFilter) {
-                SessionDrawerFilter.All -> !session.archived
-                SessionDrawerFilter.Threads ->
-                    isThreadSource(session.source) &&
-                        !session.archived
-                SessionDrawerFilter.Pinned ->
-                    session.pinned && !session.archived
-                SessionDrawerFilter.Archive -> session.archived
+    }
+    val categoryRows = remember(
+        sourceRows, activeFilter, hiddenSources, trimmedQuery, organizeAll,
+        selectedSourceGroups, selectedTags, organization.tagsBySession,
+    ) {
+        sourceRows
+            .asSequence()
+            .filter { row ->
+                val session = row.session
+                when (activeFilter) {
+                    SessionDrawerFilter.All -> !session.archived
+                    SessionDrawerFilter.Threads ->
+                        isThreadSource(session.source) &&
+                            !session.archived
+                    SessionDrawerFilter.Pinned ->
+                        session.pinned && !session.archived
+                    SessionDrawerFilter.Archive -> session.archived
+                }
             }
-        }
-        .filter { row ->
-            // Source visibility (default hides cron+webhook) — only on the "All"
-            // view; Threads/Pinned/Archive show their full set.
-            if (activeFilter != SessionDrawerFilter.All) return@filter true
-            val src = row.session.source?.trim()?.lowercase()
-            src == null || src !in hiddenSources
-        }
-        .filter { row ->
-            val session = row.session
-            val needle = trimmedQuery
-            needle.isBlank() ||
-                row.profile.contains(needle, ignoreCase = true) ||
-                session.sessionId.contains(needle, ignoreCase = true) ||
-                session.title.orEmpty().contains(needle, ignoreCase = true) ||
-                session.model.orEmpty().contains(needle, ignoreCase = true) ||
-                sessionWorkLabels(session).any { it.contains(needle, ignoreCase = true) }
-        }
-        .toList()
-    val visibleRows = filterAndSortSessionRows(categoryRows, viewOptions, scopedActivityStates)
-    val groupedRows = groupSessionRows(visibleRows, viewOptions.grouping, scopedActivityStates)
+            .filter { row ->
+                // Source visibility (default hides cron+webhook) — only on the "All"
+                // view; Threads/Pinned/Archive show their full set.
+                if (activeFilter != SessionDrawerFilter.All || organizeAll) return@filter true
+                val src = row.session.source?.trim()?.lowercase()
+                src == null || src !in hiddenSources
+            }
+            .filter { row ->
+                !organizeAll || (selectedSourceGroups.isEmpty() && selectedTags.isEmpty()) ||
+                    SessionSourceGroup.from(row.session.source) in selectedSourceGroups ||
+                    organization.tagsBySession[row.session.sessionId].orEmpty().any { it in selectedTags }
+            }
+            .filter { row ->
+                val session = row.session
+                val needle = trimmedQuery
+                needle.isBlank() ||
+                    row.profile.contains(needle, ignoreCase = true) ||
+                    session.sessionId.contains(needle, ignoreCase = true) ||
+                    session.title.orEmpty().contains(needle, ignoreCase = true) ||
+                    session.model.orEmpty().contains(needle, ignoreCase = true) ||
+                    sessionWorkLabels(session).any { it.contains(needle, ignoreCase = true) }
+            }
+            .toList()
+    }
+    val visibleRows = remember(categoryRows, viewOptions, scopedActivityStates) {
+        filterAndSortSessionRows(categoryRows, viewOptions, scopedActivityStates)
+    }
+    val drawerNowMillis = rememberDrawerClock(
+        isEnabled = isOpen && (
+            viewOptions.showUpdated || viewOptions.grouping == SessionDrawerGrouping.Project ||
+                viewOptions.grouping == SessionDrawerGrouping.Updated
+        ),
+    )
+    val groupingTime = if (!organizeAll && viewOptions.grouping == SessionDrawerGrouping.Updated) {
+        drawerNowMillis
+    } else 0L
+    val sourceGroupLabels = SessionSourceGroup.entries.map { stringResource(it.label) }
+    val groupedRows = remember(visibleRows, organizeAll, sourceGroupLabels, viewOptions.grouping, scopedActivityStates, groupingTime) {
+        if (organizeAll) {
+            val bySource = visibleRows.groupBy { SessionSourceGroup.from(it.session.source) }
+            SessionSourceGroup.entries.mapIndexedNotNull { index, group ->
+                bySource[group]?.let { SessionDrawerGroup(group.name, sourceGroupLabels[index], it) }
+            }
+        } else groupSessionRows(visibleRows, viewOptions.grouping, scopedActivityStates, drawerNowMillis)
+    }
     LaunchedEffect(
         listState,
         isOpen,
@@ -577,11 +628,6 @@ fun SessionListBody(
                 if (nearEnd && !isLoadingMore) onLoadMore()
             }
     }
-    val drawerNowMillis = rememberDrawerClock(
-        isEnabled = isOpen && (
-            viewOptions.showUpdated || viewOptions.grouping == SessionDrawerGrouping.Project
-        ),
-    )
     val drawerTitle = if (showAllProfiles) {
         stringResource(R.string.drawer_all_profiles)
     } else {
@@ -603,7 +649,7 @@ fun SessionListBody(
     } else {
         scopeSubtitle
     }
-    val projectGroupKeys = groupedRows.map { it.key }
+    val projectGroupKeys = remember(groupedRows) { groupedRows.map { it.key } }
     var expandedProjectGroups by remember(projectGroupKeys) {
         val initialGroup = projectGroupKeys.firstOrNull { key -> !key.endsWith(":No project") }
             ?: projectGroupKeys.firstOrNull()
@@ -913,6 +959,20 @@ fun SessionListBody(
                         )
                     }
             }
+            if (organizeAll) {
+                SessionOrganizationFilters(
+                    tags = userTags,
+                    groups = selectedSourceGroups,
+                    selectedTags = selectedTags,
+                    onClear = { selectedSourceGroups = emptySet(); selectedTags = emptySet() },
+                    onGroup = { group ->
+                        selectedSourceGroups = if (group in selectedSourceGroups) selectedSourceGroups - group
+                            else selectedSourceGroups + group
+                    },
+                    onTag = { tag -> selectedTags = if (tag in selectedTags) selectedTags - tag else selectedTags + tag },
+                    onManage = { managingTags = true },
+                )
+            }
             if (supervisedSessionActions == null) {
                 TextButton(
                     onClick = { customizeOpen = true },
@@ -1064,11 +1124,18 @@ fun SessionListBody(
                     }
                 }
                 groupedRows.forEach { group ->
-                    val isProjectGroup = viewOptions.grouping == SessionDrawerGrouping.Project
-                    val expanded = !isProjectGroup || group.key in expandedProjectGroups
+                    val isProjectGroup = !organizeAll && viewOptions.grouping == SessionDrawerGrouping.Project
+                    val expanded = if (organizeAll) group.key !in organization.collapsedGroups
+                        else !isProjectGroup || group.key in expandedProjectGroups
                     group.label?.let { label ->
                         item(key = "header:${group.key}") {
-                            if (isProjectGroup) {
+                            if (organizeAll) {
+                                TextButton(onClick = { onToggleGroup(group.key) }, modifier = Modifier.fillMaxWidth()) {
+                                    Text(label, modifier = Modifier.weight(1f))
+                                    Icon(if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                                        contentDescription = stringResource(if (expanded) R.string.session_group_collapse else R.string.session_group_expand))
+                                }
+                            } else if (isProjectGroup) {
                                 ProjectGroupHeader(
                                     label = label,
                                     rows = group.rows,
@@ -1100,6 +1167,8 @@ fun SessionListBody(
                             modifier = (if (isProjectGroup) Modifier.padding(start = 42.dp) else Modifier)
                                 .then(itemTestTag?.let { Modifier.testTag(it) } ?: Modifier),
                             session = session,
+                            tags = if (asFullPage) organization.tagsBySession[session.sessionId].orEmpty() else emptyList(),
+                            onEditTags = if (asFullPage) ({ editingTagsFor = session.sessionId }) else null,
                             hideProjectBadge = isProjectGroup,
                             profileLabel = row.profile.takeIf {
                                 showAllProfiles || viewOptions.showProfile
@@ -1232,6 +1301,21 @@ fun SessionListBody(
         }
     }
 
+    editingTagsFor?.let { id ->
+        SessionTagsEditor(
+            sessionId = id,
+            tags = userTags,
+            initial = organization.tagsBySession[id].orEmpty(),
+            onSave = { onSaveSessionTags(id, it) },
+            onDismiss = { editingTagsFor = null },
+        )
+    }
+    if (managingTags) {
+        SessionTagsManager(userTags, onDelete = { tag ->
+            selectedTags = selectedTags - tag
+            onDeleteTag(tag)
+        }, onDismiss = { managingTags = false })
+    }
     if (customizeOpen) {
         SessionDrawerOptionsDialog(
             options = viewOptions,
@@ -1753,11 +1837,13 @@ private fun ProjectGroupHeader(
     HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun SessionItem(
     modifier: Modifier = Modifier,
     session: ChatSession,
+    tags: List<String> = emptyList(),
+    onEditTags: (() -> Unit)? = null,
     hideProjectBadge: Boolean = false,
     profileLabel: String?,
     profileColors: Map<String, String>,
@@ -1807,7 +1893,12 @@ private fun SessionItem(
                 listOfNotNull(activityLabel, unreadLabel.takeIf { unread }).takeIf { it.isNotEmpty() }
                     ?.let { stateDescription = it.joinToString(". ") }
             }
-            .clickable(onClick = onClick)
+            .then(
+                if (onEditTags != null) Modifier.combinedClickable(
+                    onClick = onClick,
+                    onLongClick = { menuOpen = true },
+                ) else Modifier.clickable(onClick = onClick),
+            )
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -1831,6 +1922,19 @@ private fun SessionItem(
                     MaterialTheme.colorScheme.onSurface
                 }
             )
+            if (tags.isNotEmpty()) {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(top = 4.dp)) {
+                    tags.take(2).forEach { tag ->
+                        Surface(shape = RoundedCornerShape(6.dp), color = RelayRefresh.Relay.copy(alpha = 0.12f),
+                            modifier = Modifier.weight(1f, fill = false)) {
+                            Text(tag, style = MaterialTheme.typography.labelSmall, color = RelayRefresh.Relay,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+                        }
+                    }
+                    if (tags.size > 2) Text(stringResource(R.string.session_tags_more, tags.size - 2),
+                        style = MaterialTheme.typography.labelSmall, color = RelayRefresh.Relay)
+                }
+            }
             val workBadges = sessionWorkBadges(session).filterNot {
                 hideProjectBadge && it.kind == SessionWorkBadgeKind.PROJECT
             }
@@ -1928,7 +2032,7 @@ private fun SessionItem(
             }
         }
 
-        if (actionsEnabled) Box {
+        if (actionsEnabled || onEditTags != null) Box {
             IconButton(
                 onClick = { menuOpen = true },
                 modifier = Modifier.size(36.dp),
@@ -1944,6 +2048,10 @@ private fun SessionItem(
                 expanded = menuOpen,
                 onDismissRequest = { menuOpen = false },
             ) {
+                if (onEditTags != null) DropdownMenuItem(
+                    text = { Text(stringResource(R.string.session_tags_edit)) },
+                    onClick = { menuOpen = false; onEditTags() },
+                )
                 if (!provisional && supervisedSessionActions?.pin != false) DropdownMenuItem(
                     text = {
                         Text(

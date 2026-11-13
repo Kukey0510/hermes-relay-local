@@ -126,8 +126,13 @@ class GatewayChatClient(
     /** Random source for ordinary reconnect full-jitter. */
     private val reconnectJitterUnit: () -> Double = { kotlin.random.Random.nextDouble() },
 ) : GatewayProfileEditorClient {
-    /** Existing upstream rich-chat vocabulary; do not invent a Relay-only source. */
-    private val sessionSource = "webui"
+    /** Upstream's rich-chat vocabulary is webui/desktop; "relay_app" is this fork's
+     *  own stamp so the phone's sessions can be told apart from browser ones.
+     *  It is deliberately NOT "relay" — Platform.RELAY exists and a session under
+     *  a real platform value is treated as gateway-owned and never ended by the
+     *  TUI. "relay_app" raises ValueError in Platform(), so lifecycle falls back
+     *  to the same non-gateway path webui already uses. */
+    private val sessionSource = "relay_app"
     @Volatile
     private var profileDescribeSupported: Boolean? = null
     @Volatile
