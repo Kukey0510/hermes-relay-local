@@ -159,6 +159,11 @@ class BridgeCommandHandler(
     // handler no-ops (used by tests that don't care about the log).
     private val onActivity: ((com.hermesandroid.relay.data.BridgeActivityEntry) -> Unit)? = null,
     // === END v0.4.1 polish ===
+    // Application context for routes that need on-device storage roots
+    // (/localvision hot-reload dir, /fs/*, /logcat). Optional so unit tests
+    // that build the handler without an app graph keep compiling; routes
+    // that need it fail closed with a 503 when it is null.
+    private val appContext: android.content.Context? = null,
 ) {
 
     companion object {
@@ -199,6 +204,14 @@ class BridgeCommandHandler(
             "/location",
             "/search_contacts",
             "/wait",
+            // idea-011 r6: reading a frame for local page detection, listing /
+            // reading app-private files and dumping logcat never need the
+            // screen lit. /fs/write stays out of this set on purpose.
+            "/localvision",
+            "/read",
+            "/fs/list",
+            "/fs/read",
+            "/logcat",
         )
     }
 
@@ -722,6 +735,24 @@ class BridgeCommandHandler(
         // === END v0.4.1 unattended-access ===
 
         val executor = service.actionExecutor
+
+        // === idea-011 r6: on-device page detection + app-private file/log
+        // routes. Authorization already happened above via
+        // BridgeCommandRegistry; these handlers only run for granted routes.
+        val normalizedPath = path.substringBefore('?')
+        if (normalizedPath == LocalVisionBridgeRoutes.PATH) {
+            val routeResult = LocalVisionBridgeRoutes.handle(screenCapture, appContext, body)
+            return respond(requestId, routeResult.status, routeResult.payload)
+        }
+        if (normalizedPath == "/read") {
+            val routeResult = LocalVisionBridgeRoutes.handleRead(screenCapture, appContext, body)
+            return respond(requestId, routeResult.status, routeResult.payload)
+        }
+        if (FileBridgeRoutes.handles(normalizedPath, method)) {
+            val routeResult = FileBridgeRoutes.handle(appContext, normalizedPath, method, body)
+            return respond(requestId, routeResult.status, routeResult.payload)
+        }
+        // === END idea-011 r6 ===
 
         when (path) {
             "/events" -> {

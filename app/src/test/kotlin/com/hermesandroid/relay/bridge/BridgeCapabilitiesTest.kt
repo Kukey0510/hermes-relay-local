@@ -23,6 +23,10 @@ class BridgeCapabilitiesTest {
             "POST" to "/drag", "POST" to "/scroll", "POST" to "/press_key",
             "POST" to "/open_app", "POST" to "/return_to_hermes",
             "POST" to "/send_intent", "POST" to "/broadcast",
+            // idea-011 r6: on-device page detection + count reading + sandboxed file/log access.
+            "POST" to "/localvision", "POST" to "/read",
+            "POST" to "/fs/list", "POST" to "/fs/read", "POST" to "/fs/write",
+            "GET" to "/logcat", "POST" to "/logcat",
         )
         assertEquals(expected, BridgeCommandRegistry.registeredRoutes())
     }

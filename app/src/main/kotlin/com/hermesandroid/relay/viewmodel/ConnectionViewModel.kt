@@ -3423,6 +3423,9 @@ class ConnectionViewModel(application: Application) : AndroidViewModel(applicati
             }
         },
         // === END v0.4.1 polish ===
+        // === idea-011 r6: on-device storage roots for /localvision + /fs/* ===
+        appContext = application,
+        // === END idea-011 r6 ===
     )
 
     val bridgeStatusReporter = BridgeStatusReporter(
