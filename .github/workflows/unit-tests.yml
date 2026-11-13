@@ -11,7 +11,7 @@ name: unit-tests
 on:
   workflow_dispatch:
   push:
-    branches: [feat/ui-redesign]
+    branches: [main, feat/ui-redesign]
     paths:
       - 'app/src/**'
       - 'app/build.gradle.kts'
