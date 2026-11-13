@@ -34,6 +34,10 @@ local.properties
 /build-*.log
 *.jks
 *.keystore
+# The self-hosted sideload build pins one fixed debug signing key so successive
+# CI builds can upgrade-install over each other. That one file must be tracked;
+# every other keystore stays ignored.
+!app/debug.keystore
 /captures
 .externalNativeBuild
 .cxx

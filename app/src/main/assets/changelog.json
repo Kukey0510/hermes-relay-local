@@ -10,7 +10,7 @@
           "id": "rename",
           "kind": "improved",
           "title": "改了包名和显示名",
-          "summary": "com.hermesandroid.hermes_relay_script，桌面叫 hermes",
+          "summary": "com.hermesandroid.hermesrelay，桌面叫 hermes",
           "highlight": true
         },
         {
@@ -46,7 +46,7 @@
         "title": "自用版",
         "summary": "名字、包名、模式都换成自己的",
         "bullets": [
-          "包名 hermes_relay_script",
+          "包名 hermesrelay",
           "桌面叫 hermes",
           "默认白色",
           "固定签名可覆盖升级"

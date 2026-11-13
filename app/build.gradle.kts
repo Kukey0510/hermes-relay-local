@@ -45,12 +45,17 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        // Axiom-Labs, LLC Play Console listing. Changed from the original
-        // `com.hermesandroid.relay` on 2026-04-13 during the org-account
-        // migration. The old Internal-testing listing under Bailey's personal
-        // account is being deleted; the DUNS-verified Axiom-Labs account is
-        // exempt from Play's 14-day closed-testing rule. See RELEASE.md.
-        applicationId = "com.hermesandroid.hermes_relay_script"
+        // Self-hosted build (IDEA-011/012). This is not the Play listing and
+        // never ships to Play: it exists only for sideload installs from CI
+        // artifacts/releases, so the old Axiom-Labs Play identity is not used.
+        //
+        // The value must stay a legal RFC 3986 URI scheme: the app's native
+        // sign-in return URI is "BuildConfig.APPLICATION_ID://return" and the
+        // manifest intent-filter matches on "${applicationId}". Package IDs
+        // allow underscores (Java identifier rules), but URI schemes do not —
+        // `com.hermesandroid.hermes_relay_script` produced an unparseable URI
+        // and broke both the return-URI test and the native sign-in handoff.
+        applicationId = "com.hermesandroid.hermesrelay"
         minSdk = 26
         targetSdk = 36
         versionCode = libs.versions.appVersionCode.get().toInt()
