@@ -4595,6 +4595,9 @@
     <string name="bridge_core_not_allowed">未允许</string>
     <string name="bridge_core_enable_master_first">请先打开 Bridge 总开关</string>
     <string name="scripts_read_only_notice">本版本只展示脚本，不执行。</string>
+    <string name="scripts_run">运行</string>
+    <string name="scripts_running">运行中…</string>
+    <string name="scripts_recent_results">最近步骤结果</string>
     <string name="session_list_title">全部会话</string>
     <string name="bridge_quick_screenshot">截图 / 读屏</string>
     <string name="bridge_quick_screenshot_subtitle">只读屏幕内容</string>

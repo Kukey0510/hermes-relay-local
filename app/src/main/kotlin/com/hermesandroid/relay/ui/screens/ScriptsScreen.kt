@@ -59,6 +59,12 @@ import com.hermesandroid.relay.ui.scripts.applyScriptTagOverrides
 import com.hermesandroid.relay.ui.scripts.filterScripts
 import com.hermesandroid.relay.ui.theme.RelayRefresh
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import com.hermesandroid.relay.network.relay.models.Envelope
 import java.text.DateFormat
 import java.util.Date
 
@@ -239,6 +245,8 @@ fun ScriptDetailScreen(scriptId: String, onBack: () -> Unit) {
     val defaults = (result as? ScriptCatalogResult.Loaded)?.entries.orEmpty()
     val entry = applyScriptTagOverrides(defaults, overrides).firstOrNull { it.id == scriptId }
     var editing by remember { mutableStateOf(false) }
+    var running by remember { mutableStateOf(false) }
+    var recentLogs by remember { mutableStateOf(emptyList<String>()) }
 
     Scaffold(
         modifier = Modifier.testTag("scripts.detail"),
@@ -260,6 +268,34 @@ fun ScriptDetailScreen(scriptId: String, onBack: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 item { Text(entry.name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
+                item {
+                    Button(enabled = !running, onClick = {
+                        running = true
+                        scope.launch {
+                            val response = connection.bridgeCommandHandler.handleLocalCommand(
+                                Envelope(channel = "bridge", type = "bridge.command", payload = buildJsonObject {
+                                    put("request_id", java.util.UUID.randomUUID().toString())
+                                    put("method", "POST"); put("path", "/script/run")
+                                    put("body", buildJsonObject { put("scriptId", entry.id) })
+                                })
+                            )
+                            val logs = response.resultJson?.get("logs") as? JsonArray
+                            recentLogs = logs.orEmpty().takeLast(5).map { item ->
+                                val value = item.jsonObject
+                                "${value["op"]?.jsonPrimitive?.content}: ${value["message"]?.jsonPrimitive?.content}"
+                            }.ifEmpty { listOf(response.errorCode ?: response.errorMessage ?: "-") }
+                            running = false
+                        }
+                    }, modifier = Modifier.testTag("scripts.run")) {
+                        Text(stringResource(if (running) R.string.scripts_running else R.string.scripts_run))
+                    }
+                }
+                if (recentLogs.isNotEmpty()) item {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(stringResource(R.string.scripts_recent_results), style = MaterialTheme.typography.titleMedium)
+                        recentLogs.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    }
+                }
                 item { DetailField(R.string.scripts_game_label, entry.game) }
                 item {
                     DetailField(R.string.scripts_tag_label, entry.tags.joinToString(" · "))
@@ -274,8 +310,6 @@ fun ScriptDetailScreen(scriptId: String, onBack: () -> Unit) {
                     }
                 }
                 item { DetailField(R.string.scripts_source_label, entry.sourceNote) }
-                item { Text(stringResource(R.string.scripts_read_only_notice), style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 10.dp, bottom = 20.dp)) }
             }
             if (editing) {
                 ScriptTagsEditor(

@@ -25,6 +25,7 @@ class BridgeCapabilitiesTest {
             "POST" to "/send_intent", "POST" to "/broadcast",
             // idea-011 r6: on-device page detection + count reading + sandboxed file/log access.
             "POST" to "/localvision", "POST" to "/read",
+            "POST" to "/script/run",
             "POST" to "/fs/list", "POST" to "/fs/read", "POST" to "/fs/write",
             "GET" to "/logcat", "POST" to "/logcat",
         )

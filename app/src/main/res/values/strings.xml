@@ -4720,6 +4720,9 @@
     <string name="scripts_step_number">%1$d. %2$s</string>
     <string name="scripts_source_label">Source</string>
     <string name="scripts_read_only_notice">This version displays scripts only and does not run them.</string>
+    <string name="scripts_run">Run</string>
+    <string name="scripts_running">Running…</string>
+    <string name="scripts_recent_results">Recent step results</string>
     <string name="session_list_title">Conversations</string>
     <string name="bridge_quick_screenshot">Screenshot / read</string>
     <string name="bridge_quick_screenshot_subtitle">Read screen content only</string>

@@ -740,6 +740,33 @@ class BridgeCommandHandler(
         // routes. Authorization already happened above via
         // BridgeCommandRegistry; these handlers only run for granted routes.
         val normalizedPath = path.substringBefore('?')
+        if (normalizedPath == "/script/run") {
+            val scriptId = body["scriptId"]?.jsonPrimitive?.content.orEmpty()
+            if (scriptId.isBlank()) return respond(requestId, 400, buildJsonObject {
+                put("error", "missing scriptId"); put("error_code", "missing_script_id")
+            })
+            val result = com.hermesandroid.relay.script.runtime.ScriptRuntime.run(
+                appContext ?: service.applicationContext, screenCapture, scriptId,
+            )
+            val status = when (result.errorCode) {
+                null -> 200
+                "run_in_progress" -> 409
+                "script_not_found" -> 404
+                else -> 400
+            }
+            return respond(requestId, status, buildJsonObject {
+                put("accepted", result.success)
+                put("runId", result.runId)
+                result.errorCode?.let { put("error_code", it); put("error", it) }
+                put("logs", buildJsonArray {
+                    result.logs.forEach { log -> add(buildJsonObject {
+                        put("step_index", log.stepIndex); put("op", log.op)
+                        put("success", log.success); put("attempts", log.attempts)
+                        put("message", log.message)
+                    }) }
+                })
+            })
+        }
         if (normalizedPath == LocalVisionBridgeRoutes.PATH) {
             val routeResult = LocalVisionBridgeRoutes.handle(screenCapture, appContext, body)
             return respond(requestId, routeResult.status, routeResult.payload)
