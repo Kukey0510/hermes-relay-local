@@ -292,7 +292,6 @@ import com.hermesandroid.relay.util.HumanErrorAction
 import com.hermesandroid.relay.ui.theme.RelayRefresh
 import com.hermesandroid.relay.ui.theme.appearanceRoundedCornerShape
 import kotlin.math.abs
-import com.hermesandroid.relay.ui.theme.relayGridTexture
 import com.hermesandroid.relay.ui.theme.relayMetadataStyle
 import androidx.compose.ui.text.style.TextAlign
 import kotlin.math.roundToInt
@@ -2858,11 +2857,20 @@ fun ChatScreen(
         val isDarkTheme = LocalBrand.current.isDark
 
         Box(modifier = Modifier.fillMaxSize()) {
+        val backgroundContext = LocalContext.current.applicationContext
+        val backgroundRepository = remember(backgroundContext) {
+            com.hermesandroid.relay.data.ChatBackgroundRepository(backgroundContext)
+        }
+        val chatBackground by backgroundRepository.settings.collectAsState(
+            initial = com.hermesandroid.relay.data.ChatBackgroundSettings(),
+        )
+        com.hermesandroid.relay.ui.settings.ChatBackgroundLayer(
+            settings = chatBackground,
+            modifier = Modifier.fillMaxSize(),
+        )
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(RelayRefresh.Background)
-                .relayGridTexture(alpha = 0.14f)
                 .imePadding()
                 .alpha(chatAlpha)
         ) {

@@ -4725,4 +4725,15 @@
     <string name="bridge_quick_permissions">Permissions</string>
     <string name="bridge_quick_permissions_subtitle">Review Android access</string>
     <string name="bridge_quick_manage">Manage</string>
+    <string name="chat_background_title">Chat background</string>
+    <string name="chat_background_description">Choose an image and opacity</string>
+    <string name="chat_background_gallery">Choose from gallery</string>
+    <string name="chat_background_presets">Presets</string>
+    <string name="chat_background_none">No background</string>
+    <string name="chat_background_opacity_value">Opacity: %1$d%%</string>
+    <string name="chat_background_preview">Message preview</string>
+    <string name="chat_background_close">Back</string>
+    <string name="chat_background_preset_number">Preset %1$d</string>
+    <string name="chat_background_importing">Importing image…</string>
+    <string name="chat_background_error">Could not save the background. Please try again.</string>
 </resources>
