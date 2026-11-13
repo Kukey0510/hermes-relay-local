@@ -15,6 +15,8 @@ val candidateKind = providers.gradleProperty("candidate.kind").orElse("review").
 val candidateLabel = providers.gradleProperty("candidate.label").orElse("Local review").get()
 val candidateSourceRef = providers.gradleProperty("candidate.sourceRef").orElse("local").get()
 val candidateSourceSha = providers.gradleProperty("candidate.sourceSha").orElse("unknown").get()
+val hermesVersionCodeProperty = providers.gradleProperty("hermes.versionCode")
+val hermesVersionCode = hermesVersionCodeProperty.orElse(libs.versions.appVersionCode).get()
 hermesDevAbi?.let { requestedAbi ->
     require(requestedAbi in supportedHermesDevAbis) {
         "Unsupported hermes.devAbi '$requestedAbi'. Expected one of: " +
@@ -58,7 +60,7 @@ android {
         applicationId = "com.hermesandroid.hermesrelay"
         minSdk = 26
         targetSdk = 36
-        versionCode = libs.versions.appVersionCode.get().toInt()
+        versionCode = hermesVersionCode.toInt()
         versionName = libs.versions.appVersionName.get()
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -146,8 +148,9 @@ android {
         }
         create("candidate") {
             initWith(getByName("release"))
-            applicationIdSuffix = ".candidate"
-            versionNameSuffix = "-candidate"
+            applicationIdSuffix = ".script"
+            versionNameSuffix = hermesVersionCodeProperty.orNull?.let { "-script-r$it" } ?: "-candidate"
+            resValue("string", "app_name", "Hermes Script")
             isDebuggable = false
             matchingFallbacks += listOf("release")
             buildConfigField("boolean", "CANDIDATE_BUILD", "true")
@@ -166,6 +169,7 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+        resValues = true
     }
 
     sourceSets {
@@ -418,3 +422,11 @@ dependencies {
     testImplementation("androidx.test.ext:junit:1.3.0")
 }
 
+
+// IDEA-011 acceptance alias: candidate remains a build type, while this task
+// assembles its sideload variant and stages the APK under the contracted path.
+tasks.register<Sync>("assembleCandidateDebug") {
+    dependsOn("assembleSideloadCandidate")
+    from(layout.buildDirectory.dir("outputs/apk/sideload/candidate"))
+    into(layout.buildDirectory.dir("outputs/apk/candidate/debug"))
+}

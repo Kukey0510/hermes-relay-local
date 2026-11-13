@@ -583,12 +583,40 @@ class ScreenCapture(
     var lastFrameDebug: String = ""
         private set
 
+    data class LocalFrameInfo(
+        val width: Int,
+        val height: Int,
+        val format: String,
+        val rowStride: Int,
+        val pixelStride: Int,
+        val samples: List<String>,
+    )
+
+    @Volatile
+    var lastFrameInfo: LocalFrameInfo? = null
+        private set
+
     private fun imageToRgbImage(image: Image, width: Int, height: Int): RgbImage {
         val rgb = when (image.format) {
             PixelFormat.RGBA_8888 -> rgbaToRgb(image, width, height)
             ImageFormat.YUV_420_888 -> yuv420ToRgb(image, width, height)
             else -> throw IOException("unsupported capture image format: ${image.format}")
         }
+        val sampleColors = buildList {
+            val pixels = rgb.rgb
+            if (pixels.isNotEmpty()) {
+                add(String.format("#%06X", pixels[pixels.size / 2] and 0xFFFFFF))
+                add(String.format("#%06X", pixels[pixels.size / 4] and 0xFFFFFF))
+            }
+        }
+        lastFrameInfo = LocalFrameInfo(
+            width = width,
+            height = height,
+            format = if (image.format == PixelFormat.RGBA_8888) "RGBA_8888" else "YUV420_888",
+            rowStride = image.planes[0].rowStride,
+            pixelStride = image.planes[0].pixelStride,
+            samples = sampleColors,
+        )
         lastFrameDebug = buildString {
             append(if (image.format == PixelFormat.RGBA_8888) "RGBA" else "YUV420")
             append(" ").append(width).append("x").append(height)

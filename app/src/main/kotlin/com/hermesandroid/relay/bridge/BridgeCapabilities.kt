@@ -69,6 +69,19 @@ object BridgeCommandRegistry {
         listOf("/screen", "/screenshot", "/screen_hash", "/events").forEach {
             route("GET", it, timed(BridgeCapability.SCREEN_INSPECTION))
         }
+        // idea-011 r6: on-device page detection (same screen-capture grant as
+        // /screenshot; timed because it reads the screen).
+        route("POST", "/localvision", timed(BridgeCapability.SCREEN_INSPECTION))
+        route("POST", "/read", timed(BridgeCapability.SCREEN_INSPECTION))
+        // idea-011 r6: app-private file + log access. Sandboxed to filesDir /
+        // cacheDir / externalFilesDir in FileBridgeRoutes; gated behind the
+        // permanent "Device Info" grant the Bridge tab exposes.
+        listOf("/fs/list", "/fs/read", "/fs/write").forEach {
+            route("POST", it, permanent(BridgeCapability.DEVICE_INFO))
+        }
+        listOf("GET", "POST").forEach { method ->
+            route(method, "/logcat", permanent(BridgeCapability.DEVICE_INFO))
+        }
         listOf("/find_nodes", "/describe_node", "/diff_screen", "/events/stream").forEach {
             route("POST", it, timed(BridgeCapability.SCREEN_INSPECTION))
         }
