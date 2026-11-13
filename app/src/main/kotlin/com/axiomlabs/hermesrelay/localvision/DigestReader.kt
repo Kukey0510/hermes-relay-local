@@ -23,6 +23,46 @@ internal object DigestDecoder {
         val number = decoded.substringBefore('/')
         return number.takeIf { it.isNotEmpty() && it.all(Char::isDigit) }?.toIntOrNull()
     }
+
+    /** 右锚定变长切分：strip 已裁到文本区域，从右边界往左逐位匹配。
+     *
+     * 步进用**每个字符自己的 advance**（比例字体，实测 '0'=16、'1'=11、'/'=12、
+     * 其它数字=12），不要用统一字距 —— 实测按固定 12 步进会在 "10/10" 上错位到读不出。
+     */
+    fun decodeRightAligned(
+        strip: GrayImage,
+        templates: Map<Char, GrayImage>,
+        threshold: Double,
+        cellStep: Int,
+        advances: Map<Char, Int> = emptyMap(),
+    ): Int? {
+        if (templates.isEmpty() || cellStep <= 0 || strip.width <= 0) return null
+        var cursor = strip.width
+        val chars = mutableListOf<Char>()
+        for (iteration in 0 until strip.width / cellStep + 2) {
+            val match = templates.entries.mapNotNull { (character, template) ->
+                val left = cursor - template.width
+                if (left < 0 || template.height > strip.height) return@mapNotNull null
+                val pixels = ByteArray(template.width * template.height)
+                for (y in 0 until template.height) {
+                    strip.pixels.copyInto(
+                        pixels,
+                        y * template.width,
+                        y * strip.width + left,
+                        y * strip.width + cursor,
+                    )
+                }
+                val window = GrayImage(template.width, template.height, pixels)
+                character to TemplateMatcher(template).find(window, minScore = 0.0).score
+            }.maxByOrNull { it.second } ?: break
+            if (match.second < threshold) break
+            chars += match.first
+            cursor -= advances[match.first] ?: cellStep
+        }
+        val decoded = chars.asReversed().joinToString("")
+        val number = decoded.substringBefore('/')
+        return number.takeIf { it.isNotEmpty() && it.all(Char::isDigit) }?.toIntOrNull()
+    }
 }
 
 class DigestReader(context: Context, private val hotReloadDir: File? = null) {
@@ -34,6 +74,9 @@ class DigestReader(context: Context, private val hotReloadDir: File? = null) {
         val charset: List<Char>,
         val cellWidth: Int,
         val cellHeight: Int,
+        val layout: String,
+        val cellStep: Int,
+        val advance: Map<Char, Int>,
         val threshold: Double,
     )
 
@@ -59,10 +102,18 @@ class DigestReader(context: Context, private val hotReloadDir: File? = null) {
                 val cropped = crop(image, spec.region)
                 val gray = Grayscale.fromRgb(cropped)
                 if (gray.height < spec.cellHeight) return@measureNanoTime
-                val cells = (0 until gray.width / spec.cellWidth).map { index ->
-                    crop(gray, Rect(index * spec.cellWidth, 0, spec.cellWidth, spec.cellHeight))
+                value = when (spec.layout) {
+                    "left_to_right" -> {
+                        val cells = (0 until gray.width / spec.cellWidth).map { index ->
+                            crop(gray, Rect(index * spec.cellWidth, 0, spec.cellWidth, spec.cellHeight))
+                        }
+                        DigestDecoder.decode(cells, templates, spec.threshold)
+                    }
+                    "right_to_left" -> DigestDecoder.decodeRightAligned(
+                        gray, templates, spec.threshold, spec.cellStep, spec.advance,
+                    )
+                    else -> null
                 }
-                value = DigestDecoder.decode(cells, templates, spec.threshold)
                 if (value != null) source = "template"
             } catch (_: Exception) {
                 value = null
@@ -87,20 +138,41 @@ class DigestReader(context: Context, private val hotReloadDir: File? = null) {
             val item = fields.getJSONObject(index)
             val region = item.getJSONArray("region")
             val charset = item.getJSONArray("charset")
-            require(item.getString("layout") == "left_to_right")
+            val layout = if (item.has("layout")) item.getString("layout") else "left_to_right"
+            require(layout == "left_to_right" || layout == "right_to_left")
+            val cellWidth = item.getInt("cell_width")
             FieldSpec(
                 item.getString("name"),
                 Rect(region.getInt(0), region.getInt(1), region.getInt(2), region.getInt(3)),
                 (0 until charset.length()).map { charset.getString(it).single() },
-                item.getInt("cell_width"),
+                cellWidth,
                 item.getInt("cell_height"),
+                layout,
+                if (item.has("cell_step")) item.getInt("cell_step") else cellWidth,
+                parseAdvance(item),
                 item.getDouble("threshold"),
-            ).also { require(it.cellWidth > 0 && it.cellHeight > 0 && it.threshold in 0.0..1.0) }
+            ).also {
+                require(it.cellWidth > 0 && it.cellHeight > 0 && it.cellStep > 0 && it.threshold in 0.0..1.0)
+            }
         }
     }
 
+    /** 可选的逐字符步进表（比例字体）。缺失或非法值一律忽略，退回 cell_step。 */
+    private fun parseAdvance(item: JSONObject): Map<Char, Int> {
+        val obj = item.optJSONObject("advance") ?: return emptyMap()
+        return obj.keys().asSequence()
+            .mapNotNull { key ->
+                val char = key.singleOrNull() ?: return@mapNotNull null
+                val step = obj.optInt(key, 0)
+                if (step > 0) char to step else null
+            }
+            .toMap()
+    }
+
     private fun loadTemplate(field: String, char: Char): GrayImage? {
-        val relative = "digits/$field/$char.png"
+        // '/' 不能进文件名（会被当成路径分隔符），统一存成 slash.png。
+        val fileName = if (char.isLetterOrDigit()) char.toString() else "slash"
+        val relative = "digits/$field/$fileName.png"
         val bytes = hotReloadDir?.resolve(relative)?.takeIf(File::isFile)?.let { runCatching { it.readBytes() }.getOrNull() }
             ?: runCatching { appContext.assets.open(relative).use { it.readBytes() } }.getOrNull()
             ?: return null

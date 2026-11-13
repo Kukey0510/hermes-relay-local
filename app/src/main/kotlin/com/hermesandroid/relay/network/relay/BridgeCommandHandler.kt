@@ -208,6 +208,7 @@ class BridgeCommandHandler(
             // reading app-private files and dumping logcat never need the
             // screen lit. /fs/write stays out of this set on purpose.
             "/localvision",
+            "/read",
             "/fs/list",
             "/fs/read",
             "/logcat",
@@ -741,6 +742,10 @@ class BridgeCommandHandler(
         val normalizedPath = path.substringBefore('?')
         if (normalizedPath == LocalVisionBridgeRoutes.PATH) {
             val routeResult = LocalVisionBridgeRoutes.handle(screenCapture, appContext, body)
+            return respond(requestId, routeResult.status, routeResult.payload)
+        }
+        if (normalizedPath == "/read") {
+            val routeResult = LocalVisionBridgeRoutes.handleRead(screenCapture, appContext, body)
             return respond(requestId, routeResult.status, routeResult.payload)
         }
         if (FileBridgeRoutes.handles(normalizedPath, method)) {

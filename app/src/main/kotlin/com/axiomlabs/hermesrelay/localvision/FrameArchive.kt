@@ -16,6 +16,36 @@ object FrameArchive {
 
     data class Entry(val file: File, val tag: String, val savedAtMs: Long)
 
+    /** 环形裁剪的决策结果，与文件系统无关，纯 JVM 可测。 */
+    internal data class ArchiveCandidate(
+        val name: String,
+        val lastModifiedMs: Long,
+        val sizeBytes: Long,
+    )
+
+    /** 返回应当被删除的条目，按「最旧优先」顺序；调用方负责真正 delete。 */
+    internal fun evictionsFor(
+        entries: List<ArchiveCandidate>,
+        maxFiles: Int = MAX_FILES,
+        maxBytes: Long = MAX_BYTES,
+    ): List<ArchiveCandidate> {
+        val oldestFirst = entries.sortedWith(
+            compareBy<ArchiveCandidate> { it.lastModifiedMs }.thenBy { it.name },
+        )
+        if (maxFiles <= 0) return oldestFirst
+
+        var remainingFiles = oldestFirst.size
+        var remainingBytes = oldestFirst.sumOf { it.sizeBytes }
+        val evictions = mutableListOf<ArchiveCandidate>()
+        for (candidate in oldestFirst) {
+            if (remainingFiles <= maxFiles && remainingBytes <= maxBytes) break
+            evictions += candidate
+            remainingFiles -= 1
+            remainingBytes -= candidate.sizeBytes
+        }
+        return evictions
+    }
+
     fun save(context: Context?, image: RgbImage, tag: String): Entry? = synchronized(lock) {
         if (context == null) return@synchronized null
         var bitmap: Bitmap? = null
@@ -56,13 +86,11 @@ object FrameArchive {
     }
 
     private fun trim(directory: File) {
-        val files = archiveFiles(directory).toMutableList()
-        var totalBytes = files.sumOf { it.length() }
-        while (files.isNotEmpty() && (files.size > MAX_FILES || totalBytes > MAX_BYTES)) {
-            val oldest = files.removeAt(0)
-            val length = oldest.length()
-            if (oldest.delete()) totalBytes -= length
+        val filesByName = archiveFiles(directory).associateBy { it.name }
+        val candidates = filesByName.values.map { file ->
+            ArchiveCandidate(file.name, file.lastModified(), file.length())
         }
+        evictionsFor(candidates).forEach { candidate -> filesByName[candidate.name]?.delete() }
     }
 
     private fun archiveFiles(directory: File): List<File> =

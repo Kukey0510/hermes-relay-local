@@ -2,10 +2,13 @@ package com.hermesandroid.relay.network.relay
 
 import android.content.Context
 import android.os.SystemClock
+import com.axiomlabs.hermesrelay.localvision.DigestReader
 import com.axiomlabs.hermesrelay.localvision.FrameArchive
 import com.axiomlabs.hermesrelay.localvision.LocalVisionRunner
 import com.hermesandroid.relay.accessibility.ScreenCapture
+import java.io.File
 import kotlinx.coroutines.delay
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -68,6 +71,51 @@ object LocalVisionBridgeRoutes {
                     put("samples", buildJsonArray { frame.samples.forEach { add(JsonPrimitive(it)) } })
                 }
             }
+        })
+    }
+
+    suspend fun handleRead(
+        screenCapture: ScreenCapture?,
+        appContext: Context?,
+        body: JsonObject,
+    ): Result {
+        val field = (body["field"] as? JsonPrimitive)?.content.takeUnless { it.isNullOrEmpty() }
+            ?: return Result(200, buildJsonObject {
+                put("ok", false)
+                put("error", "missing_field")
+            })
+        val delayMs = ((body["delay_ms"] as? JsonPrimitive)?.intOrNull ?: 0).coerceIn(0, 5_000)
+        val saveFrame = (body["save_frame"] as? JsonPrimitive)?.booleanOrNull ?: false
+        if (delayMs > 0) delay(delayMs.toLong())
+        if (screenCapture == null) return Result(503, buildJsonObject {
+            put("ok", false)
+            put("error", "capture_not_wired")
+        })
+
+        val started = SystemClock.elapsedRealtime()
+        val image = screenCapture.captureLocalFrame().getOrElse { cause ->
+            return Result(200, buildJsonObject {
+                put("ok", false)
+                put("error", "capture_failed")
+                put("detail", (cause.message ?: cause.toString()).take(200))
+            })
+        }
+        val reading = appContext?.let { context ->
+            DigestReader(context, File(context.filesDir, "localvision")).read(image, field)
+        }
+        val value = reading?.value
+        val archived = if (saveFrame && value == null) {
+            FrameArchive.save(appContext, image, "read")
+        } else {
+            null
+        }
+        return Result(200, buildJsonObject {
+            put("ok", true)
+            put("field", field)
+            put("value", value?.let(::JsonPrimitive) ?: JsonNull)
+            put("source", reading?.source ?: "no_context")
+            put("elapsed_ms", SystemClock.elapsedRealtime() - started)
+            if (archived != null) put("frame_saved", archived.file.name)
         })
     }
 

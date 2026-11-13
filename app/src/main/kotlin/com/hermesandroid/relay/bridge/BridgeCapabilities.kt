@@ -72,6 +72,7 @@ object BridgeCommandRegistry {
         // idea-011 r6: on-device page detection (same screen-capture grant as
         // /screenshot; timed because it reads the screen).
         route("POST", "/localvision", timed(BridgeCapability.SCREEN_INSPECTION))
+        route("POST", "/read", timed(BridgeCapability.SCREEN_INSPECTION))
         // idea-011 r6: app-private file + log access. Sandboxed to filesDir /
         // cacheDir / externalFilesDir in FileBridgeRoutes; gated behind the
         // permanent "Device Info" grant the Bridge tab exposes.
