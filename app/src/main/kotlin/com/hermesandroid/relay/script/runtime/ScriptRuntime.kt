@@ -29,6 +29,16 @@ object ScriptRuntime {
         return scripts.firstOrNull { it.id == scriptId }
     }
 
+    /** Server asks the phone to re-send whatever it could not deliver (bridge route). */
+    suspend fun flushOutbox(context: Context): ScriptFlushResult {
+        val app = context.applicationContext as com.hermesandroid.relay.HermesRelayApp
+        val connection = app.runtime.connectionViewModel
+        val reporter = ScriptEventReporter(HttpScriptEventSender(
+            baseUrl = { connection.apiServerUrl.value }, bearer = connection::getApiKey,
+        ), outbox = ScriptEventOutbox(context.filesDir))
+        return reporter.flush()
+    }
+
     suspend fun run(context: Context, screenCapture: ScreenCapture?, scriptId: String): ScriptRunResult {
         val store = ScriptRunStore(context.filesDir)
         store.cleanupExpiredLogs()
@@ -43,7 +53,9 @@ object ScriptRuntime {
         val connection = app.runtime.connectionViewModel
         val reporter = ScriptEventReporter(HttpScriptEventSender(
             baseUrl = { connection.apiServerUrl.value }, bearer = connection::getApiKey,
-        ))
+        ), outbox = ScriptEventOutbox(context.filesDir))
+        // Block 24: replay anything the server missed before a new run starts.
+        reporter.flush()
         val result = runner.run(
             script = script,
             access = AndroidAccess(context, screenCapture, service),

@@ -74,6 +74,8 @@ object BridgeCommandRegistry {
         route("POST", "/localvision", timed(BridgeCapability.SCREEN_INSPECTION))
         route("POST", "/read", timed(BridgeCapability.SCREEN_INSPECTION))
         route("POST", "/script/run", permanent(BridgeCapability.SCREEN_CONTROL))
+        // block 24: replay run events the server never acknowledged; no screen needed.
+        route("POST", "/script/flush-events", permanent(BridgeCapability.DEVICE_INFO))
         // idea-011 r6: app-private file + log access. Sandboxed to filesDir /
         // cacheDir / externalFilesDir in FileBridgeRoutes; gated behind the
         // permanent "Device Info" grant the Bridge tab exposes.

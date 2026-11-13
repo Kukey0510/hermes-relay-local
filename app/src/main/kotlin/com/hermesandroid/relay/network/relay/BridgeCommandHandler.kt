@@ -209,6 +209,8 @@ class BridgeCommandHandler(
             // screen lit. /fs/write stays out of this set on purpose.
             "/localvision",
             "/read",
+            // block 24: re-sending queued run events needs no screen access.
+            "/script/flush-events",
             "/fs/list",
             "/fs/read",
             "/logcat",
@@ -765,6 +767,18 @@ class BridgeCommandHandler(
                         put("message", log.message)
                     }) }
                 })
+            })
+        }
+        if (normalizedPath == "/script/flush-events") {
+            // Block 24: server-side manual re-pull of events the phone could not deliver.
+            val result = com.hermesandroid.relay.script.runtime.ScriptRuntime.flushOutbox(
+                appContext ?: service.applicationContext,
+            )
+            return respond(requestId, 200, buildJsonObject {
+                put("ok", true)
+                put("pending", result.pending)
+                put("sent", result.sent)
+                put("remaining", result.remaining)
             })
         }
         if (normalizedPath == LocalVisionBridgeRoutes.PATH) {

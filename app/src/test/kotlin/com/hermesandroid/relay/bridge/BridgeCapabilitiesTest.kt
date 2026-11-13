@@ -26,6 +26,8 @@ class BridgeCapabilitiesTest {
             // idea-011 r6: on-device page detection + count reading + sandboxed file/log access.
             "POST" to "/localvision", "POST" to "/read",
             "POST" to "/script/run",
+            // block 24: replay queued run events after the server missed them.
+            "POST" to "/script/flush-events",
             "POST" to "/fs/list", "POST" to "/fs/read", "POST" to "/fs/write",
             "GET" to "/logcat", "POST" to "/logcat",
         )
