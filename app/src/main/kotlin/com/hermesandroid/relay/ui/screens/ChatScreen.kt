@@ -4990,7 +4990,7 @@ fun ChatScreen(
 
         ChatDebugOverlay(
             visible = showChatDebug && !supervised,
-            headerHeight = with(density) { chatHeaderHeightPx.toDp() },
+            headerHeight = with(LocalDensity.current) { chatHeaderHeightPx.toDp() },
             onClose = { showChatDebug = false },
         ) {
             ChatDebugDrawer(
