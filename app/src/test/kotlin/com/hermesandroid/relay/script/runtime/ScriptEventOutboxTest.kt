@@ -4,7 +4,6 @@ import java.io.File
 import java.io.IOException
 import kotlin.io.path.createTempDirectory
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -60,7 +59,7 @@ class ScriptEventOutboxTest {
             val outbox = ScriptEventOutbox(root)
             outbox.append(event("r1"))
             outbox.append(event("r2"))
-            var allow = 0
+            var allow = 1   // only the first send gets through
             val sender = ScriptEventSender {
                 if (allow <= 0) throw IOException("offline")
                 allow -= 1
@@ -75,18 +74,20 @@ class ScriptEventOutboxTest {
         }
     }
 
-    @Test fun queueKeepsOnlyTheNewestEntriesWhenFull() = withTempDir { root ->
-        val outbox = ScriptEventOutbox(root, limit = 3)
-        (1..5).forEach { outbox.append(event("r$it", it)) }
+    @Test fun queueKeepsOnlyTheNewestEntriesWhenFull() = runTest {
+        withTempDir { root ->
+            val outbox = ScriptEventOutbox(root, limit = 3)
+            (1..5).forEach { outbox.append(event("r$it", it)) }
 
-        val lines = outbox.readLines()
-        assertEquals(3, lines.size)
-        assertTrue(lines.first().contains("r3"))
-        assertTrue(lines.last().contains("r5"))
+            val lines = outbox.readLines()
+            assertEquals(3, lines.size)
+            assertTrue(lines.first().contains("r3"))
+            assertTrue(lines.last().contains("r5"))
+        }
     }
 }
 
-private fun withTempDir(block: (File) -> Unit) {
+private suspend fun withTempDir(block: suspend (File) -> Unit) {
     val root = createTempDirectory("script-event-outbox").toFile()
     try {
         block(root)
