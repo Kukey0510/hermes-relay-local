@@ -15,6 +15,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -57,6 +59,7 @@ import com.hermesandroid.relay.ui.scripts.ScriptSyncManager
 import com.hermesandroid.relay.ui.scripts.ScriptSyncState
 import com.hermesandroid.relay.ui.scripts.applyScriptTagOverrides
 import com.hermesandroid.relay.ui.scripts.filterScripts
+import com.hermesandroid.relay.ui.scripts.scenarioTagsOf
 import com.hermesandroid.relay.ui.theme.RelayRefresh
 import com.hermesandroid.relay.script.runtime.PendingScriptRun
 import com.hermesandroid.relay.script.runtime.ScriptRunStore
@@ -81,9 +84,12 @@ fun ScriptsScreen(onOpenScript: (String) -> Unit) {
     }
     val scope = rememberCoroutineScope()
     val overrides by tagStore.overrides.collectAsState(initial = emptyMap())
+    val userTags by tagStore.registry.collectAsState(initial = emptySet())
     var result by remember(context) { mutableStateOf(ScriptCatalog.loadResult(context)) }
     var syncState by remember { mutableStateOf(syncManager.state) }
+    var selectedGames by remember { mutableStateOf(emptySet<String>()) }
     var selectedTags by remember { mutableStateOf(emptySet<String>()) }
+    var managingTags by remember { mutableStateOf(false) }
     var pendingRun by remember(context) { mutableStateOf<PendingScriptRun?>(null) }
     val reload: () -> Unit = {
         scope.launch {
@@ -109,6 +115,10 @@ fun ScriptsScreen(onOpenScript: (String) -> Unit) {
             TopAppBar(
                 title = { Text(stringResource(R.string.scripts_title)) },
                 actions = {
+                    IconButton(
+                        onClick = { managingTags = true },
+                        modifier = Modifier.testTag("scripts.tags.new"),
+                    ) { Icon(Icons.Filled.Add, stringResource(R.string.scripts_tags_new_button)) }
                     IconButton(onClick = reload, modifier = Modifier.testTag("scripts.refresh")) {
                         Icon(Icons.Filled.Refresh, stringResource(R.string.scripts_refresh))
                     }
@@ -128,9 +138,11 @@ fun ScriptsScreen(onOpenScript: (String) -> Unit) {
                 )
             } else {
                 val entries = applyScriptTagOverrides(current.entries, overrides)
-                val availableTags = entries.flatMap(ScriptEntry::tags).distinct().sorted()
-                LaunchedEffect(availableTags) { selectedTags = selectedTags.intersect(availableTags.toSet()) }
-                val visibleEntries = filterScripts(entries, selectedTags)
+                val games = entries.map(ScriptEntry::game).distinct().sorted()
+                val scenarioTags = scenarioTagsOf(entries, userTags)
+                LaunchedEffect(scenarioTags) { selectedTags = selectedTags.intersect(scenarioTags.toSet()) }
+                LaunchedEffect(games) { selectedGames = selectedGames.intersect(games.toSet()) }
+                val visibleEntries = filterScripts(entries, selectedGames, selectedTags)
                 LazyColumn(
                     modifier = Modifier.fillMaxSize().padding(innerPadding).testTag("scripts.list"),
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
@@ -146,10 +158,21 @@ fun ScriptsScreen(onOpenScript: (String) -> Unit) {
                     }
                     item { ScriptSyncStatus(syncState) }
                     item {
-                        ScriptTagFilters(availableTags, selectedTags) { tag ->
-                            selectedTags = if (tag == null) emptySet()
-                            else if (tag in selectedTags) selectedTags - tag else selectedTags + tag
-                        }
+                        ScriptTagFilters(
+                            games = games,
+                            tags = scenarioTags,
+                            selectedGames = selectedGames,
+                            selectedTags = selectedTags,
+                            onAll = { selectedGames = emptySet(); selectedTags = emptySet() },
+                            onToggleGame = { game ->
+                                selectedGames = if (game in selectedGames) selectedGames - game
+                                else selectedGames + game
+                            },
+                            onToggleTag = { tag ->
+                                selectedTags = if (tag in selectedTags) selectedTags - tag
+                                else selectedTags + tag
+                            },
+                        )
                     }
                     items(visibleEntries, key = ScriptEntry::id) { entry ->
                         ScriptCard(entry = entry, onClick = { onOpenScript(entry.id) })
@@ -157,6 +180,20 @@ fun ScriptsScreen(onOpenScript: (String) -> Unit) {
                 }
             }
         }
+    }
+
+    if (managingTags) {
+        ScriptTagManagerDialog(
+            tags = (userTags + overrides.values.flatten()).distinct().sorted(),
+            onDismiss = { managingTags = false },
+            onCreate = { name -> scope.launch { tagStore.createTag(name) } },
+            onDelete = { name ->
+                scope.launch {
+                    val remaining = tagStore.deleteTag(name)
+                    syncManager.submitTags(remaining)
+                }
+            },
+        )
     }
 }
 
@@ -176,19 +213,133 @@ private fun ScriptSyncStatus(state: ScriptSyncState) {
 }
 
 @Composable
-private fun ScriptTagFilters(tags: List<String>, selected: Set<String>, onToggle: (String?) -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).testTag("scripts.filters"),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+private fun ScriptTagFilters(
+    games: List<String>,
+    tags: List<String>,
+    selectedGames: Set<String>,
+    selectedTags: Set<String>,
+    onAll: () -> Unit,
+    onToggleGame: (String) -> Unit,
+    onToggleTag: (String) -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth().testTag("scripts.filters"),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        ScriptFilterChip(stringResource(R.string.scripts_tags_all), selected.isEmpty()) { onToggle(null) }
-        tags.forEach { tag -> ScriptFilterChip(tag, tag in selected) { onToggle(tag) } }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ScriptFilterChip(
+                label = stringResource(R.string.scripts_tags_all),
+                selected = selectedGames.isEmpty() && selectedTags.isEmpty(),
+                onClick = onAll,
+                tag = "scripts.filters.all",
+            )
+        }
+        FilterRow(
+            label = stringResource(R.string.scripts_filter_games),
+            values = games,
+            selected = selectedGames,
+            rowTag = "scripts.filters.games",
+            onToggle = onToggleGame,
+        )
+        FilterRow(
+            label = stringResource(R.string.scripts_filter_scenes),
+            values = tags,
+            selected = selectedTags,
+            rowTag = "scripts.filters.scenes",
+            onToggle = onToggleTag,
+        )
     }
 }
 
 @Composable
-private fun ScriptFilterChip(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun FilterRow(
+    label: String,
+    values: List<String>,
+    selected: Set<String>,
+    rowTag: String,
+    onToggle: (String) -> Unit,
+) {
+    if (values.isEmpty()) return
+    Row(
+        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).testTag(rowTag),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(end = 2.dp),
+        )
+        values.forEach { value ->
+            ScriptFilterChip(value, value in selected) { onToggle(value) }
+        }
+    }
+}
+
+@Composable
+private fun ScriptTagManagerDialog(
+    tags: List<String>,
+    onDismiss: () -> Unit,
+    onCreate: (String) -> Unit,
+    onDelete: (String) -> Unit,
+) {
+    var input by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.scripts_tags_manage)) },
+        text = {
+            Column(Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) {
+                if (tags.isEmpty()) {
+                    Text(
+                        stringResource(R.string.scripts_tags_empty),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                tags.forEach { tag ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().testTag("scripts.tags.row.$tag"),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(tag, modifier = Modifier.weight(1f))
+                        IconButton(
+                            onClick = { onDelete(tag) },
+                            modifier = Modifier.testTag("scripts.tags.delete.$tag"),
+                        ) { Icon(Icons.Filled.Close, stringResource(R.string.scripts_tags_delete)) }
+                    }
+                }
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = { input = it },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(stringResource(R.string.scripts_tags_new)) },
+                )
+                TextButton(
+                    enabled = input.isNotBlank(),
+                    onClick = { onCreate(input); input = "" },
+                    modifier = Modifier.testTag("scripts.tags.create"),
+                ) { Text(stringResource(R.string.scripts_tags_create)) }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.scripts_tags_done)) } },
+    )
+}
+
+@Composable
+private fun ScriptFilterChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    tag: String? = null,
+) {
     FilterChip(
+        modifier = if (tag == null) Modifier else Modifier.testTag(tag),
         selected = selected,
         onClick = onClick,
         label = { Text(label, maxLines = 1) },
@@ -246,6 +397,7 @@ fun ScriptDetailScreen(scriptId: String, onBack: () -> Unit) {
     val context = LocalContext.current
     val tagStore = remember(context) { ScriptTagStore(context) }
     val overrides by tagStore.overrides.collectAsState(initial = emptyMap())
+    val userTags by tagStore.registry.collectAsState(initial = emptySet())
     val scope = rememberCoroutineScope()
     val connection = (context.applicationContext as HermesRelayApp).runtime.connectionViewModel
     val syncManager = remember(context) {
@@ -326,7 +478,8 @@ fun ScriptDetailScreen(scriptId: String, onBack: () -> Unit) {
             if (editing) {
                 ScriptTagsEditor(
                     scriptId = entry.id,
-                    choices = applyScriptTagOverrides(defaults, overrides).flatMap(ScriptEntry::tags).distinct().sorted(),
+                    choices = (applyScriptTagOverrides(defaults, overrides).flatMap(ScriptEntry::tags) + userTags)
+                        .distinct().sorted(),
                     initial = entry.tags,
                     onSave = { tags -> scope.launch {
                         tagStore.setTags(entry.id, tags)

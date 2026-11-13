@@ -4618,4 +4618,11 @@
     <string name="scripts_tags_create">新建</string>
     <string name="scripts_tags_save">保存</string>
     <string name="scripts_tags_cancel">取消</string>
+    <string name="scripts_tags_new_button">新建标签</string>
+    <string name="scripts_tags_manage">管理标签</string>
+    <string name="scripts_tags_delete">删除</string>
+    <string name="scripts_tags_done">完成</string>
+    <string name="scripts_tags_empty">还没有标签</string>
+    <string name="scripts_filter_games">游戏</string>
+    <string name="scripts_filter_scenes">场景</string>
 </resources>

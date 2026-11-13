@@ -4763,4 +4763,11 @@
     <string name="scripts_tags_create">Create</string>
     <string name="scripts_tags_save">Save</string>
     <string name="scripts_tags_cancel">Cancel</string>
+    <string name="scripts_tags_new_button">New tag</string>
+    <string name="scripts_tags_manage">Manage tags</string>
+    <string name="scripts_tags_delete">Delete</string>
+    <string name="scripts_tags_done">Done</string>
+    <string name="scripts_tags_empty">No tags yet</string>
+    <string name="scripts_filter_games">Game</string>
+    <string name="scripts_filter_scenes">Scene</string>
 </resources>

@@ -76,6 +76,22 @@ data class ScriptCatalogDocument(val version: String, val scripts: List<ScriptEn
 internal fun filterScripts(entries: List<ScriptEntry>, selectedTags: Set<String>): List<ScriptEntry> =
     if (selectedTags.isEmpty()) entries else entries.filter { entry -> entry.tags.any(selectedTags::contains) }
 
+/** Block 25: the filter bar has a game row and a scenario row, so both narrow at once. */
+internal fun filterScripts(
+    entries: List<ScriptEntry>,
+    selectedGames: Set<String>,
+    selectedTags: Set<String>,
+): List<ScriptEntry> = entries.filter { entry ->
+    (selectedGames.isEmpty() || entry.game in selectedGames) &&
+        (selectedTags.isEmpty() || entry.tags.any(selectedTags::contains))
+}
+
+/** Tags that are not a game name — those belong in the scenario row, not the game row. */
+internal fun scenarioTagsOf(entries: List<ScriptEntry>, extraTags: Set<String>): List<String> {
+    val games = entries.map(ScriptEntry::game).toSet()
+    return (entries.flatMap(ScriptEntry::tags) + extraTags).distinct().filterNot(games::contains).sorted()
+}
+
 internal fun applyScriptTagOverrides(
     entries: List<ScriptEntry>,
     overrides: Map<String, List<String>>,
