@@ -23,25 +23,37 @@ data class ScriptRunResult(val runId: String = UUID.randomUUID().toString(), val
 class ScriptRunner {
     companion object { private val running = AtomicBoolean(false) }
 
-    suspend fun run(script: RuntimeScript, access: ScriptAccess): ScriptRunResult {
-        if (!running.compareAndSet(false, true)) return ScriptRunResult(success = false, errorCode = "run_in_progress")
+    suspend fun run(
+        script: RuntimeScript,
+        access: ScriptAccess,
+        runId: String = UUID.randomUUID().toString(),
+        onRunStart: suspend () -> Unit = {},
+        onStep: suspend (ScriptRunLog, Long) -> Unit = { _, _ -> },
+    ): ScriptRunResult {
+        if (!running.compareAndSet(false, true)) return ScriptRunResult(runId = runId, success = false, errorCode = "run_in_progress")
         val logs = mutableListOf<ScriptRunLog>()
         try {
+            onRunStart()
             script.steps.forEachIndexed { index, step ->
+                val startedAt = System.nanoTime()
                 var attempt = 0
                 var outcome: StepOutcome
                 do {
                     ScriptGuard.rejection(access.foregroundPackage(), script.targetPackages)?.let { code ->
-                        logs += log(index, step, false, attempt, code)
-                        return ScriptRunResult(success = false, errorCode = code, logs = logs)
+                        val entry = log(index, step, false, attempt, code)
+                        logs += entry
+                        onStep(entry, elapsedMs(startedAt))
+                        return ScriptRunResult(runId = runId, success = false, errorCode = code, logs = logs)
                     }
                     attempt++
                     outcome = execute(step, access)
                 } while (!outcome.ok && attempt <= step.retries)
-                logs += log(index, step, outcome.ok, attempt, outcome.message)
-                if (!outcome.ok) return ScriptRunResult(success = false, errorCode = "step_failed", logs = logs)
+                val entry = log(index, step, outcome.ok, attempt, outcome.message)
+                logs += entry
+                onStep(entry, elapsedMs(startedAt))
+                if (!outcome.ok) return ScriptRunResult(runId = runId, success = false, errorCode = "step_failed", logs = logs)
             }
-            return ScriptRunResult(success = true, logs = logs)
+            return ScriptRunResult(runId = runId, success = true, logs = logs)
         } finally { running.set(false) }
     }
 
@@ -66,5 +78,6 @@ class ScriptRunner {
 
     private fun log(index: Int, step: ScriptStep, success: Boolean, attempts: Int, message: String) =
         ScriptRunLog(index, step.id, step::class.simpleName.orEmpty(), success, attempts, message)
+    private fun elapsedMs(startedAt: Long) = (System.nanoTime() - startedAt) / 1_000_000
     private data class StepOutcome(val ok: Boolean, val message: String)
 }

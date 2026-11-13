@@ -6,6 +6,7 @@ import com.hermesandroid.relay.accessibility.ScreenCapture
 import com.hermesandroid.relay.network.relay.LocalVisionBridgeRoutes
 import com.hermesandroid.relay.ui.scripts.ScriptCatalog
 import kotlinx.coroutines.delay
+import java.util.UUID
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
@@ -29,12 +30,51 @@ object ScriptRuntime {
     }
 
     suspend fun run(context: Context, screenCapture: ScreenCapture?, scriptId: String): ScriptRunResult {
+        val store = ScriptRunStore(context.filesDir)
+        store.cleanupExpiredLogs()
         val script = runCatching { load(context, scriptId) }.getOrElse {
             return ScriptRunResult(success = false, errorCode = "invalid_script")
         } ?: return ScriptRunResult(success = false, errorCode = "script_not_found")
         val service = HermesAccessibilityService.instance
             ?: return ScriptRunResult(success = false, errorCode = "service_unavailable")
-        return runner.run(script, AndroidAccess(context, screenCapture, service))
+        val runId = UUID.randomUUID().toString()
+        val startedAt = System.nanoTime()
+        val app = context.applicationContext as com.hermesandroid.relay.HermesRelayApp
+        val connection = app.runtime.connectionViewModel
+        val reporter = ScriptEventReporter(HttpScriptEventSender(
+            baseUrl = { connection.apiServerUrl.value }, bearer = connection::getApiKey,
+        ))
+        val result = runner.run(
+            script = script,
+            access = AndroidAccess(context, screenCapture, service),
+            runId = runId,
+            onRunStart = {
+                store.writePending(PendingScriptRun(script.id, runId, 0))
+                store.append(ScriptLogEvent("run_start", script.id, runId, ScriptLogEvent.timestamp()))
+            },
+            onStep = { log, durationMs ->
+                store.writePending(PendingScriptRun(script.id, runId, log.stepIndex))
+                store.append(ScriptLogEvent(
+                    event = "step", scriptId = script.id, runId = runId, ts = ScriptLogEvent.timestamp(),
+                    stepIndex = log.stepIndex, op = log.op, success = log.success, attempts = log.attempts,
+                    message = log.message, durationMs = durationMs,
+                ))
+                if (!log.success) reporter.report(log.toEvent(script.id, runId))
+            },
+        )
+        if (result.errorCode == "run_in_progress") return result
+        store.append(ScriptLogEvent(
+            event = "run_end", scriptId = script.id, runId = runId, ts = ScriptLogEvent.timestamp(),
+            success = result.success, durationMs = (System.nanoTime() - startedAt) / 1_000_000,
+            errorCode = result.errorCode,
+        ))
+        reporter.report(ScriptEvent(
+            scriptId = script.id, runId = runId, level = if (result.success) "info" else "error",
+            stepIndex = result.logs.lastOrNull()?.stepIndex ?: 0,
+            op = "run_end", message = result.errorCode ?: "completed", ts = java.time.Instant.now().toString(),
+        ))
+        store.clearPending()
+        return result
     }
 
     private class AndroidAccess(

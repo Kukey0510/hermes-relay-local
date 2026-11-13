@@ -58,11 +58,10 @@ import com.hermesandroid.relay.ui.scripts.ScriptSyncState
 import com.hermesandroid.relay.ui.scripts.applyScriptTagOverrides
 import com.hermesandroid.relay.ui.scripts.filterScripts
 import com.hermesandroid.relay.ui.theme.RelayRefresh
+import com.hermesandroid.relay.script.runtime.PendingScriptRun
+import com.hermesandroid.relay.script.runtime.ScriptRunStore
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import com.hermesandroid.relay.network.relay.models.Envelope
 import java.text.DateFormat
@@ -85,6 +84,7 @@ fun ScriptsScreen(onOpenScript: (String) -> Unit) {
     var result by remember(context) { mutableStateOf(ScriptCatalog.loadResult(context)) }
     var syncState by remember { mutableStateOf(syncManager.state) }
     var selectedTags by remember { mutableStateOf(emptySet<String>()) }
+    var pendingRun by remember(context) { mutableStateOf<PendingScriptRun?>(null) }
     val reload: () -> Unit = {
         scope.launch {
             syncState = ScriptSyncState(ScriptSyncKind.Loading, syncManager.state.lastSyncMs)
@@ -94,6 +94,10 @@ fun ScriptsScreen(onOpenScript: (String) -> Unit) {
         }
     }
     LaunchedEffect(syncManager) {
+        ScriptRunStore(context.filesDir).also {
+            it.cleanupExpiredLogs()
+            pendingRun = it.readPending()
+        }
         syncState = ScriptSyncState(ScriptSyncKind.Loading, syncManager.state.lastSyncMs)
         syncManager.refresh()
         syncState = syncManager.state
@@ -132,6 +136,14 @@ fun ScriptsScreen(onOpenScript: (String) -> Unit) {
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
+                    pendingRun?.let { pending ->
+                        item {
+                            TextButton(
+                                onClick = { onOpenScript(pending.scriptId) },
+                                modifier = Modifier.testTag("scripts.pending_run"),
+                            ) { Text(stringResource(R.string.scripts_pending_run)) }
+                        }
+                    }
                     item { ScriptSyncStatus(syncState) }
                     item {
                         ScriptTagFilters(availableTags, selectedTags) { tag ->
@@ -247,6 +259,8 @@ fun ScriptDetailScreen(scriptId: String, onBack: () -> Unit) {
     var editing by remember { mutableStateOf(false) }
     var running by remember { mutableStateOf(false) }
     var recentLogs by remember { mutableStateOf(emptyList<String>()) }
+    val runStore = remember(context) { ScriptRunStore(context.filesDir) }
+    LaunchedEffect(scriptId) { recentLogs = runStore.recentLines(50) }
 
     Scaffold(
         modifier = Modifier.testTag("scripts.detail"),
@@ -279,11 +293,9 @@ fun ScriptDetailScreen(scriptId: String, onBack: () -> Unit) {
                                     put("body", buildJsonObject { put("scriptId", entry.id) })
                                 })
                             )
-                            val logs = response.resultJson?.get("logs") as? JsonArray
-                            recentLogs = logs.orEmpty().takeLast(5).map { item ->
-                                val value = item.jsonObject
-                                "${value["op"]?.jsonPrimitive?.content}: ${value["message"]?.jsonPrimitive?.content}"
-                            }.ifEmpty { listOf(response.errorCode ?: response.errorMessage ?: "-") }
+                            recentLogs = runStore.recentLines(50).ifEmpty {
+                                listOf(response.errorCode ?: response.errorMessage ?: "-")
+                            }
                             running = false
                         }
                     }, modifier = Modifier.testTag("scripts.run")) {
