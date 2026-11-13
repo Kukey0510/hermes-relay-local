@@ -36,7 +36,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.imeNestedScroll
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -3748,7 +3747,12 @@ fun ChatScreen(
                         modifier = Modifier
                             .align(Alignment.Center)
                             .fillMaxHeight()
-                            .imeNestedScroll()
+                            // imeNestedScroll() removed: its WindowInsetsNestedScrollConnection
+                            // double-resumes a continuation when Robolectric tears the
+                            // activity down, which reds ChatComposerProgressScreenshotTest
+                            // ("Already resumed, but proposed with update null"). The win it
+                            // bought was small; the inset reads are now out of the screen's
+                            // composition scope, which was the real cost.
                             .then(
                                 responsiveLayout.transcriptMaxWidth?.let {
                                     Modifier.widthIn(max = it)
