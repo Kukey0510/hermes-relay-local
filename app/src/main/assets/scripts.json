@@ -3,7 +3,6 @@
     "id": "blind-box-daily-route",
     "name": "每日资源路线",
     "game": "盲盒派对",
-    "tag": "日常",
     "updatedAt": "2026-11-08",
     "description": "用于查看盲盒派对每日资源收集顺序的参考清单。",
     "steps": [
@@ -11,13 +10,16 @@
       "依次查看活动、商店和免费补给",
       "按优先级记录需要完成的关卡"
     ],
-    "sourceNote": "内置示例清单"
+    "sourceNote": "内置示例清单",
+    "tags": [
+      "盲盒派对",
+      "日常"
+    ]
   },
   {
     "id": "cross-core-material-check",
     "name": "养成材料检查表",
     "game": "交错战线",
-    "tag": "养成",
     "updatedAt": "2026-11-05",
     "description": "整理角色养成前需要核对的材料和关卡信息。",
     "steps": [
@@ -26,13 +28,16 @@
       "记录缺少材料对应的获取关卡",
       "根据体力安排刷取顺序"
     ],
-    "sourceNote": "内置示例清单"
+    "sourceNote": "内置示例清单",
+    "tags": [
+      "交错战线",
+      "养成"
+    ]
   },
   {
     "id": "azur-lane-fleet-review",
     "name": "舰队出击前检查",
     "game": "碧蓝航线",
-    "tag": "编队",
     "updatedAt": "2026-10-29",
     "description": "在出击前逐项检查舰队、装备与后勤状态。",
     "steps": [
@@ -41,13 +46,16 @@
       "确认委托和科研任务状态",
       "选择目标海域并复核作战条件"
     ],
-    "sourceNote": "内置示例清单"
+    "sourceNote": "内置示例清单",
+    "tags": [
+      "碧蓝航线",
+      "编队"
+    ]
   },
   {
     "id": "blind-box-event-notes",
     "name": "活动关卡备忘",
     "game": "盲盒派对",
-    "tag": "活动",
     "updatedAt": "2026-10-24",
     "description": "记录活动关卡目标和奖励领取节点，避免遗漏。",
     "steps": [
@@ -55,6 +63,10 @@
       "记录尚未完成的关卡目标",
       "核对累计奖励与兑换商店"
     ],
-    "sourceNote": "内置示例清单"
+    "sourceNote": "内置示例清单",
+    "tags": [
+      "盲盒派对",
+      "活动"
+    ]
   }
 ]

@@ -4602,4 +4602,10 @@
     <string name="bridge_quick_manage">管理</string>
     <string name="settings_agent_approvals">Agent 审批</string>
     <string name="settings_agent_approvals_desc">查看并配置当前 Agent 的审批策略</string>
+    <string name="scripts_tags_all">全部</string>
+    <string name="scripts_tags_edit">编辑标签</string>
+    <string name="scripts_tags_new">新标签</string>
+    <string name="scripts_tags_create">新建</string>
+    <string name="scripts_tags_save">保存</string>
+    <string name="scripts_tags_cancel">取消</string>
 </resources>
