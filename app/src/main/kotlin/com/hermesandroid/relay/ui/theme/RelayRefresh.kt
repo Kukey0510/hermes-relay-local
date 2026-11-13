@@ -1,5 +1,7 @@
 package com.hermesandroid.relay.ui.theme
 
+import android.graphics.BitmapShader
+import android.graphics.Shader
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -11,17 +13,25 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.ShaderBrush
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
+import androidx.compose.ui.graphics.Canvas as GraphicsCanvas
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.roundToInt
 
 /**
  * Brand token façade. Every color is now a getter over [activePalette], which
@@ -96,45 +106,77 @@ fun Modifier.relaySelectedPanel(
     )
     .border(1.dp, RelayRefresh.Electric.copy(alpha = 0.72f), shape)
 
+private data class RelayGridTileKey(
+    val gridPx: Int,
+    val dotPx: Int,
+    val alpha: Float,
+    val density: Float,
+    val relay: Color,
+)
+
+private val relayGridTiles = ConcurrentHashMap<RelayGridTileKey, ImageBitmap>()
+
 fun Modifier.relayGridTexture(
     grid: Dp = 42.dp,
     dot: Dp = 10.dp,
     alpha: Float = 0.18f,
-): Modifier = drawBehind {
-    val gridPx = grid.toPx().coerceAtLeast(1f)
-    val dotPx = dot.toPx().coerceAtLeast(1f)
-    var x = 0f
-    while (x <= size.width) {
-        drawLine(
-            color = Color.White.copy(alpha = 0.018f * alpha * 5f),
-            start = Offset(x, 0f),
-            end = Offset(x, size.height),
-            strokeWidth = 1f,
-        )
-        x += gridPx
-    }
-    var y = 0f
-    while (y <= size.height) {
-        drawLine(
-            color = Color.White.copy(alpha = 0.026f * alpha * 5f),
-            start = Offset(0f, y),
-            end = Offset(size.width, y),
-            strokeWidth = 1f,
-        )
-        y += gridPx
-    }
-    var dy = 0f
-    while (dy <= size.height) {
-        var dx = 0f
-        while (dx <= size.width) {
-            drawCircle(
-                color = RelayRefresh.Relay.copy(alpha = 0.16f * alpha * 5f),
-                radius = 1.15f,
-                center = Offset(dx + 1f, dy + 1f),
-            )
-            dx += dotPx
+): Modifier = drawWithCache {
+    val gridPx = grid.toPx().roundToInt().coerceAtLeast(1)
+    val dotPx = dot.toPx().roundToInt().coerceAtLeast(1)
+    val relay = RelayRefresh.Relay
+    val key = RelayGridTileKey(gridPx, dotPx, alpha, density, relay)
+    val tile = relayGridTiles.computeIfAbsent(key) {
+        var a = gridPx
+        var b = dotPx
+        while (b != 0) {
+            val remainder = a % b
+            a = b
+            b = remainder
         }
-        dy += dotPx
+        val tilePx = Math.multiplyExact(gridPx / a, dotPx)
+        ImageBitmap(tilePx, tilePx).also { bitmap ->
+            CanvasDrawScope().draw(
+                density = this,
+                layoutDirection = layoutDirection,
+                canvas = GraphicsCanvas(bitmap),
+                size = Size(tilePx.toFloat(), tilePx.toFloat()),
+            ) {
+                // Include both boundary strokes so repeating tiles retain the full line.
+                for (x in 0..tilePx step gridPx) {
+                    drawLine(
+                        color = Color.White.copy(alpha = 0.018f * alpha * 5f),
+                        start = Offset(x.toFloat(), 0f),
+                        end = Offset(x.toFloat(), size.height),
+                        strokeWidth = 1f,
+                    )
+                }
+                for (y in 0..tilePx step gridPx) {
+                    drawLine(
+                        color = Color.White.copy(alpha = 0.026f * alpha * 5f),
+                        start = Offset(0f, y.toFloat()),
+                        end = Offset(size.width, y.toFloat()),
+                        strokeWidth = 1f,
+                    )
+                }
+                // Draw neighbouring dots too, preserving circles that cross a tile edge.
+                val padding = ((3 + dotPx - 1) / dotPx) * dotPx
+                for (dy in -padding..tilePx step dotPx) {
+                    for (dx in -padding..tilePx step dotPx) {
+                        drawCircle(
+                            color = relay.copy(alpha = 0.16f * alpha * 5f),
+                            radius = 1.15f,
+                            center = Offset(dx + 1f, dy + 1f),
+                        )
+                    }
+                }
+            }
+        }
+    }
+    val brush = ShaderBrush(
+        BitmapShader(tile.asAndroidBitmap(), Shader.TileMode.REPEAT, Shader.TileMode.REPEAT),
+    )
+    onDrawBehind {
+        drawRect(brush = brush)
     }
 }
 
