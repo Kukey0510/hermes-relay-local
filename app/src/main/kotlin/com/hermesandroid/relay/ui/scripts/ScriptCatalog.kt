@@ -1,6 +1,7 @@
 package com.hermesandroid.relay.ui.scripts
 
 import android.content.Context
+import java.io.File
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.descriptors.SerialDescriptor
@@ -33,7 +34,7 @@ private data class ScriptEntrySurrogate(
     val tags: List<String>,
     val updatedAt: String,
     val description: String,
-    val steps: List<String>,
+    val steps: JsonArray,
     val sourceNote: String,
 )
 
@@ -61,8 +62,16 @@ object ScriptEntrySerializer : KSerializer<ScriptEntry> {
     )
 }
 
-private fun ScriptEntrySurrogate.toEntry() = ScriptEntry(id, name, game, tags, updatedAt, description, steps, sourceNote)
-private fun ScriptEntry.toSurrogate() = ScriptEntrySurrogate(id, name, game, tags, updatedAt, description, steps, sourceNote)
+private fun ScriptEntrySurrogate.toEntry() = ScriptEntry(
+    id, name, game, tags, updatedAt, description,
+    steps.map { (it as? JsonPrimitive)?.content ?: it.toString() }, sourceNote,
+)
+private fun ScriptEntry.toSurrogate() = ScriptEntrySurrogate(
+    id, name, game, tags, updatedAt, description, JsonArray(steps.map(::JsonPrimitive)), sourceNote,
+)
+
+@Serializable
+data class ScriptCatalogDocument(val version: String, val scripts: List<ScriptEntry>)
 
 internal fun filterScripts(entries: List<ScriptEntry>, selectedTags: Set<String>): List<ScriptEntry> =
     if (selectedTags.isEmpty()) entries else entries.filter { entry -> entry.tags.any(selectedTags::contains) }
@@ -88,13 +97,28 @@ object ScriptCatalog {
         (loadResult(context) as? ScriptCatalogResult.Loaded)?.entries.orEmpty()
 
     fun loadResult(context: Context): ScriptCatalogResult = runCatching {
-        context.assets.open("scripts.json").bufferedReader().use { reader ->
-            decode(reader.readText())
-        }
+        val cache = cacheFile(context)
+        val asset = { context.assets.open("scripts.json").bufferedReader().use { it.readText() } }
+        decode(preferredContent(cache.takeIf(File::isFile)?.readText(), asset))
     }.fold(
         onSuccess = ScriptCatalogResult::Loaded,
         onFailure = { ScriptCatalogResult.Error },
     )
 
-    internal fun decode(content: String): List<ScriptEntry> = json.decodeFromString(content)
+    internal fun decode(content: String): List<ScriptEntry> =
+        if (content.trimStart().startsWith("[")) json.decodeFromString(content)
+        else json.decodeFromString<ScriptCatalogDocument>(content).scripts
+
+    internal fun preferredContent(cache: String?, asset: () -> String): String = cache ?: asset()
+
+    fun cacheFile(context: Context): File = File(context.filesDir, "scripts/catalog.json")
+
+    internal fun writeCache(context: Context, content: String) {
+        decode(content) // Validate completely before replacing the last good catalog.
+        val destination = cacheFile(context)
+        destination.parentFile?.mkdirs()
+        val temporary = File(destination.parentFile, "${destination.name}.tmp")
+        temporary.writeText(content)
+        check(temporary.renameTo(destination) || run { temporary.copyTo(destination, overwrite = true); temporary.delete() })
+    }
 }

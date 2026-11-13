@@ -4563,6 +4563,11 @@
     <string name="tab_settings">设置</string>
     <string name="scripts_title">游戏脚本</string>
     <string name="scripts_refresh">刷新脚本</string>
+    <string name="scripts_sync_loading">正在拉取</string>
+    <string name="scripts_sync_at">同步于 %1$s</string>
+    <string name="scripts_sync_offline">离线</string>
+    <string name="scripts_sync_offline_last">离线 · 上次同步 %1$s</string>
+    <string name="scripts_sync_pending">待同步</string>
     <string name="scripts_updated_at">更新于 %1$s</string>
     <string name="scripts_empty_title">暂无脚本</string>
     <string name="scripts_empty_body">内置脚本清单为空。</string>

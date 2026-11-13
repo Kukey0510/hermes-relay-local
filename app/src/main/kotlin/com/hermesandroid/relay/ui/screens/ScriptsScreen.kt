@@ -45,25 +45,54 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.hermesandroid.relay.HermesRelayApp
 import com.hermesandroid.relay.R
 import com.hermesandroid.relay.ui.scripts.ScriptCatalog
 import com.hermesandroid.relay.ui.scripts.ScriptCatalogResult
 import com.hermesandroid.relay.ui.scripts.ScriptEntry
 import com.hermesandroid.relay.ui.scripts.ScriptTagStore
+import com.hermesandroid.relay.ui.scripts.ScriptApiClient
+import com.hermesandroid.relay.ui.scripts.ScriptSyncKind
+import com.hermesandroid.relay.ui.scripts.ScriptSyncManager
+import com.hermesandroid.relay.ui.scripts.ScriptSyncState
 import com.hermesandroid.relay.ui.scripts.applyScriptTagOverrides
 import com.hermesandroid.relay.ui.scripts.filterScripts
 import com.hermesandroid.relay.ui.theme.RelayRefresh
 import kotlinx.coroutines.launch
+import java.text.DateFormat
+import java.util.Date
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ScriptsScreen(onOpenScript: (String) -> Unit) {
     val context = LocalContext.current
     val tagStore = remember(context) { ScriptTagStore(context) }
+    val connection = (context.applicationContext as HermesRelayApp).runtime.connectionViewModel
+    val syncManager = remember(context) {
+        ScriptSyncManager(context, ScriptApiClient(
+            baseUrl = { connection.apiServerUrl.value },
+            bearer = connection::getApiKey,
+        ))
+    }
+    val scope = rememberCoroutineScope()
     val overrides by tagStore.overrides.collectAsState(initial = emptyMap())
     var result by remember(context) { mutableStateOf(ScriptCatalog.loadResult(context)) }
+    var syncState by remember { mutableStateOf(syncManager.state) }
     var selectedTags by remember { mutableStateOf(emptySet<String>()) }
-    val reload = { result = ScriptCatalog.loadResult(context) }
+    val reload: () -> Unit = {
+        scope.launch {
+            syncState = ScriptSyncState(ScriptSyncKind.Loading, syncManager.state.lastSyncMs)
+            syncManager.refresh(force = true)
+            syncState = syncManager.state
+            result = ScriptCatalog.loadResult(context)
+        }
+    }
+    LaunchedEffect(syncManager) {
+        syncState = ScriptSyncState(ScriptSyncKind.Loading, syncManager.state.lastSyncMs)
+        syncManager.refresh()
+        syncState = syncManager.state
+        result = ScriptCatalog.loadResult(context)
+    }
 
     Scaffold(
         topBar = {
@@ -97,6 +126,7 @@ fun ScriptsScreen(onOpenScript: (String) -> Unit) {
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
+                    item { ScriptSyncStatus(syncState) }
                     item {
                         ScriptTagFilters(availableTags, selectedTags) { tag ->
                             selectedTags = if (tag == null) emptySet()
@@ -110,6 +140,21 @@ fun ScriptsScreen(onOpenScript: (String) -> Unit) {
             }
         }
     }
+}
+
+@Composable
+private fun ScriptSyncStatus(state: ScriptSyncState) {
+    val time = state.lastSyncMs?.let { DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(it)) }.orEmpty()
+    val text = when (state.kind) {
+        ScriptSyncKind.Loading -> stringResource(R.string.scripts_sync_loading)
+        ScriptSyncKind.Synced -> stringResource(R.string.scripts_sync_at, time)
+        ScriptSyncKind.Offline -> if (time.isBlank()) stringResource(R.string.scripts_sync_offline)
+            else stringResource(R.string.scripts_sync_offline_last, time)
+        ScriptSyncKind.Pending -> stringResource(R.string.scripts_sync_pending)
+        ScriptSyncKind.Idle -> if (time.isBlank()) "" else stringResource(R.string.scripts_sync_at, time)
+    }
+    if (text.isNotEmpty()) Text(text, style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("scripts.sync.status"))
 }
 
 @Composable
@@ -184,6 +229,12 @@ fun ScriptDetailScreen(scriptId: String, onBack: () -> Unit) {
     val tagStore = remember(context) { ScriptTagStore(context) }
     val overrides by tagStore.overrides.collectAsState(initial = emptyMap())
     val scope = rememberCoroutineScope()
+    val connection = (context.applicationContext as HermesRelayApp).runtime.connectionViewModel
+    val syncManager = remember(context) {
+        ScriptSyncManager(context, ScriptApiClient(
+            baseUrl = { connection.apiServerUrl.value }, bearer = connection::getApiKey,
+        ))
+    }
     val result = remember(context) { ScriptCatalog.loadResult(context) }
     val defaults = (result as? ScriptCatalogResult.Loaded)?.entries.orEmpty()
     val entry = applyScriptTagOverrides(defaults, overrides).firstOrNull { it.id == scriptId }
@@ -231,7 +282,14 @@ fun ScriptDetailScreen(scriptId: String, onBack: () -> Unit) {
                     scriptId = entry.id,
                     choices = applyScriptTagOverrides(defaults, overrides).flatMap(ScriptEntry::tags).distinct().sorted(),
                     initial = entry.tags,
-                    onSave = { tags -> scope.launch { tagStore.setTags(entry.id, tags) } },
+                    onSave = { tags -> scope.launch {
+                        tagStore.setTags(entry.id, tags)
+                        val allTags = defaults.associate { catalogEntry ->
+                            catalogEntry.id to (if (catalogEntry.id == entry.id) tags.toList().sorted()
+                            else overrides[catalogEntry.id] ?: catalogEntry.tags)
+                        }
+                        syncManager.submitTags(allTags)
+                    } },
                     onDismiss = { editing = false },
                 )
             }
