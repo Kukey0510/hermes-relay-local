@@ -19,10 +19,12 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.buildJsonObject
@@ -37,6 +39,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -84,7 +87,8 @@ class ProfileControllerLockTest {
     private var streamingEndpoint: String = "completions"
     private var gatewayAvailability: GatewayAvailability = GatewayAvailability.Ready
 
-    private val lastSessionIds = mutableListOf<String?>()
+    private val lastSessionIds = CopyOnWriteArrayList<String?>()
+    private val sessionIdUpdates = Channel<String?>(Channel.UNLIMITED)
 
     private val mizu = Profile(name = "mizu", model = "model-a")
     private val coder = Profile(name = "coder", model = "model-b")
@@ -119,7 +123,10 @@ class ProfileControllerLockTest {
             // bailing early on Unknown.
             streamingEndpointProvider = { streamingEndpoint },
             automaticTransportProvider = { SessionTransport.GATEWAY },
-            setLastSessionId = { lastSessionIds += it },
+            setLastSessionId = {
+                lastSessionIds += it
+                sessionIdUpdates.trySend(it)
+            },
             legacyDefaultSessionId = { null },
             rebuildChatApiClient = { },
             gatewayClientProvider = { gatewayClient },
@@ -559,6 +566,15 @@ class ProfileControllerLockTest {
         controller.selectProfile(mizu)
         awaitSelected(mizu.name)
 
+        // Selection changes synchronously, but its initial session restore does
+        // not. Finish that restore before starting the fresh-draft scenario.
+        assertEquals(
+            "old-sse",
+            withTimeout(5_000) {
+                sessionIdUpdates.receiveAsFlow().first { it == "old-sse" }
+            },
+        )
+
         controller.markFreshDraft(connectionId, mizu.name, SessionTransport.SSE)
         withTimeout(5_000) {
             sessions.sessionIdFlow(connectionId, mizu.name, SessionTransport.SSE)
@@ -583,8 +599,14 @@ class ProfileControllerLockTest {
         controller.markSessionPersisted(connectionId, mizu.name, SessionTransport.SSE)
         sessions.setSessionId(connectionId, mizu.name, SessionTransport.SSE, "new-sse")
         controller.refreshLastSessionForProfile(connectionId, mizu.name)
-        withTimeout(5_000) {
-            while (lastSessionIds.lastOrNull() != "new-sse") Thread.sleep(10)
-        }
+        // The restore runs on IO. Await its callback through a channel rather
+        // than polling shared state; receive suspends so the timeout can cancel
+        // the wait, and buffering also covers a callback arriving before it.
+        assertEquals(
+            "new-sse",
+            withTimeout(5_000) {
+                sessionIdUpdates.receiveAsFlow().first { it == "new-sse" }
+            },
+        )
     }
 }
