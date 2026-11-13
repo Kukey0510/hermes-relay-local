@@ -2509,6 +2509,12 @@ internal fun AppScaffold() {
                                 onNavigateToPermissions = {
                                     navController.navigate(Screen.PermissionsSettings.route) { launchSingleTop = true }
                                 },
+                                onNavigateToDashboard = {
+                                    // 块11：仪表台直开，不再绕 Manage 二级页
+                                    navController.navigate(Screen.DashboardSignIn.route()) {
+                                        launchSingleTop = true
+                                    }
+                                },
                             )
                         } else {
                             BridgeCoreScreen(

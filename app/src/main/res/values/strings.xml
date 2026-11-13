@@ -4736,4 +4736,13 @@
     <string name="chat_background_preset_number">Preset %1$d</string>
     <string name="chat_background_importing">Importing image…</string>
     <string name="chat_background_error">Could not save the background. Please try again.</string>
+    <string name="bridge_dashboard_title">Dashboard</string>
+    <string name="bridge_dashboard_desc">Open the Hermes Dashboard; sign in first when required.</string>
+    <string name="bridge_core_access_title">Core Bridge access</string>
+    <string name="bridge_core_capture_desc">Allow proxy-authorized screenshots</string>
+    <string name="bridge_core_device_info">Device and app information</string>
+    <string name="bridge_core_device_info_desc">Let Hermes read the foreground app, app private files, and logs.</string>
+    <string name="bridge_core_allowed">Allowed</string>
+    <string name="bridge_core_not_allowed">Not allowed</string>
+    <string name="bridge_core_enable_master_first">Turn on the Bridge master switch first</string>
 </resources>

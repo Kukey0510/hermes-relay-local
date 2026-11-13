@@ -29,11 +29,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.CameraAlt
-import androidx.compose.material.icons.filled.Dashboard
-import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.SmartToy
-import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Accessibility
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.PictureInPicture
+import androidx.compose.material.icons.filled.ScreenShare
 import androidx.compose.material.icons.filled.TouchApp
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -41,6 +43,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -144,6 +147,7 @@ fun BridgeScreen(
     onNavigateToTerminal: () -> Unit = {},
     onNavigateToBotMode: () -> Unit = {},
     onNavigateToPermissions: () -> Unit = {},
+    onNavigateToDashboard: () -> Unit = {},
     returnTitle: String? = null,
     returnSubtitle: String = "",
     returnLabel: String = "",
@@ -263,6 +267,14 @@ fun BridgeScreen(
         status = permissionStatus,
         nowMs = nowMs,
     )
+    val secondaryAndroidRequirements = androidAccessSummary.required - setOf(
+        com.hermesandroid.relay.ui.components.BridgeAndroidRequirement.ACCESSIBILITY,
+        com.hermesandroid.relay.ui.components.BridgeAndroidRequirement.OVERLAY,
+    )
+    val secondaryAndroidAccessSummary = androidAccessSummary.copy(
+        required = secondaryAndroidRequirements,
+        ready = androidAccessSummary.ready.intersect(secondaryAndroidRequirements),
+    )
     var permissionsExpanded by remember { mutableStateOf(false) }
     var showSetupSheet by remember { mutableStateOf(false) }
     var selectedPreset by remember { mutableStateOf(BridgeAccessPreset.READ_ONLY) }
@@ -338,11 +350,8 @@ fun BridgeScreen(
             BridgeQuickActions(
                 onScreenshot = { openTimedSheet(TimedSheetIntent.Screenshot) },
                 onTap = { openTimedSheet(TimedSheetIntent.Tap) },
-                onTerminal = onNavigateToTerminal,
-                onBotMode = onNavigateToBotMode,
-                onPermissions = onNavigateToPermissions,
-                onManage = onNavigateToManage,
             )
+            DashboardEntryCard(onClick = onNavigateToDashboard)
             RelayHeroPanel(
                 title = if (relayReady) stringResource(R.string.bridge_paired_title) else stringResource(R.string.bridge_staged_title),
                 subtitle = if (relayReady) {
@@ -512,17 +521,52 @@ fun BridgeScreen(
                 )
             }
 
+            BridgeCoreAccessCard(
+                status = permissionStatus,
+                deviceInfoAllowed = com.hermesandroid.relay.bridge.BridgeCapability.DEVICE_INFO in
+                    activeCapabilityPolicy.permanentGrants,
+                masterEnabled = masterToggle,
+                onOpenAccessibility = {
+                    runCatching {
+                        context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        })
+                    }
+                },
+                onRequestScreenCapture = viewModel::requestScreenCapture,
+                onOpenOverlay = {
+                    runCatching {
+                        context.startActivity(Intent(
+                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:${context.packageName}"),
+                        ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
+                    }
+                },
+                onTestAccessibility = viewModel::testAccessibilityService,
+                onTestScreenCapture = viewModel::testScreenCapture,
+                onTestOverlay = viewModel::testOverlayPermission,
+                onDeviceInfoChanged = { allowed ->
+                    accessScope.launch {
+                        safetyManager?.setPermanentCapability(
+                            activeConnectionId,
+                            com.hermesandroid.relay.bridge.BridgeCapability.DEVICE_INFO,
+                            allowed,
+                        )
+                    }
+                },
+            )
+
             // 4. Android permission state is summarized against the selected
             // policy. Expanding preserves the complete existing matrix and
             // every Settings/Test action—no power-user surface is removed.
             BridgeAndroidAccessSummaryCard(
-                summary = androidAccessSummary,
+                summary = secondaryAndroidAccessSummary,
                 expanded = permissionsExpanded,
                 onToggle = { permissionsExpanded = !permissionsExpanded },
             )
             if (permissionsExpanded) {
                 BridgeSelectedAndroidAccessCard(
-                    summary = androidAccessSummary,
+                    summary = secondaryAndroidAccessSummary,
                     onOpenAccessibility = {
                         runCatching {
                             context.startActivity(
@@ -546,6 +590,7 @@ fun BridgeScreen(
                 )
                 BridgePermissionChecklist(
                     status = permissionStatus,
+                    showCoreBridge = false,
                     onTestAccessibility = { viewModel.testAccessibilityService() },
                     onTestScreenCapture = { viewModel.testScreenCapture() },
                     onTestOverlay = { viewModel.testOverlayPermission() },
@@ -720,24 +765,12 @@ private data class BridgeQuickAction(
 private fun BridgeQuickActions(
     onScreenshot: () -> Unit,
     onTap: () -> Unit,
-    onTerminal: () -> Unit,
-    onBotMode: () -> Unit,
-    onPermissions: () -> Unit,
-    onManage: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         listOf(
             listOf(
                 BridgeQuickAction(Icons.Filled.CameraAlt, R.string.bridge_quick_screenshot, R.string.bridge_quick_screenshot_subtitle, "bridge.screenshot", onScreenshot),
                 BridgeQuickAction(Icons.Filled.TouchApp, R.string.bridge_quick_tap, R.string.bridge_quick_tap_subtitle, "bridge.tap", onTap),
-            ),
-            listOf(
-                BridgeQuickAction(Icons.Filled.Terminal, R.string.bridge_quick_terminal, testTag = "bridge.terminal", onClick = onTerminal),
-                BridgeQuickAction(Icons.Filled.SmartToy, R.string.bridge_quick_botmode, testTag = "bridge.botmode", onClick = onBotMode),
-            ),
-            listOf(
-                BridgeQuickAction(Icons.Filled.Security, R.string.bridge_quick_permissions, testTag = "bridge.permissions", onClick = onPermissions),
-                BridgeQuickAction(Icons.Filled.Dashboard, R.string.bridge_quick_manage, testTag = "bridge.manage", onClick = onManage),
             ),
         ).forEach { actions ->
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -783,6 +816,149 @@ private fun BridgeQuickActions(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun DashboardEntryCard(onClick: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(containerColor = RelayRefresh.Navy2.copy(alpha = 0.78f)),
+        shape = RoundedCornerShape(10.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(Icons.Filled.Info, contentDescription = null, tint = RelayRefresh.Relay)
+            Column(modifier = Modifier.weight(1f)) {
+                Text(stringResource(R.string.bridge_dashboard_title), fontWeight = FontWeight.SemiBold)
+                Text(
+                    stringResource(R.string.bridge_dashboard_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BridgeCoreAccessCard(
+    status: com.hermesandroid.relay.viewmodel.BridgePermissionStatus,
+    deviceInfoAllowed: Boolean,
+    masterEnabled: Boolean,
+    onOpenAccessibility: () -> Unit,
+    onRequestScreenCapture: () -> Unit,
+    onOpenOverlay: () -> Unit,
+    onTestAccessibility: () -> Unit,
+    onTestScreenCapture: () -> Unit,
+    onTestOverlay: () -> Unit,
+    onDeviceInfoChanged: (Boolean) -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                stringResource(R.string.bridge_core_access_title),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            CoreAccessRow(
+                icon = Icons.Filled.Accessibility,
+                title = stringResource(R.string.bpc_accessibility),
+                subtitle = stringResource(R.string.bpc_accessibility_desc_sideload),
+                ready = status.accessibilityServiceEnabled,
+                tag = "bridge.core.accessibility",
+                onOpen = onOpenAccessibility,
+                onTest = onTestAccessibility,
+            )
+            HorizontalDivider()
+            CoreAccessRow(
+                icon = Icons.Filled.ScreenShare,
+                title = stringResource(R.string.bpc_screen_capture),
+                subtitle = stringResource(R.string.bridge_core_capture_desc),
+                ready = status.screenCapturePermitted,
+                tag = "bridge.core.capture",
+                onOpen = onRequestScreenCapture,
+                onTest = onTestScreenCapture,
+            )
+            HorizontalDivider()
+            CoreAccessRow(
+                icon = Icons.Filled.PictureInPicture,
+                title = stringResource(R.string.bpc_overlay),
+                subtitle = stringResource(R.string.bpc_overlay_desc),
+                ready = status.overlayPermitted,
+                tag = "bridge.core.overlay",
+                onOpen = onOpenOverlay,
+                onTest = onTestOverlay,
+            )
+            HorizontalDivider()
+            Row(
+                modifier = Modifier.fillMaxWidth().testTag("bridge.core.device_info"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Icon(Icons.Filled.Info, contentDescription = null)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(stringResource(R.string.bridge_core_device_info), fontWeight = FontWeight.Medium)
+                    Text(
+                        stringResource(R.string.bridge_core_device_info_desc),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        stringResource(if (deviceInfoAllowed) R.string.bridge_core_allowed else R.string.bridge_core_not_allowed),
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+                Switch(
+                    checked = deviceInfoAllowed,
+                    onCheckedChange = onDeviceInfoChanged,
+                    enabled = masterEnabled,
+                )
+            }
+            if (!masterEnabled) {
+                Text(
+                    stringResource(R.string.bridge_core_enable_master_first),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CoreAccessRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    ready: Boolean,
+    tag: String,
+    onOpen: () -> Unit,
+    onTest: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().testTag(tag).clickable(onClick = onOpen),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Icon(icon, contentDescription = null)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, fontWeight = FontWeight.Medium)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Icon(
+            Icons.Filled.CheckCircle,
+            contentDescription = null,
+            tint = if (ready) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+        )
+        Button(onClick = onTest) { Text(stringResource(R.string.bpc_test)) }
     }
 }
 

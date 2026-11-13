@@ -85,6 +85,7 @@ import com.hermesandroid.relay.viewmodel.BridgePermissionStatus
 fun BridgePermissionChecklist(
     status: BridgePermissionStatus,
     modifier: Modifier = Modifier,
+    showCoreBridge: Boolean = true,
     // === PHASE3-safety-rails-followup: in-app permission Test handlers ===
     onTestAccessibility: (() -> Unit)? = null,
     onTestScreenCapture: (() -> Unit)? = null,
@@ -133,52 +134,54 @@ fun BridgePermissionChecklist(
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f))
 
-            // ── Core bridge (required, both flavors) ──────────────────────
-            TierHeader(
-                label = stringResource(R.string.bpc_core_bridge),
-                subtitle = stringResource(R.string.bpc_core_bridge_desc),
-            )
-            PermissionRow(
-                icon = Icons.Filled.Accessibility,
-                title = stringResource(R.string.bpc_accessibility),
-                subtitle = if (BuildFlavor.isSideload)
-                    stringResource(R.string.bpc_accessibility_desc_sideload)
-                else
-                    stringResource(R.string.bpc_accessibility_desc_googleplay),
-                granted = status.accessibilityServiceEnabled,
-                onClick = { openAccessibilitySettings(context) },
-                onTest = onTestAccessibility,
-            )
-            // Screen Capture — sideload only. googlePlay doesn't declare
-            // FOREGROUND_SERVICE_MEDIA_PROJECTION or the /screenshot route,
-            // and showing a consent toggle for a capability the APK can't
-            // use would confuse both users and Play reviewers.
-            if (BuildFlavor.isSideload) {
+            if (showCoreBridge) {
+                // ── Core bridge (required, both flavors) ──────────────────────
+                TierHeader(
+                    label = stringResource(R.string.bpc_core_bridge),
+                    subtitle = stringResource(R.string.bpc_core_bridge_desc),
+                )
                 PermissionRow(
-                    icon = Icons.Filled.ScreenShare,
-                    title = stringResource(R.string.bpc_screen_capture),
-                    subtitle = if (status.screenCapturePermitted)
-                        stringResource(R.string.bpc_screen_capture_granted)
+                    icon = Icons.Filled.Accessibility,
+                    title = stringResource(R.string.bpc_accessibility),
+                    subtitle = if (BuildFlavor.isSideload)
+                        stringResource(R.string.bpc_accessibility_desc_sideload)
                     else
-                        stringResource(R.string.bpc_screen_capture_not_granted),
-                    granted = status.screenCapturePermitted,
-                    onClick = onRequestScreenCapture,
-                    onTest = onTestScreenCapture,
+                        stringResource(R.string.bpc_accessibility_desc_googleplay),
+                    granted = status.accessibilityServiceEnabled,
+                    onClick = { openAccessibilitySettings(context) },
+                    onTest = onTestAccessibility,
                 )
-            }
-            // Display over other apps — sideload only. googlePlay has no
-            // destructive-verb safety modal (action routes are blocked) and
-            // no status overlay chip, so the SYSTEM_ALERT_WINDOW permission
-            // isn't needed and showing the row would confuse users + reviewers.
-            if (BuildFlavor.isSideload) {
-                PermissionRow(
-                    icon = Icons.Filled.PictureInPicture,
-                    title = stringResource(R.string.bpc_overlay),
-                    subtitle = stringResource(R.string.bpc_overlay_desc),
-                    granted = status.overlayPermitted,
-                    onClick = { openOverlaySettings(context) },
-                    onTest = onTestOverlay,
-                )
+                // Screen Capture — sideload only. googlePlay doesn't declare
+                // FOREGROUND_SERVICE_MEDIA_PROJECTION or the /screenshot route,
+                // and showing a consent toggle for a capability the APK can't
+                // use would confuse both users and Play reviewers.
+                if (BuildFlavor.isSideload) {
+                    PermissionRow(
+                        icon = Icons.Filled.ScreenShare,
+                        title = stringResource(R.string.bpc_screen_capture),
+                        subtitle = if (status.screenCapturePermitted)
+                            stringResource(R.string.bpc_screen_capture_granted)
+                        else
+                            stringResource(R.string.bpc_screen_capture_not_granted),
+                        granted = status.screenCapturePermitted,
+                        onClick = onRequestScreenCapture,
+                        onTest = onTestScreenCapture,
+                    )
+                }
+                // Display over other apps — sideload only. googlePlay has no
+                // destructive-verb safety modal (action routes are blocked) and
+                // no status overlay chip, so the SYSTEM_ALERT_WINDOW permission
+                // isn't needed and showing the row would confuse users + reviewers.
+                if (BuildFlavor.isSideload) {
+                    PermissionRow(
+                        icon = Icons.Filled.PictureInPicture,
+                        title = stringResource(R.string.bpc_overlay),
+                        subtitle = stringResource(R.string.bpc_overlay_desc),
+                        granted = status.overlayPermitted,
+                        onClick = { openOverlaySettings(context) },
+                        onTest = onTestOverlay,
+                    )
+                }
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 PermissionRow(

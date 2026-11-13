@@ -4579,6 +4579,15 @@
     <string name="scripts_steps_label">步骤</string>
     <string name="scripts_step_number">%1$d. %2$s</string>
     <string name="scripts_source_label">来源</string>
+    <string name="bridge_dashboard_title">仪表盘</string>
+    <string name="bridge_dashboard_desc">打开 Hermes 仪表盘；需要登录时会先引导登录。</string>
+    <string name="bridge_core_access_title">Bridge 核心授权</string>
+    <string name="bridge_core_capture_desc">允许代理授权截图</string>
+    <string name="bridge_core_device_info">设备和应用信息</string>
+    <string name="bridge_core_device_info_desc">允许 Hermes 读取前台应用、应用私有文件和日志。</string>
+    <string name="bridge_core_allowed">已允许</string>
+    <string name="bridge_core_not_allowed">未允许</string>
+    <string name="bridge_core_enable_master_first">请先打开 Bridge 总开关</string>
     <string name="scripts_read_only_notice">本版本只展示脚本，不执行。</string>
     <string name="session_list_title">全部会话</string>
     <string name="bridge_quick_screenshot">截图 / 读屏</string>
