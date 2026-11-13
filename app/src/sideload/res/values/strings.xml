@@ -17,4 +17,15 @@
     <string name="a11y_service_label">Hermes-Bridge Dev</string>
     <string name="notification_companion_label">Hermes Dev notification companion</string>
     <string name="a11y_description_sideload">Hermes Bridge gives the agent full read/write access to the phone for hands-free control via voice and vision. All actions are logged in the Activity Log and destructive actions require your confirmation.</string>
+    <string name="chat_background_title">Chat background</string>
+    <string name="chat_background_description">Choose an image and opacity</string>
+    <string name="chat_background_gallery">Choose from gallery</string>
+    <string name="chat_background_presets">Presets</string>
+    <string name="chat_background_none">No background</string>
+    <string name="chat_background_opacity_value">Opacity: %1$d%%</string>
+    <string name="chat_background_preview">Message preview</string>
+    <string name="chat_background_close">Back</string>
+    <string name="chat_background_preset_number">Preset %1$d</string>
+    <string name="chat_background_importing">Importing image…</string>
+    <string name="chat_background_error">Could not save the background. Please try again.</string>
 </resources>

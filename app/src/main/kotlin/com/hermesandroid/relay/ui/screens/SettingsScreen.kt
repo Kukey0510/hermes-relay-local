@@ -401,6 +401,7 @@ fun SettingsScreen(
     // back where they started.
     var showAgentSheet by remember { mutableStateOf(false) }
     var showProfileLockDialog by remember { mutableStateOf(false) }
+    var showChatBackground by remember { mutableStateOf(false) }
     // What's New / Changelog — opens the full release history as a
     // self-contained full-screen Dialog (no nav route). Always available, not
     // gated on the post-update "seen" state that drives the auto dialog.
@@ -411,7 +412,7 @@ fun SettingsScreen(
     LaunchedEffect(settingsScrollState, petCompanionCoordinator) {
         snapshotFlow {
             settingsScrollState.isScrollInProgress to
-                (showAgentSheet || showProfileLockDialog || showChangelog)
+                (showAgentSheet || showProfileLockDialog || showChangelog || showChatBackground)
         }
             .distinctUntilChanged()
             .collect { (scrolling, hidden) ->
@@ -724,6 +725,14 @@ fun SettingsScreen(
             )
 
             SettingsCategoryRow(
+                icon = Icons.Filled.Palette,
+                title = stringResource(R.string.chat_background_title),
+                subtitle = stringResource(R.string.chat_background_description),
+                onClick = { showChatBackground = true },
+                isDarkTheme = isDarkTheme,
+            )
+
+            SettingsCategoryRow(
                 icon = Icons.Filled.Security,
                 title = stringResource(R.string.settings_advanced),
                 subtitle = when {
@@ -817,6 +826,16 @@ fun SettingsScreen(
     // so it stacks over Settings and dismisses back here — mirroring the
     // showAgentSheet inline-surface pattern above. (Diagnostics moved to its
     // own nav route — see Screen.Diagnostics.)
+    if (showChatBackground) {
+        Dialog(
+            onDismissRequest = { showChatBackground = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            com.hermesandroid.relay.ui.settings.ChatBackgroundSettingsScreen(
+                onClose = { showChatBackground = false },
+            )
+        }
+    }
     if (showChangelog) {
         Dialog(
             onDismissRequest = { showChangelog = false },
