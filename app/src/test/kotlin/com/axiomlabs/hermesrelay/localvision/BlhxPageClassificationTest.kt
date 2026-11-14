@@ -41,6 +41,49 @@ class BlhxPageClassificationTest {
         }
     }
 
+    /**
+     * 2026-11-14 真机素材矩阵（app/src/test/resources/frames/blhx，每页 3 帧）。
+     *
+     * sortie / battle / result 目前**没有判据**，所以期望 other —— 块20 补齐后把这三行改成页名。
+     * 这个测试同时充当"负样本不误判"的守门：任何页被判成别的页都会列在失败信息里。
+     */
+    @Test
+    fun v2FrameMatrixMatchesDirectoryLabels() {
+        val root = repositoryRoot()
+        val frameRoot = root.resolve("app/src/test/resources/frames/blhx")
+        if (!Files.isDirectory(frameRoot)) return
+        val assets = root.resolve("app/src/main/assets")
+        val spec = PageSpecParser.parse(Files.readString(assets.resolve("pages.json")))
+        val detector = PageDetector(spec, AssetTemplateLoader(assets))
+        val expectations = linkedMapOf(
+            "home" to "home",
+            "list" to "list",
+            "info" to "info",
+            "formation" to "formation",
+            "negative" to "other",
+            "sortie" to "other",   // 块20 补齐后改成 "sortie"
+            "battle" to "other",   // 块20 补齐后改成 "battle"
+            "result" to "other",   // 块20 补齐后改成 "result"
+        )
+        val failures = mutableListOf<String>()
+        var checked = 0
+        for ((dir, expected) in expectations) {
+            val directory = frameRoot.resolve(dir)
+            if (!Files.isDirectory(directory)) continue
+            val frames = Files.list(directory).use { paths ->
+                paths.filter { Files.isRegularFile(it) && it.extension.equals("png", ignoreCase = true) }
+                    .sorted()
+                    .toList()
+            }
+            for (frame in frames) {
+                checked += 1
+                val got = detector.detect(PngRgbImageLoader.load(frame))
+                if (got != expected) failures += "$dir/${frame.fileName}: wanted $expected got $got"
+            }
+        }
+        assertEquals("checked $checked frames\n" + failures.joinToString("\n"), emptyList<String>(), failures)
+    }
+
     private fun repositoryRoot(): Path {
         var candidate = Path.of(System.getProperty("user.dir")).toAbsolutePath()
         while (candidate.parent != null) {
