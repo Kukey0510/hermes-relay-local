@@ -44,7 +44,7 @@ class BlhxPageClassificationTest {
     /**
      * 2026-11-14 真机素材矩阵（app/src/test/resources/frames/blhx，每页 3 帧）。
      *
-     * sortie / battle / result 目前**没有判据**，所以期望 other —— 块20 补齐后把这三行改成页名。
+     * sortie / battle / result 已补齐判据，期望与各自目录名一致。
      * 这个测试同时充当"负样本不误判"的守门：任何页被判成别的页都会列在失败信息里。
      */
     @Test
@@ -61,9 +61,9 @@ class BlhxPageClassificationTest {
             "info" to "info",
             "formation" to "formation",
             "negative" to "other",
-            "sortie" to "other",   // 块20 补齐后改成 "sortie"
-            "battle" to "other",   // 块20 补齐后改成 "battle"
-            "result" to "other",   // 块20 补齐后改成 "result"
+            "sortie" to "sortie",
+            "battle" to "battle",
+            "result" to "result"
         )
         val failures = mutableListOf<String>()
         var checked = 0

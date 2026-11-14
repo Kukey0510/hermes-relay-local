@@ -90,6 +90,59 @@
      "tol": 10
     }
    ]
+  },
+  "sortie": {
+   "checks": [
+    {
+     "type": "template",
+     "file": "sortie-operation-archive.png",
+     "area": [
+      505,
+      855,
+      250,
+      130
+     ],
+     "min": 0.93
+    }
+   ]
+  },
+  "battle": {
+   "checks": [
+    {
+     "type": "color",
+     "area": [
+      2400,
+      0,
+      16,
+      16
+     ],
+     "expect": [
+      149,
+      220,
+      245
+     ],
+     "tol": 5
+    }
+   ]
+  },
+  "result": {
+   "checks": [
+    {
+     "type": "color",
+     "area": [
+      1320,
+      440,
+      16,
+      16
+     ],
+     "expect": [
+      220,
+      218,
+      122
+     ],
+     "tol": 2
+    }
+   ]
   }
  }
 }
