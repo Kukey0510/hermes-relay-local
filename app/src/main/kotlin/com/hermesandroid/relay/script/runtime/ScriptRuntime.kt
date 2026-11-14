@@ -2,6 +2,7 @@ package com.hermesandroid.relay.script.runtime
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.accessibilityservice.AccessibilityService
 import com.axiomlabs.hermesrelay.localvision.FrameArchive
 import com.hermesandroid.relay.accessibility.HermesAccessibilityService
@@ -18,6 +19,12 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.Text
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import kotlin.coroutines.resume
+import kotlinx.coroutines.suspendCancellableCoroutine
 
 object ScriptRuntime {
     private val runner = ScriptRunner()
@@ -82,7 +89,8 @@ object ScriptRuntime {
             onStep = { log, durationMs ->
                 store.writePending(PendingScriptRun(script.id, runId, log.stepIndex))
                 store.append(ScriptLogEvent(
-                    event = "step", scriptId = script.id, runId = runId, ts = ScriptLogEvent.timestamp(),
+                    event = if (log.message.startsWith("power_fallback")) "power_fallback" else "step",
+                    scriptId = script.id, runId = runId, ts = ScriptLogEvent.timestamp(),
                     stepIndex = log.stepIndex, op = log.op, success = log.success, attempts = log.attempts,
                     message = log.message, durationMs = durationMs,
                 ))
@@ -171,6 +179,37 @@ object ScriptRuntime {
         override suspend fun saveSnapshot(tag: String): Boolean {
             val image = capture?.captureLocalFrame()?.getOrNull() ?: return false
             return FrameArchive.save(context, image, tag) != null
+        }
+
+        override suspend fun recognizePowers(minConfidence: Double): PowerRecognition? {
+            val started = android.os.SystemClock.elapsedRealtime()
+            val frame = capture?.captureLocalFrame()?.getOrNull() ?: return null
+            val composite = runCatching { PowerImagePreprocessor.compose(frame) }.getOrNull() ?: return null
+            val bitmap = Bitmap.createBitmap(composite.width, composite.height, Bitmap.Config.ARGB_8888)
+            bitmap.setPixels(composite.pixels, 0, composite.width, 0, 0, composite.width, composite.height)
+            val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+            val result: Text = try {
+                suspendCancellableCoroutine<Text?> { continuation ->
+                    recognizer.process(InputImage.fromBitmap(bitmap, 0))
+                        .addOnSuccessListener { if (continuation.isActive) continuation.resume(it) }
+                        .addOnFailureListener { if (continuation.isActive) continuation.resume(null) }
+                }
+            } finally {
+                recognizer.close(); bitmap.recycle()
+            } ?: return null
+            val pieces = Array(8) { mutableListOf<Pair<Int, String>>() }
+            result.textBlocks.flatMap { it.lines }.flatMap { it.elements }.forEach { element ->
+                val box = element.boundingBox ?: return@forEach
+                val stripIndex = composite.strips.indexOfFirst { box.centerX() in it.left until it.right }
+                val digits = element.text.filter(Char::isDigit)
+                if (stripIndex >= 0 && digits.isNotEmpty()) pieces[stripIndex] += box.left to digits
+            }
+            val cards = (0..3).map { card -> (0..1).map { row ->
+                val text = pieces[card * 2 + row].sortedBy { it.first }.joinToString("") { it.second }
+                // Latin Text Recognition v2 exposes no per-element confidence; -1 means unavailable.
+                PowerReading(text.toIntOrNull(), -1f)
+            } }
+            return PowerRecognition(cards, android.os.SystemClock.elapsedRealtime() - started)
         }
     }
 }

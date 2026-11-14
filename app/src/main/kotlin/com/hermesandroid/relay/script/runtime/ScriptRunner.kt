@@ -21,6 +21,7 @@ interface ScriptAccess {
     suspend fun back(): Boolean = false
     suspend fun frameSample(): IntArray? = null
     suspend fun saveSnapshot(tag: String): Boolean = false
+    suspend fun recognizePowers(minConfidence: Double): PowerRecognition? = null
     suspend fun waitMs(ms: Long) = delay(ms)
 }
 
@@ -28,6 +29,9 @@ data class ScriptRunLog(val stepIndex: Int, val stepId: String?, val op: String,
     val success: Boolean, val attempts: Int, val message: String)
 data class ScriptRunResult(val runId: String = UUID.randomUUID().toString(), val success: Boolean,
     val errorCode: String? = null, val logs: List<ScriptRunLog> = emptyList())
+
+data class PowerReading(val value: Int?, val confidence: Float = -1f)
+data class PowerRecognition(val cards: List<List<PowerReading>>, val durationMs: Long)
 
 internal fun meanAbsDiff(first: IntArray, second: IntArray): Int {
     if (first.size != second.size) return Int.MAX_VALUE
@@ -37,7 +41,11 @@ internal fun meanAbsDiff(first: IntArray, second: IntArray): Int {
 }
 
 class ScriptRunner {
-    companion object { private val running = AtomicBoolean(false) }
+    companion object {
+        private val running = AtomicBoolean(false)
+        private val CARD_CENTERS = intArrayOf(590, 960, 1330, 1700)
+        private const val CARD_CENTER_Y = 355
+    }
 
     suspend fun run(
         script: RuntimeScript,
@@ -188,6 +196,26 @@ class ScriptRunner {
             val ok = access.saveSnapshot(tag)
             StepOutcome(ok, if (ok) "snapshot:$tag" else "capture_failed")
         }
+        is ScriptStep.TapWeakest -> {
+            val fallback = step.fallbackIndex.coerceIn(0, 3)
+            val minConfidence = step.minConfidence.coerceIn(0.0, 1.0)
+            val recognition = access.recognizePowers(minConfidence)
+            val cards = recognition?.cards.orEmpty()
+            val sums = (0..3).map { index -> cards.getOrNull(index)?.takeIf { it.size == 2 && it.all { reading ->
+                reading.value != null && (reading.confidence < 0f || reading.confidence >= minConfidence)
+            } }
+                ?.sumOf { it.value!! } }
+            val selected = sums.withIndex().filter { it.value != null }.minByOrNull { it.value!! }?.index ?: fallback
+            val isFallback = sums.all { it == null }
+            val tapped = step.dry || access.tap(CARD_CENTERS[selected], CARD_CENTER_Y)
+            val readings = (0..3).joinToString(";") { card ->
+                val rows = cards.getOrNull(card).orEmpty()
+                "$card:${rows.getOrNull(0)?.value ?: "?"}@${rows.getOrNull(0)?.confidence ?: -1f}+" +
+                    "${rows.getOrNull(1)?.value ?: "?"}@${rows.getOrNull(1)?.confidence ?: -1f}=${sums[card] ?: "?"}"
+            }
+            val event = if (isFallback) "power_fallback" else "power_selected"
+            StepOutcome(tapped, "$event cards=[$readings] selected=$selected duration_ms=${recognition?.durationMs ?: 0} dry=${step.dry}")
+        }
     }
 
     private suspend fun waitStable(step: ScriptStep.WaitStable, access: ScriptAccess): StepOutcome {
@@ -235,7 +263,9 @@ class ScriptRunner {
             is ScriptStep.TapIfText -> "tapIfText"; is ScriptStep.IfPage -> "if_page"; is ScriptStep.Loop -> "loop"
             is ScriptStep.Launch -> "launch"; is ScriptStep.Back -> "back"; is ScriptStep.WaitStable -> "wait_stable"
             is ScriptStep.Snapshot -> "snapshot"
+            is ScriptStep.TapWeakest -> "tapWeakest"
         }, success, attempts, message)
     private fun elapsedMs(startedAt: Long) = (System.nanoTime() - startedAt) / 1_000_000
     private data class StepOutcome(val ok: Boolean, val message: String, val errorCode: String? = null)
+
 }

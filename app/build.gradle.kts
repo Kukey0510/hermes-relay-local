@@ -359,6 +359,8 @@ dependencies {
 
     // QR Code scanning (ML Kit + CameraX)
     implementation(libs.mlkit.barcode)
+    // Bundled Latin recognizer: arena power OCR must also work without Play Services.
+    implementation(libs.mlkit.text.recognition)
     implementation(libs.zxing.core)
     implementation(libs.camera.core)
     implementation(libs.camera.camera2)

@@ -56,6 +56,9 @@ sealed interface ScriptStep {
         override val retries: Int = 0) : ScriptStep
     data class Snapshot(val tag: String = "manual", override val id: String? = null,
         override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
+    data class TapWeakest(val fallbackIndex: Int = 0, val minConfidence: Double = 0.5,
+        val dry: Boolean = false, override val id: String? = null,
+        override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
 }
 
 object ScriptStepSerializer : KSerializer<ScriptStep> {
@@ -93,6 +96,9 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
                 text("interval_ms")?.toLong() ?: 250, text("timeout_ms")?.toLong() ?: 10_000,
                 text("tolerance")?.toInt() ?: 2, id, null, retries)
             "snapshot" -> ScriptStep.Snapshot(text("tag") ?: "manual", id, timeout, retries)
+            "tapWeakest" -> ScriptStep.TapWeakest(text("fallback_index")?.toInt() ?: 0,
+                text("min_confidence")?.toDouble() ?: 0.5,
+                (json["dry"] as? JsonPrimitive)?.booleanOrNull ?: false, id, timeout, retries)
             else -> throw UnsupportedOperationException("unsupported script op: $op")
         }
     }
@@ -125,6 +131,8 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
             is ScriptStep.WaitStable -> { put("op", "wait_stable"); put("frames", value.stableFrames)
                 put("interval_ms", value.intervalMs); put("timeout_ms", value.stableTimeoutMs); put("tolerance", value.tolerance) }
             is ScriptStep.Snapshot -> { put("op", "snapshot"); put("tag", value.tag) }
+            is ScriptStep.TapWeakest -> { put("op", "tapWeakest"); put("fallback_index", value.fallbackIndex)
+                put("min_confidence", value.minConfidence); put("dry", value.dry) }
         }
         value.id?.let { put("id", it) }
         value.timeoutMs?.let { put("timeout_ms", it) }

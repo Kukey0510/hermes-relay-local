@@ -122,6 +122,31 @@ class ScriptRunnerTest {
         assertTrue(encoded.contains("\"from_x\""))
     }
 
+    @Test fun tapWeakestRoundTripsAndFallsBackWhenEveryCardFails() = runTest {
+        val decoded = Json.decodeFromString<ScriptStep>(
+            """{"op":"tapWeakest","fallback_index":2,"min_confidence":0.7,"dry":false}"""
+        ) as ScriptStep.TapWeakest
+        assertEquals(2, decoded.fallbackIndex)
+        assertEquals(0.7, decoded.minConfidence, 0.0)
+        val access = FakeAccess()
+        val result = ScriptRunner().run(script(decoded), access)
+        assertTrue(result.success)
+        assertEquals(listOf(1330 to 355), access.tapCoordinates)
+        assertTrue(result.logs.single().message.contains("power_fallback"))
+    }
+
+    @Test fun tapWeakestSelectsSmallestRecognizedSumAndDryDoesNotTap() = runTest {
+        val access = FakeAccess().apply { powers = PowerRecognition(listOf(
+            listOf(PowerReading(100), PowerReading(200)), listOf(PowerReading(50), PowerReading(60)),
+            listOf(PowerReading(null), PowerReading(1)), listOf(PowerReading(90), PowerReading(90)),
+        ), 17) }
+        val result = ScriptRunner().run(script(ScriptStep.TapWeakest(dry = true)), access)
+        assertTrue(result.success)
+        assertTrue(access.tapCoordinates.isEmpty())
+        assertTrue(result.logs.single().message.contains("selected=1"))
+        assertTrue(result.logs.single().message.contains("duration_ms=17"))
+    }
+
     @Test fun waitIsClampedToThirtySeconds() = runTest {
         val access = FakeAccess()
         assertTrue(ScriptRunner().run(script(ScriptStep.Wait(99_999)), access).success)
@@ -159,6 +184,7 @@ class ScriptRunnerTest {
         var clock = 0L
         val waits = mutableListOf<Long>()
         val tapCoordinates = mutableListOf<Pair<Int, Int>>()
+        var powers: PowerRecognition? = null
         val swipes = mutableListOf<SwipeCall>()
         override fun foregroundPackage() = packageName
         override suspend fun tap(x: Int, y: Int): Boolean {
@@ -167,6 +193,7 @@ class ScriptRunnerTest {
             return tapAnswers.firstOrNull()?.also { if (tapAnswers.size > 1) tapAnswers.removeFirst() } ?: true
         }
         override suspend fun tapText(text: String) = textAnswers.removeFirst()
+        override suspend fun recognizePowers(minConfidence: Double) = powers
         override suspend fun swipe(fromX: Int, fromY: Int, toX: Int, toY: Int, durationMs: Long): Boolean {
             swipes += SwipeCall(fromX, fromY, toX, toY, durationMs); return true
         }
