@@ -22,6 +22,10 @@ interface ScriptAccess {
     suspend fun frameSample(): IntArray? = null
     suspend fun saveSnapshot(tag: String): Boolean = false
     suspend fun recognizePowers(minConfidence: Double): PowerRecognition? = null
+    /** 冷启动到 home 页的全自动流程；返回 "ok:home_at_<ms>" 或 "fail:<原因>"。 */
+    suspend fun coldStartTo(pkg: String?, bootPage: String, homePage: String,
+        tapX: Int?, tapY: Int?, bootWaitMs: Long, homeWaitMs: Long,
+        intervalMs: Long): String = "unsupported"
     suspend fun waitMs(ms: Long) = delay(ms)
 }
 
@@ -191,6 +195,11 @@ class ScriptRunner {
             StepOutcome(ok, if (ok) "back" else "back_failed")
         }
         is ScriptStep.WaitStable -> waitStable(step, access)
+        is ScriptStep.ColdStart -> {
+            val message = access.coldStartTo(step.packageName, step.bootPage, step.homePage,
+                step.tapX, step.tapY, step.bootWaitMs, step.homeWaitMs, step.intervalMs)
+            StepOutcome(message.startsWith("ok"), message)
+        }
         is ScriptStep.Snapshot -> {
             val tag = step.tag.replace(Regex("[^A-Za-z0-9_-]"), "_").take(32).ifEmpty { "_" }
             val ok = access.saveSnapshot(tag)
@@ -264,6 +273,7 @@ class ScriptRunner {
             is ScriptStep.Launch -> "launch"; is ScriptStep.Back -> "back"; is ScriptStep.WaitStable -> "wait_stable"
             is ScriptStep.Snapshot -> "snapshot"
             is ScriptStep.TapWeakest -> "tapWeakest"
+            is ScriptStep.ColdStart -> "coldStart"
         }, success, attempts, message)
     private fun elapsedMs(startedAt: Long) = (System.nanoTime() - startedAt) / 1_000_000
     private data class StepOutcome(val ok: Boolean, val message: String, val errorCode: String? = null)

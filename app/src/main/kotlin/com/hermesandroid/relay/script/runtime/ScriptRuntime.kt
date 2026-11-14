@@ -159,6 +159,74 @@ object ScriptRuntime {
             return runCatching { context.startActivity(intent); true }.getOrDefault(false)
         }
 
+        /**
+         * 冷启动到 home：全自动闭环，中途不问服务器、不等外部指令。
+         * ① 每 2 秒看一次画面方向，竖屏（桌面/被抢前台）就再拉起一次 App；
+         * ② 连续两次横屏才认为游戏真起来了，避免一次误判就开始乱点；
+         * ③ 之后每 intervalMs 判一次页，命中 boot 就点屏幕中心，点完 2 秒复查，最多 3 次；
+         * ④ 命中 home 立刻返回，带上从启动到进主页的毫秒数。
+         */
+        override suspend fun coldStartTo(pkg: String?, bootPage: String, homePage: String,
+            tapX: Int?, tapY: Int?, bootWaitMs: Long, homeWaitMs: Long, intervalMs: Long): String {
+            val started = monotonicMs()
+            val (screenWidth, screenHeight) = screenSize()
+            val tx = tapX ?: (screenWidth / 2)
+            val ty = tapY ?: (screenHeight / 2)
+            var landscapeStreak = 0
+            var lastLaunchAt = 0L
+            var taps = 0
+            var firstBootAt = 0L
+            var lastPage = "?"
+
+            suspend fun detectPage(): String = runCatching {
+                val result = LocalVisionBridgeRoutes.handle(capture, context, buildJsonObject {
+                    put("with_frame", false)
+                    put("save_unknown", false)
+                })
+                (result.payload["page"] as? JsonPrimitive)?.content ?: "other"
+            }.getOrDefault("other")
+
+            while (monotonicMs() - started < bootWaitMs) {
+                val frame = runCatching { capture?.captureLocalFrame()?.getOrNull() }.getOrNull()
+                val landscape = frame != null && frame.width > frame.height
+                if (!landscape) {
+                    landscapeStreak = 0
+                    if (monotonicMs() - lastLaunchAt >= 2_000) {
+                        val name = pkg ?: return "fail:no_package"
+                        lastLaunchAt = monotonicMs()
+                        launchApp(name)
+                    }
+                    delay(2_000)
+                    continue
+                }
+                landscapeStreak++
+                if (landscapeStreak >= 2) break
+                delay(2_000)
+            }
+            if (landscapeStreak < 2) {
+                return "fail:no_landscape elapsed=${monotonicMs() - started}ms"
+            }
+
+            val pageDeadline = monotonicMs() + homeWaitMs
+            while (monotonicMs() < pageDeadline) {
+                lastPage = detectPage()
+                if (lastPage == homePage) {
+                    return "ok:home_at_${monotonicMs() - started}ms taps=$taps"
+                }
+                if (lastPage == bootPage) {
+                    if (firstBootAt == 0L) firstBootAt = monotonicMs()
+                    if (taps < 3 && monotonicMs() - firstBootAt < 15_000) {
+                        tap(tx, ty)
+                        taps++
+                        delay(2_000)
+                        continue
+                    }
+                }
+                delay(intervalMs.coerceIn(300, 5_000))
+            }
+            return "fail:no_home last=$lastPage taps=$taps elapsed=${monotonicMs() - started}ms"
+        }
+
         override suspend fun back(): Boolean =
             service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
 

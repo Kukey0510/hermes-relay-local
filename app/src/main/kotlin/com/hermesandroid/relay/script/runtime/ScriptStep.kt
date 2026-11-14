@@ -59,6 +59,18 @@ sealed interface ScriptStep {
     data class TapWeakest(val fallbackIndex: Int = 0, val minConfidence: Double = 0.5,
         val dry: Boolean = false, override val id: String? = null,
         override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
+    /**
+     * 冷启动到指定页的全自动流程，不依赖服务器逐步指挥：
+     * 每 2 秒检查是否横屏（不在前台就再拉起一次），连续两次横屏才开始判页；
+     * 之后每 intervalMs 判一次页，命中 bootPage 就点 tapX/tapY（默认屏幕中心），
+     * 点完 2 秒复查，最多点 3 次；命中 homePage 立即结束。
+     */
+    data class ColdStart(val packageName: String? = null, val bootPage: String = "boot",
+        val homePage: String = "home", val tapX: Int? = null, val tapY: Int? = null,
+        val bootWaitMs: Long = 60_000, val homeWaitMs: Long = 90_000,
+        val intervalMs: Long = 1_000,
+        override val id: String? = null, override val timeoutMs: Long? = null,
+        override val retries: Int = 0) : ScriptStep
 }
 
 object ScriptStepSerializer : KSerializer<ScriptStep> {
@@ -99,6 +111,14 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
             "tapWeakest" -> ScriptStep.TapWeakest(text("fallback_index")?.toInt() ?: 0,
                 text("min_confidence")?.toDouble() ?: 0.5,
                 (json["dry"] as? JsonPrimitive)?.booleanOrNull ?: false, id, timeout, retries)
+            "coldStart" -> ScriptStep.ColdStart(
+                text("package"), text("boot") ?: "boot", text("home") ?: "home",
+                (json["x"] as? JsonPrimitive)?.intOrNull,
+                (json["y"] as? JsonPrimitive)?.intOrNull,
+                text("boot_wait_ms")?.toLongOrNull() ?: 60_000,
+                text("home_wait_ms")?.toLongOrNull() ?: 90_000,
+                text("interval_ms")?.toLongOrNull() ?: 1_000,
+                id, timeout, retries)
             else -> throw UnsupportedOperationException("unsupported script op: $op")
         }
     }
@@ -133,6 +153,12 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
             is ScriptStep.Snapshot -> { put("op", "snapshot"); put("tag", value.tag) }
             is ScriptStep.TapWeakest -> { put("op", "tapWeakest"); put("fallback_index", value.fallbackIndex)
                 put("min_confidence", value.minConfidence); put("dry", value.dry) }
+            is ScriptStep.ColdStart -> { put("op", "coldStart")
+                value.packageName?.let { put("package", it) }
+                put("boot", value.bootPage); put("home", value.homePage)
+                value.tapX?.let { put("x", it) }; value.tapY?.let { put("y", it) }
+                put("boot_wait_ms", value.bootWaitMs); put("home_wait_ms", value.homeWaitMs)
+                put("interval_ms", value.intervalMs) }
         }
         value.id?.let { put("id", it) }
         value.timeoutMs?.let { put("timeout_ms", it) }
