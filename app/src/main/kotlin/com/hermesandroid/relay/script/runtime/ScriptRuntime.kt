@@ -9,6 +9,8 @@ import com.hermesandroid.relay.accessibility.ScreenCapture
 import com.hermesandroid.relay.network.relay.LocalVisionBridgeRoutes
 import com.hermesandroid.relay.ui.scripts.ScriptCatalog
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import java.util.UUID
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -59,6 +61,15 @@ object ScriptRuntime {
         ), outbox = ScriptEventOutbox(context.filesDir))
         // Block 24: replay anything the server missed before a new run starts.
         runCatching { reporter.flush() }
+        // 脚本跑的时候前台会被 Relay 自己的 12s 空闲回前台抢走（脚本步骤不算「服务器命令」，
+        // 定时器不会重置）→ 下一个步骤就 guard_package_mismatch。这里在整轮期间持续续命。
+        com.hermesandroid.relay.bridge.BridgeRunTracker.markForegroundChanged()
+        val keepAlive = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default).launch {
+            while (isActive) {
+                com.hermesandroid.relay.bridge.BridgeRunTracker.onBridgeCommandActivity()
+                kotlinx.coroutines.delay(4_000)
+            }
+        }
         val result = try {
             runner.run(
             script = script,
@@ -82,6 +93,8 @@ object ScriptRuntime {
             if (error is kotlinx.coroutines.CancellationException) throw error
             store.clearPending()
             return ScriptRunResult(success = false, errorCode = "run_exception")
+        } finally {
+            keepAlive.cancel()
         }
         if (result.errorCode == "run_in_progress") return result
         runCatching { store.append(ScriptLogEvent(
