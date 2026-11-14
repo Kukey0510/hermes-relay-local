@@ -1,6 +1,9 @@
 package com.hermesandroid.relay.script.runtime
 
 import android.content.Context
+import android.content.Intent
+import android.accessibilityservice.AccessibilityService
+import com.axiomlabs.hermesrelay.localvision.FrameArchive
 import com.hermesandroid.relay.accessibility.HermesAccessibilityService
 import com.hermesandroid.relay.accessibility.ScreenCapture
 import com.hermesandroid.relay.network.relay.LocalVisionBridgeRoutes
@@ -117,6 +120,34 @@ object ScriptRuntime {
         override suspend fun read(field: String): String? {
             val result = LocalVisionBridgeRoutes.handleRead(capture, context, buildJsonObject { put("field", field) })
             return (result.payload["value"] as? JsonPrimitive)?.contentOrNull
+        }
+
+        override suspend fun launchApp(pkg: String): Boolean {
+            val intent = context.packageManager.getLaunchIntentForPackage(pkg) ?: return false
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            return runCatching { context.startActivity(intent); true }.getOrDefault(false)
+        }
+
+        override suspend fun back(): Boolean =
+            service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+
+        override suspend fun frameSample(): IntArray? {
+            val image = capture?.captureLocalFrame()?.getOrNull() ?: return null
+            val sampleCount = (image.rgb.size + 31) / 32
+            val channels = IntArray(sampleCount * 3)
+            var output = 0
+            for (index in image.rgb.indices step 32) {
+                val pixel = image.rgb[index]
+                channels[output++] = pixel ushr 16 and 0xff
+                channels[output++] = pixel ushr 8 and 0xff
+                channels[output++] = pixel and 0xff
+            }
+            return channels
+        }
+
+        override suspend fun saveSnapshot(tag: String): Boolean {
+            val image = capture?.captureLocalFrame()?.getOrNull() ?: return false
+            return FrameArchive.save(context, image, tag) != null
         }
     }
 }
