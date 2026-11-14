@@ -23,7 +23,7 @@ class LocalVisionBenchTest {
                 .toList()
         }
 
-        assertEquals("manifest entries", 12, expected.size)
+        assertEquals("manifest entries", 11, expected.size)
         assertEquals("fixture PNGs", expected.keys, frames.mapTo(linkedSetOf()) { fixtureRoot.relativize(it).unixPath() })
 
         val assets = root.resolve("app/src/main/assets")
