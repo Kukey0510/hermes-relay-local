@@ -50,7 +50,7 @@ class ScriptRunner {
         val logs = mutableListOf<ScriptRunLog>()
         val variables = script.vars.mapValuesTo(mutableMapOf()) { it.value.content }
         try {
-            onRunStart()
+            runCatching { onRunStart() }
             var failure: String? = null
             for ((index, step) in script.steps.withIndex()) {
                 val startedAt = System.nanoTime()
@@ -61,7 +61,7 @@ class ScriptRunner {
                         ScriptGuard.rejection(access.foregroundPackage(), script.targetPackages)?.let { code ->
                             val entry = log(index, step, false, attempt, code)
                             logs += entry
-                            onStep(entry, elapsedMs(startedAt))
+                            runCatching { onStep(entry, elapsedMs(startedAt)) }
                             failure = code
                             break
                         }
@@ -72,7 +72,7 @@ class ScriptRunner {
                 if (failure != null) break
                 val entry = log(index, step, outcome.ok, attempt, outcome.message)
                 logs += entry
-                onStep(entry, elapsedMs(startedAt))
+                runCatching { onStep(entry, elapsedMs(startedAt)) }
                 if (!outcome.ok) {
                     failure = outcome.errorCode ?: "step_failed"
                     break
@@ -90,20 +90,31 @@ class ScriptRunner {
             val remaining = 60_000 - (access.monotonicMs() - started)
             if (remaining <= 0) break
             val stepStarted = System.nanoTime()
-            val outcome = withTimeoutOrNull(remaining) {
+            val guarded = if (step is ScriptStep.Launch) null
+                else ScriptGuard.rejection(access.foregroundPackage(), script.targetPackages)
+            val outcome = guarded?.let { StepOutcome(false, it, it) } ?: withTimeoutOrNull(remaining) {
                 execute(step, access, script.targetPackages, variables)
-            } ?: StepOutcome(false, "timeout")
+            } ?: StepOutcome(false, "timeout", "step_timeout")
             val entry = log(-1, step, outcome.ok, 1, outcome.message, "on_fail:")
             logs += entry
-            onStep(entry, elapsedMs(stepStarted))
+            runCatching { onStep(entry, elapsedMs(stepStarted)) }
         }
     }
 
     private suspend fun execute(step: ScriptStep, access: ScriptAccess, targetPackages: Collection<String>,
         variables: MutableMap<String, String>): StepOutcome {
-        val timeout = step.timeoutMs?.coerceAtLeast(1)
-        return if (timeout == null) perform(step, access, targetPackages, variables)
-        else withTimeoutOrNull(timeout) { perform(step, access, targetPackages, variables) } ?: StepOutcome(false, "timeout")
+        // Probe 自带超时（内部轮询到 deadline），外面再套一层会把判别式提前取消掉
+        val timeout = if (step is ScriptStep.Probe) null else step.timeoutMs?.coerceAtLeast(1)
+        return try {
+            if (timeout == null) perform(step, access, targetPackages, variables)
+            else withTimeoutOrNull(timeout) { perform(step, access, targetPackages, variables) }
+                ?: StepOutcome(false, "timeout", "step_timeout")
+        } catch (cancel: kotlinx.coroutines.CancellationException) {
+            throw cancel
+        } catch (error: Throwable) {
+            // 任何一步抛异常都必须变成一条失败的 step 日志，不允许整条脚本 500
+            StepOutcome(false, "exception:${error.javaClass.simpleName}:${error.message?.take(80)}", "step_exception")
+        }
     }
 
     private suspend fun perform(step: ScriptStep, access: ScriptAccess, targetPackages: Collection<String>,
@@ -111,7 +122,7 @@ class ScriptRunner {
         is ScriptStep.Tap -> StepOutcome(access.tap(step.x, step.y), "tap")
         is ScriptStep.TapText -> StepOutcome(access.tapText(substitute(step.text, variables)), "tapText")
         is ScriptStep.Wait -> {
-            val clamped = step.ms.coerceIn(0, 10_000)
+            val clamped = step.ms.coerceIn(0, 30_000)
             access.waitMs(clamped); StepOutcome(true, "wait_ms=$clamped")
         }
         is ScriptStep.Probe -> StepOutcome(access.probe(step.expect, step.timeoutMs ?: 3_000), "probe=${step.expect}")
@@ -147,13 +158,14 @@ class ScriptRunner {
             if (times !in 1..100 || step.maxTotalMs < 0 || step.steps.any { it is ScriptStep.Loop }) {
                 StepOutcome(false, "invalid_loop", "invalid_script")
             } else {
+                val maxTotalMs = step.maxTotalMs.takeIf { it > 0 } ?: 600_000
                 val started = access.monotonicMs()
                 var outcome = StepOutcome(true, if (fallback) "loop_stop:times;times_fallback" else "loop_stop:times")
                 for (iteration in 0 until times) {
-                    if (access.monotonicMs() - started >= step.maxTotalMs) { outcome = StepOutcome(true, "loop_stop:max_total_ms"); break }
+                    if (access.monotonicMs() - started >= maxTotalMs) { outcome = StepOutcome(true, "loop_stop:max_total_ms"); break }
                     val child = performChildren(step.steps, access, targetPackages, variables, "loop")
                     if (!child.ok) return child
-                    if (access.monotonicMs() - started >= step.maxTotalMs) { outcome = StepOutcome(true, "loop_stop:max_total_ms"); break }
+                    if (access.monotonicMs() - started >= maxTotalMs) { outcome = StepOutcome(true, "loop_stop:max_total_ms"); break }
                     val until = step.until?.let { substitute(it, variables) }
                     if (until != null && access.probe(until, 1_000)) return StepOutcome(true, "loop_stop:until")
                 }

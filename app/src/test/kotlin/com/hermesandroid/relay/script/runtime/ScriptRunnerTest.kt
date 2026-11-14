@@ -122,16 +122,33 @@ class ScriptRunnerTest {
         assertTrue(encoded.contains("\"from_x\""))
     }
 
-    @Test fun waitIsClampedToTenSeconds() = runTest {
+    @Test fun waitIsClampedToThirtySeconds() = runTest {
         val access = FakeAccess()
         assertTrue(ScriptRunner().run(script(ScriptStep.Wait(99_999)), access).success)
-        assertEquals(listOf(10_000L), access.waits)
+        assertEquals(listOf(30_000L), access.waits)
+    }
+
+    @Test fun unknownForegroundDoesNotAbortRun() = runTest {
+        // 冷启动瞬间无障碍读不到前台包名（null），不能把整条脚本判死
+        val access = FakeAccess(packageName = null)
+        val result = ScriptRunner().run(script(ScriptStep.Wait(1), ScriptStep.Tap(1, 2)), access)
+        assertTrue(result.success)
+        assertEquals(1, access.tapCalls)
+    }
+
+    @Test fun throwingActionBecomesStepExceptionInsteadOfCrash() = runTest {
+        val access = FakeAccess(throwOnTap = true)
+        val result = ScriptRunner().run(script(ScriptStep.Tap(1, 2)), access)
+        assertFalse(result.success)
+        assertEquals("step_exception", result.errorCode)
+        assertEquals(1, result.logs.size)
     }
 
     private fun script(vararg steps: ScriptStep) = RuntimeScript("id", listOf(target), steps.toList())
 
     private class FakeAccess(
-        var packageName: String = "game.pkg",
+        var packageName: String? = "game.pkg",
+        val throwOnTap: Boolean = false,
         val tapAnswers: MutableList<Boolean> = mutableListOf(true),
         val probeAnswers: MutableList<Boolean> = mutableListOf(true),
         val textAnswers: MutableList<Boolean> = mutableListOf(true),
@@ -145,6 +162,7 @@ class ScriptRunnerTest {
         val swipes = mutableListOf<SwipeCall>()
         override fun foregroundPackage() = packageName
         override suspend fun tap(x: Int, y: Int): Boolean {
+            if (throwOnTap) error("boom")
             tapCalls++; tapCoordinates += x to y; clock += clockAdvancePerTap
             return tapAnswers.firstOrNull()?.also { if (tapAnswers.size > 1) tapAnswers.removeFirst() } ?: true
         }

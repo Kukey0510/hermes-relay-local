@@ -11,7 +11,12 @@ object ScriptGuard {
      */
     fun rejection(packageName: String?, targetPackages: Collection<String>): String? = when {
         packageName == "com.android.systemui" || packageName?.startsWith("com.android.settings") == true -> SYSTEM_UI
-        packageName.isNullOrBlank() || packageName !in targetPackages -> PACKAGE_MISMATCH
+        // 冷启动/切前台的瞬间，无障碍读不到活动窗口 → packageName 为 null。
+        // 这时拦下来会把整条冷启动脚本判死（实测：launch 之后第一步 wait 就 guard_package_mismatch），
+        // 而此时点击本身是空操作，不会落到别的 App 上，所以放行；
+        // 真正的「切到了别的 App」仍由下面的不匹配分支拦住。
+        packageName.isNullOrBlank() -> null
+        packageName !in targetPackages -> PACKAGE_MISMATCH
         else -> null
     }
 }

@@ -110,7 +110,11 @@ object ScriptRuntime {
         override suspend fun probe(expect: String, timeoutMs: Long): Boolean {
             val deadline = android.os.SystemClock.elapsedRealtime() + timeoutMs.coerceAtLeast(0)
             do {
-                val result = LocalVisionBridgeRoutes.handle(capture, context, buildJsonObject { put("with_frame", false) })
+                // save_unknown=false：probe 在超时前会轮询多次，每轮都存档会把手机构建目录刷爆
+                val result = LocalVisionBridgeRoutes.handle(capture, context, buildJsonObject {
+                    put("with_frame", false)
+                    put("save_unknown", false)
+                })
                 if ((result.payload["page"] as? JsonPrimitive)?.content == expect) return true
                 if (android.os.SystemClock.elapsedRealtime() >= deadline) return false
                 delay(100)
