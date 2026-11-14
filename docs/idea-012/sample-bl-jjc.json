@@ -1,0 +1,55 @@
+{
+  "id": "bl-jjc",
+  "name": "碧蓝航线 · 演习日常",
+  "game": "碧蓝航线",
+  "description": "冷启动 → 主城 → 出击 → 演习 → 逐场打满剩余演习次数 → 回列表。挑最弱对手这一步目前固定点第一张卡（tapWeakest op 待块32），其余流程与服务器侧 bl_jjc.py 完全对齐；坐标均为 2460x1080 真机实测。",
+  "targetPackages": ["com.bilibili.azurlane"],
+  "vars": {},
+  "steps": [
+    {"op": "launch", "package": "com.bilibili.azurlane", "wait_ms": 15000},
+    {"op": "wait_stable", "frames": 3, "interval_ms": 500, "timeout_ms": 20000},
+
+    {"op": "tapIfText", "text": "确定", "optional": true},
+    {"op": "wait", "ms": 1200},
+    {"op": "tapIfText", "text": "点击继续", "optional": true},
+    {"op": "wait", "ms": 1200},
+
+    {"op": "if_page", "expect": "home",
+     "then": [
+       {"op": "tap", "x": 2183, "y": 740},
+       {"op": "wait", "ms": 4200},
+       {"op": "tap", "x": 1866, "y": 918},
+       {"op": "wait", "ms": 4200}
+     ],
+     "else": [
+       {"op": "snapshot", "tag": "not_home"}
+     ]},
+
+    {"op": "probe", "expect": "list", "timeout_ms": 18000},
+    {"op": "read", "field": "jjc_times", "as": "remain"},
+    {"op": "snapshot", "tag": "list_ready"},
+
+    {"op": "loop", "times": 15, "times_from": "remain", "max_total_ms": 1500000,
+     "steps": [
+       {"op": "tap", "x": 590, "y": 355},
+       {"op": "probe", "expect": "info", "timeout_ms": 18000},
+       {"op": "tap", "x": 1233, "y": 853},
+       {"op": "probe", "expect": "formation", "timeout_ms": 22000},
+       {"op": "tap", "x": 2103, "y": 955},
+       {"op": "wait_stable", "frames": 4, "interval_ms": 900, "timeout_ms": 40000},
+       {"op": "loop", "times": 6, "until": "list", "max_total_ms": 120000,
+        "steps": [
+          {"op": "snapshot", "tag": "settle"},
+          {"op": "tap", "x": 555, "y": 939},
+          {"op": "wait", "ms": 2600}
+        ]},
+       {"op": "probe", "expect": "list", "timeout_ms": 18000}
+     ]},
+
+    {"op": "snapshot", "tag": "done"}
+  ],
+  "on_fail": [
+    {"op": "snapshot", "tag": "fail"},
+    {"op": "wait", "ms": 500}
+  ]
+}
