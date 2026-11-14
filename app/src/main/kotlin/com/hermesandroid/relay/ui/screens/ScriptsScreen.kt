@@ -335,8 +335,8 @@ private fun ScriptTagManagerDialog(
 private fun ScriptFilterChip(
     label: String,
     selected: Boolean,
-    onClick: () -> Unit,
     tag: String? = null,
+    onClick: () -> Unit,
 ) {
     FilterChip(
         modifier = if (tag == null) Modifier else Modifier.testTag(tag),
