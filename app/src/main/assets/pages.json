@@ -1,25 +1,80 @@
 {
-  "pages": {
-    "list": {
-      "checks": [
-        {"type": "color", "area": [608, 400, 8, 8], "expect": [75, 97, 138], "tol": 8},
-        {"type": "template", "file": "list-back-arrow.png", "area": [64, 16, 80, 80], "min": 0.85}
-      ]
-    },
-    "info": {
-      "checks": [
-        {"type": "color", "area": [352, 240, 16, 16], "expect": [162, 165, 174], "tol": 12}
-      ]
-    },
-    "formation": {
-      "checks": [
-        {"type": "color", "area": [2048, 928, 16, 16], "expect": [242, 214, 178], "tol": 12}
-      ]
-    },
-    "home": {
-      "checks": [
-        {"type": "color", "area": [1280, 80, 16, 16], "expect": [248, 205, 126], "tol": 12}
-      ]
+ "pages": {
+  "list": {
+   "checks": [
+    {
+     "type": "color",
+     "area": [
+      640,
+      240,
+      16,
+      16
+     ],
+     "expect": [
+      214,
+      191,
+      87
+     ],
+     "tol": 3
     }
+   ]
+  },
+  "info": {
+   "checks": [
+    {
+     "type": "color",
+     "area": [
+      1320,
+      840,
+      16,
+      16
+     ],
+     "expect": [
+      245,
+      206,
+      103
+     ],
+     "tol": 3
+    }
+   ]
+  },
+  "formation": {
+   "checks": [
+    {
+     "type": "color",
+     "area": [
+      2048,
+      928,
+      16,
+      16
+     ],
+     "expect": [
+      242,
+      214,
+      178
+     ],
+     "tol": 12
+    }
+   ]
+  },
+  "home": {
+   "checks": [
+    {
+     "type": "color",
+     "area": [
+      1280,
+      80,
+      16,
+      16
+     ],
+     "expect": [
+      160,
+      50,
+      95
+     ],
+     "tol": 10
+    }
+   ]
   }
+ }
 }

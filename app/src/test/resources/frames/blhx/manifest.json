@@ -1,0 +1,173 @@
+{
+ "source": "~/.hermes/data/localvision/blhx (2026-11-14 真机采集，2460x1080)",
+ "frames": [
+  {
+   "file": "home/20261114-111728.png",
+   "page": "home",
+   "note": "主城-有红点(邮件/手册)",
+   "captured": "2026-11-14 11:17:40",
+   "size": "2460x1080"
+  },
+  {
+   "file": "home/20261114-113718.png",
+   "page": "home",
+   "note": "主城-第三态",
+   "captured": "2026-11-14 11:37:19",
+   "size": "2460x1080"
+  },
+  {
+   "file": "home/20261114-114348.png",
+   "page": "home",
+   "note": "主城-第三态",
+   "captured": "2026-11-14 11:43:49",
+   "size": "2460x1080"
+  },
+  {
+   "file": "sortie/20261114-140840.png",
+   "page": "sortie",
+   "note": "出击页-采集(块20)",
+   "captured": "2026-11-14 14:08:49",
+   "size": "2460x1080"
+  },
+  {
+   "file": "sortie/20261114-141801.png",
+   "page": "sortie",
+   "note": "出击页-采集(块20)",
+   "captured": "2026-11-14 14:18:10",
+   "size": "2460x1080"
+  },
+  {
+   "file": "sortie/20261114-145227.png",
+   "page": "sortie",
+   "note": "出击页-补采v2(块20)#1",
+   "captured": "2026-11-14 14:52:29",
+   "size": "2460x1080"
+  },
+  {
+   "file": "list/20261114-141826.png",
+   "page": "list",
+   "note": "演习列表-采集(块20)",
+   "captured": "2026-11-14 14:18:30",
+   "size": "2460x1080"
+  },
+  {
+   "file": "list/20261114-143406.png",
+   "page": "list",
+   "note": "演习列表-次数8/10(块20/块18)",
+   "captured": "2026-11-14 14:34:08",
+   "size": "2460x1080"
+  },
+  {
+   "file": "list/20261114-145257.png",
+   "page": "list",
+   "note": "演习列表-补采v2(块20)#1",
+   "captured": "2026-11-14 14:52:58",
+   "size": "2460x1080"
+  },
+  {
+   "file": "info/20261114-141835.png",
+   "page": "info",
+   "note": "演习详情-采集(块20)#1",
+   "captured": "2026-11-14 14:18:38",
+   "size": "2460x1080"
+  },
+  {
+   "file": "info/20261114-141842.png",
+   "page": "info",
+   "note": "演习详情-采集(块20)#2",
+   "captured": "2026-11-14 14:18:45",
+   "size": "2460x1080"
+  },
+  {
+   "file": "info/20261114-145319.png",
+   "page": "info",
+   "note": "演习详情-补采v2(块20)#1",
+   "captured": "2026-11-14 14:53:20",
+   "size": "2460x1080"
+  },
+  {
+   "file": "formation/20261114-142346.png",
+   "page": "formation",
+   "note": "编队页-采集(块20)#1",
+   "captured": "2026-11-14 14:23:56",
+   "size": "2460x1080"
+  },
+  {
+   "file": "formation/20261114-142359.png",
+   "page": "formation",
+   "note": "编队页-采集(块20)#2",
+   "captured": "2026-11-14 14:24:09",
+   "size": "2460x1080"
+  },
+  {
+   "file": "formation/20261114-142412.png",
+   "page": "formation",
+   "note": "编队页-采集(块20)#3",
+   "captured": "2026-11-14 14:24:22",
+   "size": "2460x1080"
+  },
+  {
+   "file": "battle/20261114-142449.png",
+   "page": "battle",
+   "note": "战斗中(块20)#1",
+   "captured": "2026-11-14 14:24:58",
+   "size": "2460x1080"
+  },
+  {
+   "file": "battle/20261114-142854.png",
+   "page": "battle",
+   "note": "战斗中-第二场(块20)#2",
+   "captured": "2026-11-14 14:29:02",
+   "size": "2460x1080"
+  },
+  {
+   "file": "battle/20261114-142911.png",
+   "page": "battle",
+   "note": "战斗中-第二场(块20)#3",
+   "captured": "2026-11-14 14:29:25",
+   "size": "2460x1080"
+  },
+  {
+   "file": "result/20261114-142510.png",
+   "page": "result",
+   "note": "胜利结算-大获全胜S(块20，原误记 battle)",
+   "captured": "2026-11-14 14:25:13",
+   "size": "2460x1080"
+  },
+  {
+   "file": "result/20261114-142518.png",
+   "page": "result",
+   "note": "胜利结算-采集(块20)#1",
+   "captured": "2026-11-14 14:25:21",
+   "size": "2460x1080"
+  },
+  {
+   "file": "result/20261114-142526.png",
+   "page": "result",
+   "note": "胜利结算-采集(块20)#2",
+   "captured": "2026-11-14 14:25:28",
+   "size": "2460x1080"
+  },
+  {
+   "file": "negative/20261114-105528.png",
+   "page": "negative",
+   "note": "冷启动-加载",
+   "captured": "2026-11-14 10:55:33",
+   "size": "2460x1080"
+  },
+  {
+   "file": "negative/g_00.png",
+   "page": "negative",
+   "note": "启动-更新完成进入游戏",
+   "captured": "2026-11-14 11:03:29",
+   "size": "2460x1080"
+  },
+  {
+   "file": "negative/g_09.png",
+   "page": "negative",
+   "note": "启动页-触摸屏幕进行权限认证",
+   "captured": "2026-11-14 11:03:38",
+   "size": "2460x1080"
+  }
+ ]
+}
