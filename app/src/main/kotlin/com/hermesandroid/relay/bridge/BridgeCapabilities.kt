@@ -74,6 +74,7 @@ object BridgeCommandRegistry {
         route("POST", "/localvision", timed(BridgeCapability.SCREEN_INSPECTION))
         route("POST", "/read", timed(BridgeCapability.SCREEN_INSPECTION))
         route("POST", "/script/run", permanent(BridgeCapability.SCREEN_CONTROL))
+        route("POST", "/keep_foreground", timed(BridgeCapability.SCREEN_CONTROL))
         // block 24: replay run events the server never acknowledged; no screen needed.
         route("POST", "/script/flush-events", permanent(BridgeCapability.DEVICE_INFO))
         // idea-011 r6: app-private file + log access. Sandboxed to filesDir /
@@ -108,6 +109,8 @@ data class BridgeCapabilityPolicy(
     val schemaVersion: Int = CURRENT_SCHEMA_VERSION,
     val permanentGrants: Set<BridgeCapability> = emptySet(),
     val timedExpiriesMs: Map<BridgeCapability, Long> = emptyMap(),
+    /** User-selected long-lived grants for capabilities that remain timed by default. */
+    val longLived: Set<BridgeCapability> = emptySet(),
 ) {
     companion object {
         const val CURRENT_SCHEMA_VERSION = 1
@@ -117,12 +120,17 @@ data class BridgeCapabilityPolicy(
 
     fun allows(capability: BridgeCapability, nowMs: Long): Boolean =
         if (capability.timed) {
-            capability in permanentGrants || (timedExpiriesMs[capability] ?: 0L) > nowMs
+            capability in permanentGrants || capability in longLived ||
+                (timedExpiriesMs[capability] ?: 0L) > nowMs
         } else {
             capability in permanentGrants
         }
 
     fun expiryFor(capability: BridgeCapability): Long? = timedExpiriesMs[capability]
+
+    /** All grants that are effective at [nowMs], regardless of their storage source. */
+    fun effectiveGrants(nowMs: Long): Set<BridgeCapability> =
+        permanentGrants + longLived + timedExpiriesMs.filterValues { it > nowMs }.keys
 
     fun isUnlimited(capability: BridgeCapability): Boolean =
         timedExpiriesMs[capability] == NEVER_EXPIRES_AT_MS

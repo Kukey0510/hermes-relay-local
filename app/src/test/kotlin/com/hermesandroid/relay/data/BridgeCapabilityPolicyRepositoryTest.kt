@@ -60,6 +60,19 @@ class BridgeCapabilityPolicyRepositoryTest {
     }
 
     @Test
+    fun timedPermanentToggleUsesLongLivedWithoutThrowing() = runTest {
+        val repo = BridgeCapabilityPolicyRepository(context)
+
+        assertTrue(
+            repo.setPermanent("home", BridgeCapability.SCREEN_CONTROL, true).isSuccess,
+        )
+        val policy = repo.snapshot("home")
+        assertTrue(BridgeCapability.SCREEN_CONTROL in policy.longLived)
+        assertFalse(BridgeCapability.SCREEN_CONTROL in policy.permanentGrants)
+        assertTrue(policy.allows(BridgeCapability.SCREEN_CONTROL, Long.MAX_VALUE))
+    }
+
+    @Test
     fun removingConnectionDeletesItsAuthority() = runTest {
         val repo = BridgeCapabilityPolicyRepository(context)
         repo.setPermanent("home", BridgeCapability.CLIPBOARD_READ, true)

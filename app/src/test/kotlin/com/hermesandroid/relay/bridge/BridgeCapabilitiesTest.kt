@@ -26,6 +26,7 @@ class BridgeCapabilitiesTest {
             // idea-011 r6: on-device page detection + count reading + sandboxed file/log access.
             "POST" to "/localvision", "POST" to "/read",
             "POST" to "/script/run",
+            "POST" to "/keep_foreground",
             // block 24: replay queued run events after the server missed them.
             "POST" to "/script/flush-events",
             "POST" to "/fs/list", "POST" to "/fs/read", "POST" to "/fs/write",
@@ -95,5 +96,27 @@ class BridgeCapabilitiesTest {
         assertTrue(policy.allows(BridgeCapability.SCREEN_INSPECTION, 10_000L))
         assertFalse(policy.allows(BridgeCapability.SCREEN_CONTROL, 10_000L))
         assertFalse(policy.isUnlimited(BridgeCapability.SCREEN_INSPECTION))
+    }
+
+
+    @Test
+    fun effectiveGrantsMergePermanentTimedAndLongLivedSources() {
+        val policy = BridgeCapabilityPolicy(
+            permanentGrants = setOf(BridgeCapability.DEVICE_INFO),
+            timedExpiriesMs = mapOf(
+                BridgeCapability.SCREEN_INSPECTION to 101L,
+                BridgeCapability.SCREEN_CONTROL to 100L,
+            ),
+            longLived = setOf(BridgeCapability.SCREEN_CONTROL),
+        )
+
+        assertEquals(
+            setOf(
+                BridgeCapability.DEVICE_INFO,
+                BridgeCapability.SCREEN_INSPECTION,
+                BridgeCapability.SCREEN_CONTROL,
+            ),
+            policy.effectiveGrants(100L),
+        )
     }
 }

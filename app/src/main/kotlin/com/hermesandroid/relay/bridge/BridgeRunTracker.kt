@@ -82,6 +82,19 @@ object BridgeRunTracker {
      * via [configureIdleTimeout] if their agent's pacing differs.
      */
     private const val IDLE_AUTO_RETURN_MS: Long = 12_000L
+    internal const val MAX_KEEP_FOREGROUND_SECONDS: Long = 3_600L
+
+    data class KeepForegroundResult(
+        val untilMs: Long,
+        val requestedSeconds: Long,
+        val clamped: Boolean,
+    )
+
+    sealed interface KeepForegroundDecision {
+        data class Accepted(val result: KeepForegroundResult) : KeepForegroundDecision
+        data object MasterDisabled : KeepForegroundDecision
+        data object InvalidSeconds : KeepForegroundDecision
+    }
 
     private val timerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -96,6 +109,51 @@ object BridgeRunTracker {
 
     @Volatile
     private var idleJob: Job? = null
+
+    @Volatile
+    private var suppressUntilMs: Long = 0L
+
+    @Volatile
+    private var suppressionExpiryJob: Job? = null
+
+    /**
+     * Suppress automatic returns for a bounded interval. Expiry only restores
+     * normal idle tracking; it deliberately does not fire a catch-up return.
+     */
+    @Synchronized
+    fun keepForeground(seconds: Long, nowMs: Long = System.currentTimeMillis()): KeepForegroundResult {
+        require(seconds >= 0L) { "seconds must be a non-negative integer" }
+        val bounded = seconds.coerceAtMost(MAX_KEEP_FOREGROUND_SECONDS)
+        val until = if (bounded == 0L) 0L else nowMs + bounded * 1_000L
+        suppressUntilMs = until
+        idleJob?.cancel()
+        idleJob = null
+        suppressionExpiryJob?.cancel()
+        suppressionExpiryJob = null
+        if (until > nowMs) {
+            suppressionExpiryJob = timerScope.launch {
+                delay(until - nowMs)
+                synchronized(this@BridgeRunTracker) {
+                    if (suppressUntilMs == until) suppressUntilMs = 0L
+                    suppressionExpiryJob = null
+                }
+            }
+        }
+        return KeepForegroundResult(until, seconds, seconds > MAX_KEEP_FOREGROUND_SECONDS)
+    }
+
+    fun requestKeepForeground(
+        seconds: Long?,
+        masterEnabled: Boolean,
+        nowMs: Long = System.currentTimeMillis(),
+    ): KeepForegroundDecision = when {
+        !masterEnabled -> KeepForegroundDecision.MasterDisabled
+        seconds == null || seconds < 0L -> KeepForegroundDecision.InvalidSeconds
+        else -> KeepForegroundDecision.Accepted(keepForeground(seconds, nowMs))
+    }
+
+    internal fun isAutoReturnSuppressed(nowMs: Long = System.currentTimeMillis()): Boolean =
+        nowMs < suppressUntilMs
 
     /**
      * Flag that the bridge moved the foreground app away from
@@ -156,6 +214,10 @@ object BridgeRunTracker {
 
     private fun armIdleTimer() {
         idleJob?.cancel()
+        if (isAutoReturnSuppressed()) {
+            idleJob = null
+            return
+        }
         idleJob = timerScope.launch {
             delay(idleTimeoutMs)
             // Re-check flag after the delay — it may have been cleared
@@ -204,6 +266,7 @@ object BridgeRunTracker {
      * foreground during this run?"
      */
     fun notifyRunCompleted() {
+        if (isAutoReturnSuppressed()) return
         // Cancel the idle timer — SSE beat it to the punch, no point
         // letting it fire a duplicate callback.
         idleJob?.cancel()
@@ -228,5 +291,8 @@ object BridgeRunTracker {
         autoReturnCallback = null
         idleJob?.cancel()
         idleJob = null
+        suppressUntilMs = 0L
+        suppressionExpiryJob?.cancel()
+        suppressionExpiryJob = null
     }
 }

@@ -40,24 +40,33 @@ class BridgeCapabilityPolicyRepository(private val context: Context) {
     suspend fun snapshot(connectionId: String?): BridgeCapabilityPolicy =
         policy(connectionId).first()
 
-    suspend fun setPermanent(connectionId: String?, capability: BridgeCapability, allowed: Boolean) {
-        require(!capability.timed) { "Timed capabilities require an expiry" }
+    suspend fun setPermanent(
+        connectionId: String?,
+        capability: BridgeCapability,
+        allowed: Boolean,
+    ): Result<Unit> = runCatching {
         update(connectionId) { current ->
-            current.copy(
-                permanentGrants = if (allowed) {
-                    current.permanentGrants + capability
-                } else {
-                    current.permanentGrants - capability
-                },
-            )
+            if (capability.timed) {
+                current.copy(
+                    longLived = if (allowed) current.longLived + capability
+                    else current.longLived - capability,
+                )
+            } else {
+                current.copy(
+                    permanentGrants = if (allowed) current.permanentGrants + capability
+                    else current.permanentGrants - capability,
+                )
+            }
         }
     }
 
     suspend fun replacePermanent(
         connectionId: String?,
         capabilities: Set<BridgeCapability>,
-    ) {
-        require(capabilities.none { it.timed }) { "Timed capabilities require an expiry" }
+    ): Result<Unit> = runCatching {
+        check(capabilities.none { it.timed }) {
+            "Timed capabilities must be stored as long-lived or with an expiry"
+        }
         update(connectionId) { current -> current.copy(permanentGrants = capabilities) }
     }
 
@@ -66,8 +75,8 @@ class BridgeCapabilityPolicyRepository(private val context: Context) {
         capability: BridgeCapability,
         expiresAtMs: Long,
         nowMs: Long = System.currentTimeMillis(),
-    ) {
-        require(capability.timed) { "Permanent capabilities do not accept an expiry" }
+    ): Result<Unit> = runCatching {
+        check(capability.timed) { "Permanent capabilities do not accept an expiry" }
         update(connectionId) { current ->
             current.copy(
                 timedExpiriesMs = (
@@ -83,6 +92,7 @@ class BridgeCapabilityPolicyRepository(private val context: Context) {
             current.copy(
                 permanentGrants = current.permanentGrants - capability,
                 timedExpiriesMs = current.timedExpiriesMs - capability,
+                longLived = current.longLived - capability,
             )
         }
     }
@@ -95,8 +105,8 @@ class BridgeCapabilityPolicyRepository(private val context: Context) {
         connectionId: String?,
         capabilities: Set<BridgeCapability>,
         expiresAtMs: Long,
-    ) {
-        require(capabilities.all { it.timed }) { "Permanent capabilities cannot be timed" }
+    ): Result<Unit> = runCatching {
+        check(capabilities.all { it.timed }) { "Permanent capabilities cannot be timed" }
         update(connectionId) { current ->
             current.copy(timedExpiriesMs = capabilities.associateWith { expiresAtMs })
         }

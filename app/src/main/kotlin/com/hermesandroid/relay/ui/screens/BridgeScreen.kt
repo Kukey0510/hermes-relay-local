@@ -235,6 +235,9 @@ fun BridgeScreen(
     val activeCapabilityPolicy by (safetyManager?.activeCapabilityPolicy
         ?: remember { kotlinx.coroutines.flow.MutableStateFlow(BridgeCapabilityPolicy()) })
         .collectAsState()
+    val effectiveCapabilityGrants = activeCapabilityPolicy.effectiveGrants(
+        System.currentTimeMillis(),
+    )
     val screenControlAvailable = activeCapabilityPolicy.allows(
         com.hermesandroid.relay.bridge.BridgeCapability.SCREEN_CONTROL,
         System.currentTimeMillis(),
@@ -524,9 +527,9 @@ fun BridgeScreen(
             BridgeCoreAccessCard(
                 status = permissionStatus,
                 screenInspectionAllowed = com.hermesandroid.relay.bridge.BridgeCapability.SCREEN_INSPECTION in
-                    activeCapabilityPolicy.permanentGrants,
+                    effectiveCapabilityGrants,
                 screenControlAllowed = com.hermesandroid.relay.bridge.BridgeCapability.SCREEN_CONTROL in
-                    activeCapabilityPolicy.permanentGrants,
+                    effectiveCapabilityGrants,
                 deviceInfoAllowed = com.hermesandroid.relay.bridge.BridgeCapability.DEVICE_INFO in
                     activeCapabilityPolicy.permanentGrants,
                 masterEnabled = masterToggle,
@@ -550,7 +553,7 @@ fun BridgeScreen(
                 onTestScreenCapture = viewModel::testScreenCapture,
                 onTestOverlay = viewModel::testOverlayPermission,
                 onScreenInspectionChanged = { allowed ->
-                    accessScope.launch {
+                    if (masterToggle) accessScope.launch {
                         safetyManager?.setPermanentCapability(
                             activeConnectionId,
                             com.hermesandroid.relay.bridge.BridgeCapability.SCREEN_INSPECTION,
@@ -559,7 +562,7 @@ fun BridgeScreen(
                     }
                 },
                 onScreenControlChanged = { allowed ->
-                    accessScope.launch {
+                    if (masterToggle) accessScope.launch {
                         safetyManager?.setPermanentCapability(
                             activeConnectionId,
                             com.hermesandroid.relay.bridge.BridgeCapability.SCREEN_CONTROL,
@@ -1000,9 +1003,15 @@ private fun CoreCapabilitySwitchRow(
                 style = MaterialTheme.typography.labelSmall,
             )
         }
-        Switch(checked = allowed, onCheckedChange = onChanged, enabled = masterEnabled)
+        Switch(
+            checked = allowed,
+            onCheckedChange = onChanged,
+            enabled = bridgePolicySwitchEnabled(masterEnabled),
+        )
     }
 }
+
+internal fun bridgePolicySwitchEnabled(masterEnabled: Boolean): Boolean = masterEnabled
 
 @Composable
 private fun CoreAccessRow(

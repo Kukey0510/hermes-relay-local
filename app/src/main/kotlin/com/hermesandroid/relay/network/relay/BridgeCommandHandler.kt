@@ -606,6 +606,15 @@ class BridgeCommandHandler(
                 }
             )
 
+        val keepForegroundDecision = if (path == "/keep_foreground") {
+            com.hermesandroid.relay.bridge.BridgeRunTracker.requestKeepForeground(
+                seconds = body["seconds"]?.jsonPrimitive?.content?.toLongOrNull(),
+                masterEnabled = service.isMasterEnabled(),
+            )
+        } else {
+            null
+        }
+
         if (!service.isMasterEnabled()) {
             // Crystal-clear error text + structured error_code. Bailey hit
             // 2026-04-15: when the phone was paired + a11y granted but
@@ -632,6 +641,31 @@ class BridgeCommandHandler(
                         "User toggles Agent Control ON in the Hermes Bridge tab",
                     )
                 }
+            )
+        }
+
+        if (path == "/keep_foreground") {
+            val decision = keepForegroundDecision
+            if (decision !is com.hermesandroid.relay.bridge.BridgeRunTracker.KeepForegroundDecision.Accepted) {
+                return respond(
+                    requestId,
+                    400,
+                    buildJsonObject {
+                        put("error", "'seconds' must be a non-negative integer")
+                        put("error_code", "invalid_seconds")
+                    },
+                )
+            }
+            val keep = decision.result
+            return respond(
+                requestId,
+                200,
+                buildJsonObject {
+                    put("ok", true)
+                    put("until", keep.untilMs)
+                    put("requestedSeconds", keep.requestedSeconds)
+                    if (keep.clamped) put("clamped", true)
+                },
             )
         }
 
@@ -2415,7 +2449,7 @@ class BridgeCommandHandler(
             }
             "/call" -> body["number"]?.jsonPrimitive?.content?.let { "→ $it" } ?: ""
             "/search_contacts" -> body["query"]?.jsonPrimitive?.content?.let { "\"$it\"" } ?: ""
-            "/screen", "/screenshot", "/return_to_hermes", "/get_apps",
+            "/screen", "/screenshot", "/return_to_hermes", "/keep_foreground", "/get_apps",
             "/location", "/wait" -> ""
             else -> {
                 // Generic fallback: first 3 string-ish body values as "k=v"
