@@ -13,11 +13,13 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.SystemClock
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.WindowManager
 import com.hermesandroid.relay.data.RelayEndpointContract
 import com.axiomlabs.hermesrelay.localvision.RgbImage
+import com.axiomlabs.hermesrelay.localvision.FrameCachePolicy
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.withLock
@@ -136,6 +138,10 @@ class ScreenCapture(
         private const val MIN_CAPTURE_TIMEOUT_MS = 2_500L
         private const val MAX_CAPTURE_TIMEOUT_MS = 30_000L
 
+        private const val MAX_CACHED_FRAME_AGE_MS = 500L
+        private const val FRESH_FRAME_TIMEOUT_MS = 400L
+        private const val MAX_CONSECUTIVE_CAPTURE_TIMEOUTS = 2
+
         /** One retry covers stale VirtualDisplay/ImageReader pipelines. */
         private const val MAX_CAPTURE_ATTEMPTS = 2
         private const val CAPTURE_RETRY_DELAY_MS = 350L
@@ -156,8 +162,7 @@ class ScreenCapture(
     //
     // Fix: keep the VirtualDisplay + ImageReader + HandlerThread alive
     // across captures, keyed by the MediaProjection instance. The reader
-    // surface is attached only while a request is waiting, then detached so
-    // SurfaceFlinger is not continuously mirroring into a drain-and-drop loop.
+    // surface stays attached so incoming frames refresh the latest RGB cache.
     // Rebuild only when the projection reference changes (fresh consent
     // grant). Orientation/size changes resize the existing VirtualDisplay and
     // replace its detached ImageReader, preserving Android 14's single-create
@@ -169,7 +174,7 @@ class ScreenCapture(
     //  - `cacheLock` protects the cached-state fields against the listener
     //     thread (which runs on `captureThread.looper`) racing with rebuild
     //  - The listener always acquires the latest frame; the pendingCapture
-    //    deferred is completed with the encoded PNG bytes inside the
+    //    deferred is completed with RGB pixels or encoded PNG bytes inside the
     //    listener callback on the capture thread.
     private val captureMutex = kotlinx.coroutines.sync.Mutex()
     private val cacheLock = Any()
@@ -181,6 +186,13 @@ class ScreenCapture(
     private var cachedWidth: Int = 0
     private var cachedHeight: Int = 0
     private var cachedDensity: Int = 0
+    private var captureSurfaceAttached = false
+    private var lastFrame: RgbImage? = null
+    private var lastFrameAtMs: Long = 0L
+    /** Bumped on every frame the reader delivers, whether or not anyone waits. */
+    private var frameSeq: Long = 0L
+    /** The [frameSeq] value that [lastFrame] was decoded from. */
+    private var lastFrameSeq: Long = -1L
 
     /**
      * Pending capture request, populated on [captureAndUpload] entry and
@@ -239,27 +251,7 @@ class ScreenCapture(
         // mutex keeps us honest if anything ever parallelizes.
         val pngBytes = try {
             captureMutex.withLock {
-                var lastTimeout: CaptureTimeoutException? = null
-                for (attempt in 1..MAX_CAPTURE_ATTEMPTS) {
-                    try {
-                        return@withLock captureFrame(projection)
-                    } catch (e: CaptureTimeoutException) {
-                        lastTimeout = e
-                        Log.w(
-                            TAG,
-                            "screen capture timed out on attempt " +
-                                "$attempt/$MAX_CAPTURE_ATTEMPTS: ${e.message}"
-                        )
-                        if (attempt < MAX_CAPTURE_ATTEMPTS) {
-                            // A timeout can leave an OEM VirtualDisplay path
-                            // wedged without invalidating the MediaProjection
-                            // grant. Rebuild our pipeline once before giving up.
-                            releaseCache()
-                            delay(CAPTURE_RETRY_DELAY_MS)
-                        }
-                    }
-                }
-                throw lastTimeout ?: IOException("screen capture timed out")
+                captureWithRetry { captureFrame(projection) }
             }
         } catch (e: Exception) {
             Log.w(TAG, "captureFrame failed: ${e.message}")
@@ -270,32 +262,57 @@ class ScreenCapture(
     }
 
     /** Capture one frame as raw RGB pixels without encoding or network I/O. */
-    suspend fun captureLocalFrame(): Result<RgbImage> = withContext(Dispatchers.IO) {
+    suspend fun captureLocalFrame(fresh: Boolean = false): Result<RgbImage> = withContext(Dispatchers.IO) {
         val projection = mediaProjectionProvider()
             ?: return@withContext Result.failure(
                 IllegalStateException("MediaProjection not granted — enable Bridge screenshots in the app")
             )
         try {
             Result.success(captureMutex.withLock {
-                var lastTimeout: CaptureTimeoutException? = null
-                for (attempt in 1..MAX_CAPTURE_ATTEMPTS) {
-                    try {
-                        return@withLock captureRgbFrame(projection)
-                    } catch (e: CaptureTimeoutException) {
-                        lastTimeout = e
-                        if (attempt < MAX_CAPTURE_ATTEMPTS) {
-                            releaseCache()
-                            delay(CAPTURE_RETRY_DELAY_MS)
-                        }
-                    }
-                }
-                throw lastTimeout ?: IOException("screen capture timed out")
+                captureWithRetry { captureRgbFrame(projection, fresh) }
             })
         } catch (e: Exception) {
             Log.w(TAG, "local capture failed: ${e.message}")
             Result.failure(e)
         }
     }
+
+    private suspend fun <T> captureWithRetry(capture: suspend () -> T): T {
+        for (attempt in 1..MAX_CAPTURE_ATTEMPTS) {
+            for (timeoutCount in 1..MAX_CONSECUTIVE_CAPTURE_TIMEOUTS) {
+                try {
+                    return capture()
+                } catch (e: CaptureTimeoutException) {
+                    Log.w(TAG, "screen capture timeout $timeoutCount on attempt $attempt: ${e.message}")
+                    if (timeoutCount < MAX_CONSECUTIVE_CAPTURE_TIMEOUTS) continue
+                    if (attempt == MAX_CAPTURE_ATTEMPTS || cachedRgbFrame(onTimeout = true) != null) {
+                        throw e
+                    }
+                    releaseCache()
+                    delay(CAPTURE_RETRY_DELAY_MS)
+                }
+            }
+        }
+        throw IOException("screen capture timed out")
+    }
+
+    private fun cachedRgbFrame(fresh: Boolean = false, onTimeout: Boolean = false): RgbImage? =
+        synchronized(cacheLock) {
+            val cached = lastFrame ?: return null
+            val age = SystemClock.elapsedRealtime() - lastFrameAtMs
+            // If no frame has arrived since lastFrame was decoded, the screen has
+            // not moved and the cached pixels are still the current picture — no
+            // need to wait for a "new" frame that will never come on a static page.
+            val screenUnchanged = lastFrameSeq == frameSeq
+            val usable = when {
+                // A timeout means nothing new arrived, so the cache is the truth.
+                onTimeout -> screenUnchanged || FrameCachePolicy.canFallbackOnTimeout(age)
+                fresh -> false
+                else -> screenUnchanged ||
+                    FrameCachePolicy.shouldUseCache(fresh, age, MAX_CACHED_FRAME_AGE_MS)
+            }
+            cached.takeIf { usable }
+        }
 
     /**
      * Release any cached VirtualDisplay / ImageReader / HandlerThread. Call
@@ -321,6 +338,11 @@ class ScreenCapture(
             cachedWidth = 0
             cachedHeight = 0
             cachedDensity = 0
+            captureSurfaceAttached = false
+            lastFrame = null
+            lastFrameAtMs = 0L
+            lastFrameInfo = null
+            lastFrameDebug = ""
         }
         // Fail any pending capture with a descriptive error so the caller
         // doesn't hang for the timeout.
@@ -340,8 +362,7 @@ class ScreenCapture(
      * The ImageReader's persistent listener is set up once inside
      * [ensureCacheFor]. Each call here installs a fresh
      * [pendingCaptureRef] deferred that the listener completes on the
-     * next frame; the listener drains non-waiting frames so the buffer
-     * doesn't back up while nothing is asking for screenshots.
+     * next frame; the listener also refreshes the RGB cache without waiters.
      */
     private suspend fun captureFrame(projection: MediaProjection): ByteArray {
         val metrics = DisplayMetrics()
@@ -358,7 +379,7 @@ class ScreenCapture(
         // Replace any stale pending capture (shouldn't exist because of
         // the mutex, but defensive). If there's a previous one, fail it
         // so nobody ends up stuck.
-        val previous = pendingCaptureRef.getAndSet(deferred)
+        val previous = synchronized(cacheLock) { pendingCaptureRef.getAndSet(deferred) }
         if (previous != null && previous.isActive) {
             previous.completeExceptionally(
                 IOException("capture superseded by a newer request")
@@ -377,48 +398,47 @@ class ScreenCapture(
         } catch (t: Throwable) {
             pendingCaptureRef.compareAndSet(deferred, null)
             throw t
-        } finally {
-            detachCaptureSurface()
         }
     }
 
-    private suspend fun captureRgbFrame(projection: MediaProjection): RgbImage {
+    private suspend fun captureRgbFrame(projection: MediaProjection, fresh: Boolean): RgbImage {
         val metrics = DisplayMetrics()
         @Suppress("DEPRECATION")
         (context.getSystemService(Context.WINDOW_SERVICE) as WindowManager)
             .defaultDisplay.getRealMetrics(metrics)
         ensureCacheFor(projection, metrics.widthPixels, metrics.heightPixels, metrics.densityDpi)
 
+        cachedRgbFrame(fresh)?.let { return it }
+
+        val timeoutMs = if (fresh) minOf(captureTimeoutMs(), FRESH_FRAME_TIMEOUT_MS) else captureTimeoutMs()
         val deferred = kotlinx.coroutines.CompletableDeferred<RgbImage>()
-        pendingLocalCaptureRef.getAndSet(deferred)?.takeIf { it.isActive }
+        val previous = synchronized(cacheLock) {
+            cachedRgbFrame(fresh)?.let { return it }
+            pendingLocalCaptureRef.getAndSet(deferred)
+        }
+        previous?.takeIf { it.isActive }
             ?.completeExceptionally(IOException("capture superseded by a newer request"))
         return try {
             attachCaptureSurface()
-            kotlinx.coroutines.withTimeout(captureTimeoutMs()) { deferred.await() }
+            kotlinx.coroutines.withTimeout(timeoutMs) { deferred.await() }
         } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
             pendingLocalCaptureRef.compareAndSet(deferred, null)
-            throw CaptureTimeoutException("screen capture timed out after ${captureTimeoutMs()}ms")
+            cachedRgbFrame(onTimeout = true)?.let { return it }
+            throw CaptureTimeoutException("screen capture timed out after ${timeoutMs}ms")
         } catch (t: Throwable) {
             pendingLocalCaptureRef.compareAndSet(deferred, null)
             throw t
-        } finally {
-            detachCaptureSurface()
         }
     }
 
     private fun attachCaptureSurface() {
         synchronized(cacheLock) {
+            if (captureSurfaceAttached) return
             val display = cachedDisplay ?: throw IOException("capture display unavailable")
             val surface = cachedReader?.surface ?: throw IOException("capture surface unavailable")
             display.setSurface(surface)
+            captureSurfaceAttached = true
             Log.d(TAG, "screen capture surface attached for pending frame")
-        }
-    }
-
-    private fun detachCaptureSurface() {
-        synchronized(cacheLock) {
-            runCatching { cachedDisplay?.setSurface(null) }
-                .onFailure { Log.v(TAG, "screen capture surface detach failed: ${it.message}") }
         }
     }
 
@@ -467,6 +487,11 @@ class ScreenCapture(
                 val thread = cachedThread ?: return
                 val handler = cachedHandler ?: Handler(thread.looper)
                 display.setSurface(null)
+                captureSurfaceAttached = false
+                lastFrame = null
+                lastFrameAtMs = 0L
+                lastFrameInfo = null
+                lastFrameDebug = ""
                 runCatching { cachedReader?.close() }
                 display.resize(width, height, densityDpi)
                 cachedReader = createImageReader(width, height, handler)
@@ -479,6 +504,11 @@ class ScreenCapture(
             }
 
             // Tear down any stale cache before building fresh.
+            captureSurfaceAttached = false
+            lastFrame = null
+            lastFrameAtMs = 0L
+            lastFrameInfo = null
+            lastFrameDebug = ""
             runCatching { cachedDisplay?.setSurface(null) }
             runCatching { cachedDisplay?.release() }
             runCatching { cachedReader?.close() }
@@ -538,38 +568,54 @@ class ScreenCapture(
         val reader = ImageReader.newInstance(
             width, height, PixelFormat.RGBA_8888, MAX_IMAGES,
         )
-        // The listener receives frames only while captureFrame() has attached
-        // this reader's surface. The empty-waiter branch drains a frame already
-        // queued at the detach boundary.
+        // Frames keep arriving while the surface stays attached. Decode one to
+        // RGB only when a request is waiting: on a 60fps animation an
+        // unconditional decode would allocate ~10MB sixty times a second.
         reader.setOnImageAvailableListener({ source ->
-            val waiter = pendingCaptureRef.get()
-            val localWaiter = pendingLocalCaptureRef.get()
-            if ((waiter == null || !waiter.isActive) &&
-                (localWaiter == null || !localWaiter.isActive)
-            ) {
-                runCatching { source.acquireLatestImage() }.getOrNull()?.close()
-                return@setOnImageAvailableListener
-            }
+            var waiter: kotlinx.coroutines.CompletableDeferred<ByteArray>? = null
+            var localWaiter: kotlinx.coroutines.CompletableDeferred<RgbImage>? = null
             var image: Image? = null
             try {
-                image = source.acquireLatestImage()
-                    ?: return@setOnImageAvailableListener
-                if (localWaiter != null && localWaiter.isActive) {
-                    val rgb = imageToRgbImage(image, width, height)
-                    if (pendingLocalCaptureRef.compareAndSet(localWaiter, null)) {
-                        localWaiter.complete(rgb)
+                synchronized(cacheLock) {
+                    if (source !== cachedReader) return@setOnImageAvailableListener
+                    image = source.acquireLatestImage() ?: return@setOnImageAvailableListener
+                    frameSeq += 1
+                    localWaiter = pendingLocalCaptureRef.get()?.takeIf { it.isActive }
+                    waiter = pendingCaptureRef.get()?.takeIf { it.isActive }
+                    if (localWaiter == null && waiter == null) {
+                        // Nobody is waiting: just record that the screen moved.
+                        return@setOnImageAvailableListener
                     }
-                } else if (waiter != null) {
-                    val png = imageToPngBytes(image, width, height)
-                    if (pendingCaptureRef.compareAndSet(waiter, null)) {
-                        waiter.complete(png)
+                    val captured = image ?: return@setOnImageAvailableListener
+                    localWaiter?.let { pending ->
+                        val rgb = imageToRgbImage(captured, width, height)
+                        lastFrame = rgb
+                        lastFrameSeq = frameSeq
+                        lastFrameAtMs = SystemClock.elapsedRealtime()
+                        if (pendingLocalCaptureRef.compareAndSet(pending, null)) {
+                            pending.complete(rgb)
+                        }
+                    }
+                    waiter?.let { pending ->
+                        val png = imageToPngBytes(captured, width, height)
+                        if (pendingCaptureRef.compareAndSet(pending, null)) {
+                            pending.complete(png)
+                        }
                     }
                 }
             } catch (t: Throwable) {
-                if (localWaiter != null && pendingLocalCaptureRef.compareAndSet(localWaiter, null)) {
-                    localWaiter.completeExceptionally(t)
-                } else if (waiter != null && pendingCaptureRef.compareAndSet(waiter, null)) {
-                    waiter.completeExceptionally(t)
+                synchronized(cacheLock) {
+                    if (source !== cachedReader) return@setOnImageAvailableListener
+                    (localWaiter ?: pendingLocalCaptureRef.get())?.let { pending ->
+                        if (pendingLocalCaptureRef.compareAndSet(pending, null)) {
+                            pending.completeExceptionally(t)
+                        }
+                    }
+                    (waiter ?: pendingCaptureRef.get())?.let { pending ->
+                        if (pendingCaptureRef.compareAndSet(pending, null)) {
+                            pending.completeExceptionally(t)
+                        }
+                    }
                 }
             } finally {
                 runCatching { image?.close() }

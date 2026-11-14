@@ -5,6 +5,8 @@ import android.os.SystemClock
 import com.axiomlabs.hermesrelay.localvision.DigestReader
 import com.axiomlabs.hermesrelay.localvision.FrameArchive
 import com.axiomlabs.hermesrelay.localvision.LocalVisionRunner
+import com.axiomlabs.hermesrelay.localvision.LocalVisionResult
+import com.axiomlabs.hermesrelay.localvision.RgbImage
 import com.hermesandroid.relay.accessibility.ScreenCapture
 import java.io.File
 import kotlinx.coroutines.delay
@@ -23,6 +25,37 @@ object LocalVisionBridgeRoutes {
 
     data class Result(val status: Int, val payload: JsonObject)
 
+    private data class RunnerCache(
+        val pagesFile: File,
+        val modifiedAt: Long,
+        val length: Long,
+        val runner: LocalVisionRunner,
+    )
+
+    private var runnerCache: RunnerCache? = null
+
+    @Synchronized
+    private fun runnerFor(context: Context): LocalVisionRunner {
+        val directory = File(context.filesDir, "localvision")
+        val pagesFile = File(directory, "pages.json")
+        val modifiedAt = pagesFile.lastModified()
+        val length = pagesFile.length()
+        runnerCache?.let { cached ->
+            if (cached.pagesFile == pagesFile && cached.modifiedAt == modifiedAt && cached.length == length) {
+                return cached.runner
+            }
+        }
+        val runner = LocalVisionRunner(context, directory)
+        runnerCache = RunnerCache(pagesFile, modifiedAt, length, runner)
+        return runner
+    }
+
+    private fun detect(context: Context, image: RgbImage): LocalVisionResult {
+        val runner = runnerFor(context)
+        // PageDetector owns a mutable template cache shared by requests.
+        return synchronized(runner) { runner.detect(image) }
+    }
+
     suspend fun handle(
         screenCapture: ScreenCapture?,
         appContext: Context?,
@@ -31,13 +64,14 @@ object LocalVisionBridgeRoutes {
         if (screenCapture == null) return error(503, "capture_not_wired")
 
         val delayMs = ((body["delay_ms"] as? JsonPrimitive)?.intOrNull ?: 0).coerceIn(0, 5_000)
+        val fresh = (body["fresh"] as? JsonPrimitive)?.booleanOrNull ?: false
         val withFrame = (body["with_frame"] as? JsonPrimitive)?.booleanOrNull ?: true
         val saveFrame = (body["save_frame"] as? JsonPrimitive)?.booleanOrNull ?: false
         val saveUnknown = (body["save_unknown"] as? JsonPrimitive)?.booleanOrNull ?: true
         if (delayMs > 0) delay(delayMs.toLong())
 
         val started = SystemClock.elapsedRealtime()
-        val image = screenCapture.captureLocalFrame().getOrElse { cause ->
+        val image = screenCapture.captureLocalFrame(fresh || saveFrame).getOrElse { cause ->
             return error(
                 status = 200,
                 code = "capture_failed",
@@ -45,15 +79,15 @@ object LocalVisionBridgeRoutes {
             )
         }
         val detection = appContext?.let { ctx ->
-            LocalVisionRunner(ctx, java.io.File(ctx.filesDir, "localvision")).detect(image)
+            detect(ctx, image)
         }
-        val frame = screenCapture.lastFrameInfo
         val page = detection?.page ?: "other"
         val archiveTag = when {
             saveFrame -> "manual"
             page == "other" && saveUnknown -> "unknown"
             else -> null
         }
+        val frame = screenCapture.lastFrameInfo
         val archived = archiveTag?.let { FrameArchive.save(appContext, image, it) }
         return Result(200, buildJsonObject {
             put("ok", true)
@@ -93,7 +127,7 @@ object LocalVisionBridgeRoutes {
         })
 
         val started = SystemClock.elapsedRealtime()
-        val image = screenCapture.captureLocalFrame().getOrElse { cause ->
+        val image = screenCapture.captureLocalFrame(fresh = saveFrame).getOrElse { cause ->
             return Result(200, buildJsonObject {
                 put("ok", false)
                 put("error", "capture_failed")

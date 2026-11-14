@@ -27,20 +27,25 @@ class TemplateMatcher(template: GrayImage) {
 
         val pixelCount = needle.width * needle.height
         val maximumDifference = 255L * pixelCount
+        // Differences are raw 0..255 values; round up to preserve threshold ties.
+        val allowedDifference = kotlin.math.ceil((1.0 - minScore) * maximumDifference).toLong()
         var bestScore = -1.0
         var bestX = -1
         var bestY = -1
         for (y in top..bottom) {
-            for (x in left..right) {
+            position@ for (x in left..right) {
                 var difference = 0L
                 for (needleY in 0 until needle.height) {
                     var hayIndex = (y + needleY) * searchImage.width + x
                     var needleIndex = needleY * needle.width
-                    repeat(needle.width) {
+                    for (needleX in 0 until needle.width) {
                         difference += kotlin.math.abs(
                             (searchImage.pixels[hayIndex++].toInt() and 0xff) -
                                 (needle.pixels[needleIndex++].toInt() and 0xff),
                         )
+                        if (difference > allowedDifference &&
+                            1.0 - difference.toDouble() / maximumDifference < minScore
+                        ) continue@position
                     }
                 }
                 val score = 1.0 - difference.toDouble() / maximumDifference
