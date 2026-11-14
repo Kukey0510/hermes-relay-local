@@ -217,7 +217,11 @@ class BridgeSafetyManager(
             CapabilityAuthorization(
                 false,
                 authority,
-                if (capability.timed) "bridge_capability_expired" else "bridge_capability_denied",
+                if (authority.grant == BridgeCapabilityGrant.TIMED) {
+                    "bridge_capability_expired"
+                } else {
+                    "bridge_capability_denied"
+                },
             )
         }
     }

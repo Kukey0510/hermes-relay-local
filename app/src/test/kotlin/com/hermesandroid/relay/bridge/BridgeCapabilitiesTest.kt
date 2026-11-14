@@ -85,4 +85,15 @@ class BridgeCapabilitiesTest {
         assertTrue(policy.isUnlimited(BridgeCapability.SCREEN_CONTROL))
         assertFalse(policy.isUnlimited(BridgeCapability.SCREEN_INSPECTION))
     }
+
+    @Test
+    fun permanentGrantAllowsTimedCapabilityWithoutChangingUnlimitedMeaning() {
+        val policy = BridgeCapabilityPolicy(
+            permanentGrants = setOf(BridgeCapability.SCREEN_INSPECTION),
+        )
+
+        assertTrue(policy.allows(BridgeCapability.SCREEN_INSPECTION, 10_000L))
+        assertFalse(policy.allows(BridgeCapability.SCREEN_CONTROL, 10_000L))
+        assertFalse(policy.isUnlimited(BridgeCapability.SCREEN_INSPECTION))
+    }
 }

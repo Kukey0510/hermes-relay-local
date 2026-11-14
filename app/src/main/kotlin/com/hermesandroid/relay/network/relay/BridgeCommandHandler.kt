@@ -679,7 +679,9 @@ class BridgeCommandHandler(
         // Permanent capabilities never keep screen control armed. Only an
         // accepted timed inspection/control command refreshes the timer.
         if (capabilityAuthorization.authority?.grant ==
-            com.hermesandroid.relay.bridge.BridgeCapabilityGrant.TIMED
+            com.hermesandroid.relay.bridge.BridgeCapabilityGrant.TIMED &&
+            capabilityAuthorization.authority.capability !in
+            safetyManager?.activeCapabilityPolicy?.value?.permanentGrants.orEmpty()
         ) {
             safetyManager?.rescheduleAutoDisable()
         }

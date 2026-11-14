@@ -488,7 +488,7 @@ fun SessionListBody(
     var showAllProfiles by rememberSaveable { mutableStateOf(false) }
     var customizeOpen by remember { mutableStateOf(false) }
     var viewOptions by remember { mutableStateOf(SessionDrawerViewOptions()) }
-    var selectedSourceGroups by remember { mutableStateOf(emptySet<SessionSourceGroup>()) }
+    var selectedSources by remember { mutableStateOf(emptySet<String>()) }
     var selectedTags by remember { mutableStateOf(emptySet<String>()) }
     var editingTagsFor by remember { mutableStateOf<String?>(null) }
     var managingTags by remember { mutableStateOf(false) }
@@ -527,6 +527,9 @@ fun SessionListBody(
         )
     }
     val sourceSessions = remember(sourceRows) { sourceRows.map { it.session } }
+    val presentFilterGroups = remember(sourceSessions) {
+        sourceSessions.map { sourceGroupOf(it.source) }.toSet()
+    }
     val hasThreadSessions = remember(sourceSessions) { sourceSessions.any { isThreadSource(it.source) } }
     val showThreads = supervisedSessionActions == null && (threadsCapabilityActive || hasThreadSessions)
     val effectiveArchiveSupported = archiveSupported && supervisedSessionActions?.archive != false
@@ -544,7 +547,7 @@ fun SessionListBody(
     }
     val categoryRows = remember(
         sourceRows, activeFilter, hiddenSources, trimmedQuery, organizeAll,
-        selectedSourceGroups, selectedTags, organization.tagsBySession,
+        selectedSources, selectedTags, organization.tagsBySession,
     ) {
         sourceRows
             .asSequence()
@@ -568,9 +571,9 @@ fun SessionListBody(
                 src == null || src !in hiddenSources
             }
             .filter { row ->
-                !organizeAll || (selectedSourceGroups.isEmpty() && selectedTags.isEmpty()) ||
-                    SessionSourceGroup.from(row.session.source) in selectedSourceGroups ||
-                    organization.tagsBySession[row.session.sessionId].orEmpty().any { it in selectedTags }
+                (selectedSources.isEmpty() || sourceGroupOf(row.session.source).name in selectedSources) &&
+                    (selectedTags.isEmpty() ||
+                        organization.tagsBySession[row.session.sessionId].orEmpty().any { it in selectedTags })
             }
             .filter { row ->
                 val session = row.session
@@ -959,20 +962,23 @@ fun SessionListBody(
                         )
                     }
             }
-            if (organizeAll) {
-                SessionOrganizationFilters(
-                    tags = userTags,
-                    groups = selectedSourceGroups,
-                    selectedTags = selectedTags,
-                    onClear = { selectedSourceGroups = emptySet(); selectedTags = emptySet() },
-                    onGroup = { group ->
-                        selectedSourceGroups = if (group in selectedSourceGroups) selectedSourceGroups - group
-                            else selectedSourceGroups + group
-                    },
-                    onTag = { tag -> selectedTags = if (tag in selectedTags) selectedTags - tag else selectedTags + tag },
-                    onManage = { managingTags = true },
-                )
-            }
+            SessionListFilters(
+                presentGroups = presentFilterGroups,
+                tags = userTags,
+                selectedSources = selectedSources,
+                selectedTags = selectedTags,
+                onClear = { selectedSources = emptySet(); selectedTags = emptySet() },
+                onSource = { source ->
+                    selectedSources = if (source.name in selectedSources) {
+                        selectedSources - source.name
+                    } else {
+                        selectedSources + source.name
+                    }
+                },
+                onTag = { tag ->
+                    selectedTags = if (tag in selectedTags) selectedTags - tag else selectedTags + tag
+                },
+            )
             if (supervisedSessionActions == null) {
                 TextButton(
                     onClick = { customizeOpen = true },
@@ -1452,6 +1458,74 @@ fun SessionListBody(
         )
     }
 
+}
+
+private val sessionFilterSourceGroups = listOf(
+    SessionSourceGroup.QQ,
+    SessionSourceGroup.Mobile,
+    SessionSourceGroup.WebDesktop,
+    SessionSourceGroup.Other,
+)
+
+@Composable
+private fun SessionListFilters(
+    presentGroups: Set<SessionSourceGroup>,
+    tags: List<String>,
+    selectedSources: Set<String>,
+    selectedTags: Set<String>,
+    onClear: () -> Unit,
+    onSource: (SessionSourceGroup) -> Unit,
+    onTag: (String) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .testTag("sessions.filters.all")
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        FilterChip(
+            selected = selectedSources.isEmpty() && selectedTags.isEmpty(),
+            onClick = onClear,
+            label = { Text(stringResource(R.string.session_tags_all), maxLines = 1) },
+        )
+    }
+    val visibleGroups = sessionFilterSourceGroups.filter { it in presentGroups }
+    if (visibleGroups.isNotEmpty()) {
+        Row(
+            modifier = Modifier
+                .testTag("sessions.filters.sources")
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(stringResource(R.string.scripts_source_label), style = relayMetadataStyle())
+            visibleGroups.forEach { group ->
+                FilterChip(
+                    selected = group.name in selectedSources,
+                    onClick = { onSource(group) },
+                    label = { Text(stringResource(group.label), maxLines = 1) },
+                )
+            }
+        }
+    }
+    if (tags.isNotEmpty()) {
+        Row(
+            modifier = Modifier
+                .testTag("sessions.filters.tags")
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(stringResource(R.string.scripts_tag_label), style = relayMetadataStyle())
+            tags.forEach { tag ->
+                FilterChip(
+                    selected = tag in selectedTags,
+                    onClick = { onTag(tag) },
+                    label = { Text(tag, maxLines = 1) },
+                )
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

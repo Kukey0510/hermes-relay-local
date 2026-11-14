@@ -117,7 +117,7 @@ data class BridgeCapabilityPolicy(
 
     fun allows(capability: BridgeCapability, nowMs: Long): Boolean =
         if (capability.timed) {
-            (timedExpiriesMs[capability] ?: 0L) > nowMs
+            capability in permanentGrants || (timedExpiriesMs[capability] ?: 0L) > nowMs
         } else {
             capability in permanentGrants
         }

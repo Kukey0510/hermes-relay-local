@@ -4590,6 +4590,10 @@
     <string name="bridge_core_access_title">Bridge 核心授权</string>
     <string name="bridge_core_capture_desc">允许代理授权截图</string>
     <string name="bridge_core_device_info">设备和应用信息</string>
+    <string name="bridge_core_screen_inspection">检查屏幕和界面</string>
+    <string name="bridge_core_screen_inspection_desc">允许 Hermes 读取屏幕内容和界面结构。</string>
+    <string name="bridge_core_screen_control">控制应用和导航</string>
+    <string name="bridge_core_screen_control_desc">允许 Hermes 操作应用并在设备上导航。</string>
     <string name="bridge_core_device_info_desc">允许 Hermes 读取前台应用、应用私有文件和日志。</string>
     <string name="bridge_core_allowed">已允许</string>
     <string name="bridge_core_not_allowed">未允许</string>

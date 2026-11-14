@@ -523,6 +523,10 @@ fun BridgeScreen(
 
             BridgeCoreAccessCard(
                 status = permissionStatus,
+                screenInspectionAllowed = com.hermesandroid.relay.bridge.BridgeCapability.SCREEN_INSPECTION in
+                    activeCapabilityPolicy.permanentGrants,
+                screenControlAllowed = com.hermesandroid.relay.bridge.BridgeCapability.SCREEN_CONTROL in
+                    activeCapabilityPolicy.permanentGrants,
                 deviceInfoAllowed = com.hermesandroid.relay.bridge.BridgeCapability.DEVICE_INFO in
                     activeCapabilityPolicy.permanentGrants,
                 masterEnabled = masterToggle,
@@ -545,6 +549,24 @@ fun BridgeScreen(
                 onTestAccessibility = viewModel::testAccessibilityService,
                 onTestScreenCapture = viewModel::testScreenCapture,
                 onTestOverlay = viewModel::testOverlayPermission,
+                onScreenInspectionChanged = { allowed ->
+                    accessScope.launch {
+                        safetyManager?.setPermanentCapability(
+                            activeConnectionId,
+                            com.hermesandroid.relay.bridge.BridgeCapability.SCREEN_INSPECTION,
+                            allowed,
+                        )
+                    }
+                },
+                onScreenControlChanged = { allowed ->
+                    accessScope.launch {
+                        safetyManager?.setPermanentCapability(
+                            activeConnectionId,
+                            com.hermesandroid.relay.bridge.BridgeCapability.SCREEN_CONTROL,
+                            allowed,
+                        )
+                    }
+                },
                 onDeviceInfoChanged = { allowed ->
                     accessScope.launch {
                         safetyManager?.setPermanentCapability(
@@ -847,6 +869,8 @@ private fun DashboardEntryCard(onClick: () -> Unit) {
 @Composable
 private fun BridgeCoreAccessCard(
     status: com.hermesandroid.relay.viewmodel.BridgePermissionStatus,
+    screenInspectionAllowed: Boolean,
+    screenControlAllowed: Boolean,
     deviceInfoAllowed: Boolean,
     masterEnabled: Boolean,
     onOpenAccessibility: () -> Unit,
@@ -855,6 +879,8 @@ private fun BridgeCoreAccessCard(
     onTestAccessibility: () -> Unit,
     onTestScreenCapture: () -> Unit,
     onTestOverlay: () -> Unit,
+    onScreenInspectionChanged: (Boolean) -> Unit,
+    onScreenControlChanged: (Boolean) -> Unit,
     onDeviceInfoChanged: (Boolean) -> Unit,
 ) {
     Card(
@@ -898,6 +924,24 @@ private fun BridgeCoreAccessCard(
                 onTest = onTestOverlay,
             )
             HorizontalDivider()
+            CoreCapabilitySwitchRow(
+                title = stringResource(R.string.bridge_core_screen_inspection),
+                subtitle = stringResource(R.string.bridge_core_screen_inspection_desc),
+                allowed = screenInspectionAllowed,
+                masterEnabled = masterEnabled,
+                tag = "bridge.core.inspection",
+                onChanged = onScreenInspectionChanged,
+            )
+            HorizontalDivider()
+            CoreCapabilitySwitchRow(
+                title = stringResource(R.string.bridge_core_screen_control),
+                subtitle = stringResource(R.string.bridge_core_screen_control_desc),
+                allowed = screenControlAllowed,
+                masterEnabled = masterEnabled,
+                tag = "bridge.core.control",
+                onChanged = onScreenControlChanged,
+            )
+            HorizontalDivider()
             Row(
                 modifier = Modifier.fillMaxWidth().testTag("bridge.core.device_info"),
                 verticalAlignment = Alignment.CenterVertically,
@@ -930,6 +974,33 @@ private fun BridgeCoreAccessCard(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun CoreCapabilitySwitchRow(
+    title: String,
+    subtitle: String,
+    allowed: Boolean,
+    masterEnabled: Boolean,
+    tag: String,
+    onChanged: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().testTag(tag),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Icon(Icons.Filled.Info, contentDescription = null)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, fontWeight = FontWeight.Medium)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                stringResource(if (allowed) R.string.bridge_core_allowed else R.string.bridge_core_not_allowed),
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
+        Switch(checked = allowed, onCheckedChange = onChanged, enabled = masterEnabled)
     }
 }
 

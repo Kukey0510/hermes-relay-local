@@ -4751,6 +4751,10 @@
     <string name="bridge_core_access_title">Core Bridge access</string>
     <string name="bridge_core_capture_desc">Allow proxy-authorized screenshots</string>
     <string name="bridge_core_device_info">Device and app information</string>
+    <string name="bridge_core_screen_inspection">Inspect screen and interface</string>
+    <string name="bridge_core_screen_inspection_desc">Let Hermes read screen content and interface structure.</string>
+    <string name="bridge_core_screen_control">Control apps and navigation</string>
+    <string name="bridge_core_screen_control_desc">Let Hermes interact with apps and navigate the device.</string>
     <string name="bridge_core_device_info_desc">Let Hermes read the foreground app, app private files, and logs.</string>
     <string name="bridge_core_allowed">Allowed</string>
     <string name="bridge_core_not_allowed">Not allowed</string>
