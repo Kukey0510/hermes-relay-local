@@ -156,7 +156,10 @@ object ScriptRuntime {
         override suspend fun launchApp(pkg: String): Boolean {
             val intent = context.packageManager.getLaunchIntentForPackage(pkg) ?: return false
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            return runCatching { context.startActivity(intent); true }.getOrDefault(false)
+            // 必须走 service.startActivity：无障碍服务对「后台启动 Activity」有系统豁免，
+            // 用 application context 会在 App 退到后台后被 Android 10+ 静默拦掉
+            // （2026-11-15 实测：脚本里 launch 一直不生效，服务器 /open_app 却秒起，差别就在这一行）。
+            return runCatching { service.startActivity(intent); true }.getOrDefault(false)
         }
 
         /**
