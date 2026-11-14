@@ -44,7 +44,7 @@ object ScriptRuntime {
 
     suspend fun run(context: Context, screenCapture: ScreenCapture?, scriptId: String): ScriptRunResult {
         val store = ScriptRunStore(context.filesDir)
-        store.cleanupExpiredLogs()
+        runCatching { store.cleanupExpiredLogs() }
         val script = runCatching { load(context, scriptId) }.getOrElse {
             return ScriptRunResult(success = false, errorCode = "invalid_script")
         } ?: return ScriptRunResult(success = false, errorCode = "script_not_found")
@@ -58,8 +58,9 @@ object ScriptRuntime {
             baseUrl = { connection.apiServerUrl.value }, bearer = connection::getApiKey,
         ), outbox = ScriptEventOutbox(context.filesDir))
         // Block 24: replay anything the server missed before a new run starts.
-        reporter.flush()
-        val result = runner.run(
+        runCatching { reporter.flush() }
+        val result = try {
+            runner.run(
             script = script,
             access = AndroidAccess(context, screenCapture, service),
             runId = runId,
@@ -74,21 +75,26 @@ object ScriptRuntime {
                     stepIndex = log.stepIndex, op = log.op, success = log.success, attempts = log.attempts,
                     message = log.message, durationMs = durationMs,
                 ))
-                if (!log.success) reporter.report(log.toEvent(script.id, runId))
+                if (!log.success) runCatching { reporter.report(log.toEvent(script.id, runId)) }
             },
         )
+        } catch (error: Throwable) {
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            store.clearPending()
+            return ScriptRunResult(success = false, errorCode = "run_exception")
+        }
         if (result.errorCode == "run_in_progress") return result
-        store.append(ScriptLogEvent(
+        runCatching { store.append(ScriptLogEvent(
             event = "run_end", scriptId = script.id, runId = runId, ts = ScriptLogEvent.timestamp(),
             success = result.success, durationMs = (System.nanoTime() - startedAt) / 1_000_000,
             errorCode = result.errorCode,
-        ))
-        reporter.report(ScriptEvent(
+        )) }
+        runCatching { reporter.report(ScriptEvent(
             scriptId = script.id, runId = runId, level = if (result.success) "info" else "error",
             stepIndex = result.logs.lastOrNull()?.stepIndex ?: 0,
             op = "run_end", message = result.errorCode ?: "completed", ts = java.time.Instant.now().toString(),
-        ))
-        store.clearPending()
+        )) }
+        runCatching { store.clearPending() }
         return result
     }
 
