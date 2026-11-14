@@ -213,7 +213,7 @@ class ScriptRunner {
     }
 
     private fun substitute(value: String, variables: Map<String, String>) =
-        Regex("\\$\\{([^}]+)}").replace(value) { variables[it.groupValues[1]] ?: it.value }
+        Regex("\\$\\{([^}]+)\\}").replace(value) { variables[it.groupValues[1]] ?: it.value }
     private fun firstNumber(value: String): String? = Regex("\\d+").find(value)?.value
 
     private fun log(index: Int, step: ScriptStep, success: Boolean, attempts: Int, message: String, prefix: String = "") =
