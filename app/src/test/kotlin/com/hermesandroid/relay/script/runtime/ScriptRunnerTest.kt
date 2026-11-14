@@ -43,9 +43,83 @@ class ScriptRunnerTest {
         assertEquals(0, access.tapCalls)
     }
 
-    @Test(expected = UnsupportedOperationException::class)
-    fun unknownOpThrows() {
-        Json.decodeFromString<ScriptStep>("""{"op":"swipe"}""")
+    @Test fun swipeUsesClampedDurationAndCoordinates() = runTest {
+        val access = FakeAccess(screen = 100 to 200)
+        val result = ScriptRunner().run(script(
+            ScriptStep.Swipe(-4, 250, 120, -9, 9_000),
+            ScriptStep.Swipe(1, 2, 3, 4),
+        ), access)
+        assertTrue(result.success)
+        assertEquals(listOf(SwipeCall(0, 199, 99, 0, 2_000), SwipeCall(1, 2, 3, 4, 400)), access.swipes)
+        assertEquals(listOf("swipe", "swipe"), result.logs.map { it.op })
+    }
+
+    @Test fun tapIfTextHandlesPresentOptionalAndRequiredAbsent() = runTest {
+        val present = ScriptRunner().run(script(ScriptStep.TapIfText("确定")),
+            FakeAccess(textAnswers = mutableListOf(true)))
+        assertTrue(present.success)
+        val optional = ScriptRunner().run(script(ScriptStep.TapIfText("公告")),
+            FakeAccess(textAnswers = mutableListOf(false)))
+        assertTrue(optional.success)
+        assertEquals("absent:公告", optional.logs.single().message)
+        assertEquals("tapIfText", optional.logs.single().op)
+        val required = ScriptRunner().run(script(ScriptStep.TapIfText("重试", optional = false)),
+            FakeAccess(textAnswers = mutableListOf(false)))
+        assertFalse(required.success)
+    }
+
+    @Test fun ifPageChoosesBranchAndPropagatesFailure() = runTest {
+        val yes = FakeAccess(probeAnswers = mutableListOf(true))
+        assertTrue(ScriptRunner().run(script(ScriptStep.IfPage("home",
+            thenSteps = listOf(ScriptStep.Tap(1, 1)), elseSteps = listOf(ScriptStep.Tap(2, 2)))), yes).success)
+        assertEquals(listOf(1 to 1), yes.tapCoordinates)
+        val no = FakeAccess(probeAnswers = mutableListOf(false))
+        assertTrue(ScriptRunner().run(script(ScriptStep.IfPage("home",
+            thenSteps = listOf(ScriptStep.Tap(1, 1)), elseSteps = listOf(ScriptStep.Tap(2, 2)))), no).success)
+        assertEquals(listOf(2 to 2), no.tapCoordinates)
+        val failed = ScriptRunner().run(script(ScriptStep.IfPage("home",
+            thenSteps = listOf(ScriptStep.Tap(1, 1)))),
+            FakeAccess(tapAnswers = mutableListOf(false), probeAnswers = mutableListOf(true)))
+        assertFalse(failed.success)
+    }
+
+    @Test fun nestedIfPageIsInvalidScript() = runTest {
+        val nested = ScriptStep.IfPage("home", thenSteps = listOf(ScriptStep.IfPage("dialog")))
+        assertEquals("invalid_script", ScriptRunner().run(script(nested), FakeAccess()).errorCode)
+    }
+
+    @Test fun loopStopsForTimesAndUntil() = runTest {
+        val full = FakeAccess()
+        val fullResult = ScriptRunner().run(script(ScriptStep.Loop(3, steps = listOf(ScriptStep.Tap(1, 1)))), full)
+        assertTrue(fullResult.success)
+        assertEquals(3, full.tapCalls)
+        assertEquals("loop_stop:times", fullResult.logs.single().message)
+        val until = FakeAccess(probeAnswers = mutableListOf(false, true))
+        val untilResult = ScriptRunner().run(script(ScriptStep.Loop(5, until = "result",
+            steps = listOf(ScriptStep.Tap(1, 1)))), until)
+        assertEquals(2, until.tapCalls)
+        assertEquals("loop_stop:until", untilResult.logs.single().message)
+    }
+
+    @Test fun loopStopsAtMaxTotalAndRejectsInvalidBounds() = runTest {
+        val access = FakeAccess(clockAdvancePerTap = 11)
+        val result = ScriptRunner().run(script(ScriptStep.Loop(5, maxTotalMs = 10,
+            steps = listOf(ScriptStep.Tap(1, 1)))), access)
+        assertTrue(result.success)
+        assertEquals(1, access.tapCalls)
+        assertEquals("loop_stop:max_total_ms", result.logs.single().message)
+        assertEquals("invalid_script", ScriptRunner().run(script(ScriptStep.Loop(0)), FakeAccess()).errorCode)
+        assertEquals("invalid_script", ScriptRunner().run(script(ScriptStep.Loop(101)), FakeAccess()).errorCode)
+    }
+
+    @Test fun newStepsRoundTripTheirJsonNamesAndDefaults() {
+        val source = """{"op":"if_page","expect":"home","then":[{"op":"swipe","from_x":1,"from_y":2,"to_x":3,"to_y":4}],"else":[{"op":"tapIfText","text":"确定"}]}"""
+        val decoded = Json.decodeFromString<ScriptStep>(source) as ScriptStep.IfPage
+        assertEquals(400, (decoded.thenSteps.single() as ScriptStep.Swipe).durationMs)
+        assertTrue((decoded.elseSteps.single() as ScriptStep.TapIfText).optional)
+        val encoded = Json.encodeToString<ScriptStep>(decoded)
+        assertTrue(encoded.contains("\"if_page\""))
+        assertTrue(encoded.contains("\"from_x\""))
     }
 
     @Test fun waitIsClampedToTenSeconds() = runTest {
@@ -60,14 +134,30 @@ class ScriptRunnerTest {
         var packageName: String = "game.pkg",
         val tapAnswers: MutableList<Boolean> = mutableListOf(true),
         val probeAnswers: MutableList<Boolean> = mutableListOf(true),
+        val textAnswers: MutableList<Boolean> = mutableListOf(true),
+        val screen: Pair<Int, Int> = 1080 to 1920,
+        val clockAdvancePerTap: Long = 0,
     ) : ScriptAccess {
         var tapCalls = 0
+        var clock = 0L
         val waits = mutableListOf<Long>()
+        val tapCoordinates = mutableListOf<Pair<Int, Int>>()
+        val swipes = mutableListOf<SwipeCall>()
         override fun foregroundPackage() = packageName
-        override suspend fun tap(x: Int, y: Int): Boolean { tapCalls++; return tapAnswers.removeFirst() }
-        override suspend fun tapText(text: String) = true
+        override suspend fun tap(x: Int, y: Int): Boolean {
+            tapCalls++; tapCoordinates += x to y; clock += clockAdvancePerTap
+            return tapAnswers.firstOrNull()?.also { if (tapAnswers.size > 1) tapAnswers.removeFirst() } ?: true
+        }
+        override suspend fun tapText(text: String) = textAnswers.removeFirst()
+        override suspend fun swipe(fromX: Int, fromY: Int, toX: Int, toY: Int, durationMs: Long): Boolean {
+            swipes += SwipeCall(fromX, fromY, toX, toY, durationMs); return true
+        }
+        override fun screenSize() = screen
+        override fun monotonicMs() = clock
         override suspend fun probe(expect: String, timeoutMs: Long) = probeAnswers.removeFirst()
         override suspend fun read(field: String) = "42"
         override suspend fun waitMs(ms: Long) { waits += ms }
     }
+
+    private data class SwipeCall(val fromX: Int, val fromY: Int, val toX: Int, val toY: Int, val duration: Long)
 }

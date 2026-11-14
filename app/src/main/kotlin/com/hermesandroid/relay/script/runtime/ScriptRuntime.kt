@@ -99,6 +99,10 @@ object ScriptRuntime {
 
         override suspend fun tap(x: Int, y: Int) = service.actionExecutor.tap(x, y).ok
         override suspend fun tapText(text: String) = service.actionExecutor.tapText(text).ok
+        override suspend fun swipe(fromX: Int, fromY: Int, toX: Int, toY: Int, durationMs: Long) =
+            service.actionExecutor.swipe(fromX, fromY, toX, toY, durationMs).ok
+        override fun screenSize(): Pair<Int, Int> =
+            context.resources.displayMetrics.let { it.widthPixels to it.heightPixels }
 
         override suspend fun probe(expect: String, timeoutMs: Long): Boolean {
             val deadline = android.os.SystemClock.elapsedRealtime() + timeoutMs.coerceAtLeast(0)
