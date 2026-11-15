@@ -118,6 +118,11 @@ object LocalVisionBridgeRoutes {
                 put("ok", false)
                 put("error", "missing_field")
             })
+        val engine = (body["engine"] as? JsonPrimitive)?.content ?: "auto"
+        if (engine !in setOf("template", "ocr", "auto")) return Result(400, buildJsonObject {
+            put("ok", false)
+            put("error", "invalid_engine")
+        })
         val delayMs = ((body["delay_ms"] as? JsonPrimitive)?.intOrNull ?: 0).coerceIn(0, 5_000)
         val saveFrame = (body["save_frame"] as? JsonPrimitive)?.booleanOrNull ?: false
         if (delayMs > 0) delay(delayMs.toLong())
@@ -134,8 +139,16 @@ object LocalVisionBridgeRoutes {
                 put("detail", (cause.message ?: cause.toString()).take(200))
             })
         }
+        var engineUsed = if (engine == "ocr") "ocr" else "template"
         val reading = appContext?.let { context ->
-            DigestReader(context, File(context.filesDir, "localvision")).read(image, field)
+            val reader = DigestReader(context, File(context.filesDir, "localvision"))
+            if (engine == "ocr") reader.readOcr(image, field) else {
+                val template = reader.read(image, field)
+                if (engine == "auto" && template.value == null) {
+                    engineUsed = "ocr"
+                    reader.readOcr(image, field)
+                } else template
+            }
         }
         val value = reading?.value
         val archived = if (saveFrame && value == null) {
@@ -148,6 +161,8 @@ object LocalVisionBridgeRoutes {
             put("field", field)
             put("value", value?.let(::JsonPrimitive) ?: JsonNull)
             put("source", reading?.source ?: "no_context")
+            put("engine_used", engineUsed)
+            reading?.confidence?.let { put("confidence", it) }
             put("elapsed_ms", SystemClock.elapsedRealtime() - started)
             if (archived != null) put("frame_saved", archived.file.name)
         })

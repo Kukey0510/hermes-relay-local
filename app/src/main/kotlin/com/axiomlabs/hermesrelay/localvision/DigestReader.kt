@@ -1,7 +1,15 @@
 package com.axiomlabs.hermesrelay.localvision
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.Text
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 import org.json.JSONObject
 import java.io.File
 import kotlin.system.measureNanoTime
@@ -66,7 +74,7 @@ internal object DigestDecoder {
 }
 
 class DigestReader(context: Context, private val hotReloadDir: File? = null) {
-    data class ReadResult(val field: String, val value: Int?, val source: String, val elapsedMs: Double)
+    data class ReadResult(val field: String, val value: Int?, val source: String, val elapsedMs: Double, val confidence: Float? = null)
 
     private data class FieldSpec(
         val name: String,
@@ -120,6 +128,51 @@ class DigestReader(context: Context, private val hotReloadDir: File? = null) {
             }
         }
         return ReadResult(field, value, source, elapsed / 1_000_000.0)
+    }
+
+    /** OCR uses only the configured field region, never the full frame. */
+    suspend fun readOcr(image: RgbImage, field: String): ReadResult {
+        val started = System.nanoTime()
+        val spec = specs[field] ?: return ReadResult(field, null, "unknown_field", 0.0)
+        var confidence: Float? = null
+        val value = try {
+            val region = crop(image, spec.region)
+            val bitmap = Bitmap.createBitmap(region.rgb, region.width, region.height, Bitmap.Config.ARGB_8888)
+            val recognizer = try {
+                TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+            } catch (error: Exception) {
+                bitmap.recycle()
+                throw error
+            }
+            val text = suspendCancellableCoroutine<Text?> { continuation ->
+                try {
+                    recognizer.process(InputImage.fromBitmap(bitmap, 0))
+                        .addOnCompleteListener(java.util.concurrent.Executor { it.run() }) { task ->
+                            // Keep the bitmap alive until ML Kit finishes, even if the request is cancelled.
+                            recognizer.close()
+                            bitmap.recycle()
+                            if (continuation.isActive) continuation.resume(if (task.isSuccessful) task.result else null)
+                        }
+                } catch (error: Exception) {
+                    recognizer.close()
+                    bitmap.recycle()
+                    throw error
+                }
+            }
+            val decoded = text?.text?.let(OcrNumberDecoder::decode)
+            if (decoded != null) {
+                confidence = text?.textBlocks?.flatMap { it.lines }?.flatMap { it.elements }
+                    ?.map { it.confidence }?.takeIf { it.isNotEmpty() && it.all { score -> score > 0f && score <= 1f } }
+                    ?.minOrNull()
+            }
+            decoded
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (_: Exception) {
+            null
+        }
+        return ReadResult(field, value, if (value != null) "ocr" else "low_confidence",
+            (System.nanoTime() - started) / 1_000_000.0, confidence)
     }
 
     fun fields(): List<String> = specs.keys.toList()
@@ -194,5 +247,14 @@ class DigestReader(context: Context, private val hotReloadDir: File? = null) {
         val pixels = ByteArray(area.w * area.h)
         for (y in 0 until area.h) image.pixels.copyInto(pixels, y * area.w, (area.y + y) * image.width + area.x, (area.y + y) * image.width + area.x + area.w)
         return GrayImage(area.w, area.h, pixels)
+    }
+}
+
+internal object OcrNumberDecoder {
+    fun decode(text: String): Int? {
+        val compact = text.trim()
+        // Reject ambiguous text instead of joining unrelated numbers or guessing glyphs.
+        if (!Regex("[0-9]+(?:\\s*/\\s*[0-9]+)?").matches(compact)) return null
+        return compact.substringBefore('/').trim().toIntOrNull()
     }
 }

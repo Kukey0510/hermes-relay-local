@@ -51,7 +51,88 @@ object ScriptRuntime {
         return reporter.flush()
     }
 
+    data class RunStatus(
+        val runId: String,
+        val state: String = "running",
+        val errorCode: String? = null,
+        val lastStep: Int? = null,
+        val startedAt: Long = System.nanoTime(),
+        val finishedAt: Long? = null,
+    ) {
+        val elapsedMs: Long get() = ((finishedAt ?: System.nanoTime()) - startedAt) / 1_000_000
+    }
+
+    private val history = linkedMapOf<String, RunStatus>()
+    private var activeRunId: String? = null
+    private var stopRequested = false
+    private val backgroundScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default,
+    )
+
+    @Synchronized fun status(runId: String): RunStatus? = history[runId]
+
+    @Synchronized private fun reserve(): String? {
+        if (activeRunId != null) return null
+        val runId = UUID.randomUUID().toString()
+        activeRunId = runId
+        stopRequested = false
+        history[runId] = RunStatus(runId)
+        while (history.size > 20) history.remove(history.keys.first())
+        return runId
+    }
+
+    @Synchronized fun requestStop(reason: String) {
+        if (activeRunId != null) stopRequested = true
+        ScriptRunControl.requestStop(reason)
+    }
+
+    @Synchronized private fun stepCompleted(runId: String, stepIndex: Int) {
+        history[runId]?.let { history[runId] = it.copy(lastStep = stepIndex) }
+    }
+
+    @Synchronized private fun restoreStopRequest() {
+        if (stopRequested) ScriptRunControl.requestStop("bridge:/script/stop")
+    }
+
+    /** Reservation happens before returning, so concurrent requests cannot queue extra runs. */
+    fun startAsync(context: Context, screenCapture: ScreenCapture?, scriptId: String): String? {
+        val runId = reserve() ?: return null
+        backgroundScope.launch { runReserved(context.applicationContext, screenCapture, scriptId, runId) }
+        return runId
+    }
+
     suspend fun run(context: Context, screenCapture: ScreenCapture?, scriptId: String): ScriptRunResult {
+        val runId = reserve() ?: return ScriptRunResult(success = false, errorCode = "run_in_progress")
+        return runReserved(context, screenCapture, scriptId, runId)
+    }
+
+    private suspend fun runReserved(context: Context, screenCapture: ScreenCapture?, scriptId: String,
+        runId: String): ScriptRunResult {
+        var errorCode: String? = "run_exception"
+        try {
+            val result = executeRun(context, screenCapture, scriptId, runId).copy(runId = runId)
+            errorCode = result.errorCode
+            return result
+        } catch (cancel: kotlinx.coroutines.CancellationException) {
+            errorCode = "cancelled"
+            throw cancel
+        } catch (_: Exception) {
+            return ScriptRunResult(runId = runId, success = false, errorCode = errorCode)
+        } finally {
+            synchronized(this) {
+                history[runId]?.let {
+                    history[runId] = it.copy(
+                        state = if (errorCode == "cancelled") "cancelled" else "done",
+                        errorCode = errorCode, finishedAt = System.nanoTime(),
+                    )
+                }
+                activeRunId = null
+            }
+        }
+    }
+
+    private suspend fun executeRun(context: Context, screenCapture: ScreenCapture?, scriptId: String,
+        runId: String): ScriptRunResult {
         val store = ScriptRunStore(context.filesDir)
         runCatching { store.cleanupExpiredLogs() }
         val script = runCatching { load(context, scriptId) }.getOrElse {
@@ -59,7 +140,6 @@ object ScriptRuntime {
         } ?: return ScriptRunResult(success = false, errorCode = "script_not_found")
         val service = HermesAccessibilityService.instance
             ?: return ScriptRunResult(success = false, errorCode = "service_unavailable")
-        val runId = UUID.randomUUID().toString()
         val startedAt = System.nanoTime()
         val app = context.applicationContext as com.hermesandroid.relay.HermesRelayApp
         val connection = app.runtime.connectionViewModel
@@ -83,10 +163,12 @@ object ScriptRuntime {
             access = AndroidAccess(context, screenCapture, service),
             runId = runId,
             onRunStart = {
+                restoreStopRequest()
                 store.writePending(PendingScriptRun(script.id, runId, 0))
                 store.append(ScriptLogEvent("run_start", script.id, runId, ScriptLogEvent.timestamp()))
             },
             onStep = { log, durationMs ->
+                stepCompleted(runId, log.stepIndex)
                 store.writePending(PendingScriptRun(script.id, runId, log.stepIndex))
                 store.append(ScriptLogEvent(
                     event = if (log.message.startsWith("power_fallback")) "power_fallback" else "step",
