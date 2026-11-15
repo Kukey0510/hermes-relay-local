@@ -48,6 +48,14 @@ sealed interface ScriptStep {
     data class Launch(val packageName: String? = null, val waitMs: Long = 0,
         override val id: String? = null, override val timeoutMs: Long? = null,
         override val retries: Int = 0) : ScriptStep
+    /** 立刻判一次当前页（不等待），结果写进变量。纯读，不点屏。 */
+    data class Page(val asName: String = "page", override val id: String? = null,
+        override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
+    /** 按变量分支：equals / not_equals 二选一（都没给就是 equals 空串，恒不命中）。 */
+    data class IfVar(val name: String, val equals: String? = null, val notEquals: String? = null,
+        val thenSteps: List<ScriptStep> = emptyList(), val elseSteps: List<ScriptStep> = emptyList(),
+        override val id: String? = null, override val timeoutMs: Long? = null,
+        override val retries: Int = 0) : ScriptStep
     data class Back(override val id: String? = null, override val timeoutMs: Long? = null,
         override val retries: Int = 0) : ScriptStep
     data class WaitStable(val stableFrames: Int = 3, val intervalMs: Long = 250,
@@ -106,6 +114,9 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
                 text("max_total_ms")?.toLong() ?: 600_000, text("until"),
                 steps("steps"), id, timeout, retries, text("times_from"))
             "launch" -> ScriptStep.Launch(text("package"), text("wait_ms")?.toLong() ?: 0, id, timeout, retries)
+            "page" -> ScriptStep.Page(text("as") ?: "page", id, timeout, retries)
+            "if_var" -> ScriptStep.IfVar(required("name"), text("equals"), text("not_equals"),
+                steps("then"), steps("else"), id, timeout, retries)
             "back" -> ScriptStep.Back(id, timeout, retries)
             "wait_stable" -> ScriptStep.WaitStable(text("frames")?.toInt() ?: 3,
                 text("interval_ms")?.toLong() ?: 250, text("timeout_ms")?.toLong() ?: 10_000,
@@ -154,6 +165,11 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
                 put("max_total_ms", value.maxTotalMs); value.timesFrom?.let { put("times_from", it) }
                 value.until?.let { put("until", it) }; putSteps("steps", value.steps) }
             is ScriptStep.Launch -> { put("op", "launch"); value.packageName?.let { put("package", it) }; put("wait_ms", value.waitMs) }
+            is ScriptStep.Page -> { put("op", "page"); put("as", value.asName) }
+            is ScriptStep.IfVar -> { put("op", "if_var"); put("name", value.name)
+                value.equals?.let { put("equals", it) }
+                value.notEquals?.let { put("not_equals", it) }
+                putSteps("then", value.thenSteps); putSteps("else", value.elseSteps) }
             is ScriptStep.Back -> put("op", "back")
             is ScriptStep.WaitStable -> { put("op", "wait_stable"); put("frames", value.stableFrames)
                 put("interval_ms", value.intervalMs); put("timeout_ms", value.stableTimeoutMs); put("tolerance", value.tolerance) }

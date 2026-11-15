@@ -78,7 +78,8 @@ class ScriptRunner {
                         break
                     }
                     // coldStart 自己会拉起目标 App，跟 launch 一样豁免前台校验
-                    if (step !is ScriptStep.Launch && step !is ScriptStep.ColdStart) {
+                    if (step !is ScriptStep.Launch && step !is ScriptStep.ColdStart &&
+                        step !is ScriptStep.Page && step !is ScriptStep.IfVar) {
                         ScriptGuard.rejection(access.foregroundPackage(), script.targetPackages)?.let { code ->
                             val entry = log(index, step, false, attempt, code)
                             logs += entry
@@ -119,7 +120,8 @@ class ScriptRunner {
             val remaining = 60_000 - (access.monotonicMs() - started)
             if (remaining <= 0) break
             val stepStarted = System.nanoTime()
-            val guarded = if (step is ScriptStep.Launch) null
+            val guarded = if (step is ScriptStep.Launch || step is ScriptStep.Page ||
+                step is ScriptStep.IfVar) null
                 else ScriptGuard.rejection(access.foregroundPackage(), script.targetPackages)
             val performed = guarded?.let { StepOutcome(false, it, it) } ?: withTimeoutOrNull(remaining) {
                 execute(step, access, script.targetPackages, variables)
@@ -211,6 +213,23 @@ class ScriptRunner {
             if (!access.launchApp(pkg)) StepOutcome(false, "launch_failed", "launch_failed")
             else { val wait = step.waitMs.coerceIn(0, 15_000); access.waitMs(wait); StepOutcome(true, "launch_wait_ms=$wait") }
         }
+        is ScriptStep.Page -> {
+            val current = access.currentPage() ?: "other"
+            variables[step.asName] = current
+            StepOutcome(true, "page=$current as=${step.asName}")
+        }
+        is ScriptStep.IfVar -> {
+            if ((step.thenSteps + step.elseSteps).any { it is ScriptStep.IfVar }) StepOutcome(false, "nested_if_var", "invalid_script")
+            else {
+                val value = variables[step.name] ?: ""
+                val hit = when {
+                    step.notEquals != null -> value != step.notEquals
+                    step.equals != null -> value == step.equals
+                    else -> false
+                }
+                performChildren(if (hit) step.thenSteps else step.elseSteps, access, targetPackages, variables, "if_var")
+            }
+        }
         is ScriptStep.Back -> {
             val ok = access.back()
             StepOutcome(ok, if (ok) "back" else "back_failed")
@@ -281,7 +300,8 @@ class ScriptRunner {
             var outcome: StepOutcome
             do {
                 stopOutcome(access)?.let { return it }
-                if (step !is ScriptStep.Launch && step !is ScriptStep.ColdStart)
+                if (step !is ScriptStep.Launch && step !is ScriptStep.ColdStart &&
+                    step !is ScriptStep.Page && step !is ScriptStep.IfVar)
                     ScriptGuard.rejection(access.foregroundPackage(), targetPackages)?.let { return StepOutcome(false, it, it) }
                 attempt++
                 outcome = execute(step, access, targetPackages, variables)
