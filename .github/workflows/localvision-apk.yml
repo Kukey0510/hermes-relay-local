@@ -1,7 +1,8 @@
 name: localvision-apk
 
-# 只为 IDEA-011 出安装包：sideload 跟踪的 debug + candidate 两个变体。
-# candidate 包名带 .script 后缀，可与线上 relay 共存。
+# 只为 IDEA-011 出安装包。
+# 2026-11-15 用户定：只出 debug 一个变体（candidate 不再构建）——装的就是 debug，
+# 多编一个变体白烧一半 Actions 时间。要恢复 candidate 就把 assembleSideloadCandidate 加回下面那行。
 on:
   workflow_dispatch:
     inputs:
@@ -54,7 +55,7 @@ jobs:
             if [ -n "$CAND" ]; then ln -sfn "$CAND" "$SDK/platforms/android-37"; echo "linked android-37 -> $CAND"; else echo "no android-37* found"; fi
           fi
 
-      - name: Build sideload debug + candidate
+      - name: Build sideload debug
         env:
           ABI: ${{ inputs.abi }}
         run: |
@@ -62,7 +63,7 @@ jobs:
           EXTRA=""
           if [ -n "${ABI:-}" ]; then EXTRA="-Phermes.devAbi=${ABI}"; fi
           echo "extra gradle args: $EXTRA"
-          ./gradlew :app:assembleSideloadDebug :app:assembleSideloadCandidate --no-daemon --stacktrace \
+          ./gradlew :app:assembleSideloadDebug --no-daemon --stacktrace \
             -Phermes.versionCode=$((10000 + ${{ github.run_number }})) $EXTRA
 
       - name: List APKs
@@ -77,7 +78,7 @@ jobs:
           name: localvision apk r${{ github.run_number }}
           body: |
             自动构建（${{ github.sha }}）ABI=${{ inputs.abi }}
-            candidate 变体包名带 .script 后缀，可与现有 relay 共存。
+            只出 sideload debug 变体（2026-11-15 起，candidate 不再构建）。
           files: app/build/outputs/apk/**/*.apk
           fail_on_unmatched_files: true
         env:
