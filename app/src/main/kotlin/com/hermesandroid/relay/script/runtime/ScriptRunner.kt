@@ -12,6 +12,7 @@ interface ScriptAccess {
     suspend fun tap(x: Int, y: Int): Boolean
     suspend fun tapText(text: String): Boolean
     suspend fun swipe(fromX: Int, fromY: Int, toX: Int, toY: Int, durationMs: Long): Boolean = false
+    fun screenOn(): Boolean = true
     fun screenSize(): Pair<Int, Int> = Int.MAX_VALUE to Int.MAX_VALUE
     fun monotonicMs(): Long = System.nanoTime() / 1_000_000
     suspend fun probe(expect: String, timeoutMs: Long): Boolean
@@ -59,6 +60,7 @@ class ScriptRunner {
         onStep: suspend (ScriptRunLog, Long) -> Unit = { _, _ -> },
     ): ScriptRunResult {
         if (!running.compareAndSet(false, true)) return ScriptRunResult(runId = runId, success = false, errorCode = "run_in_progress")
+        ScriptRunControl.reset()
         val logs = mutableListOf<ScriptRunLog>()
         val variables = script.vars.mapValuesTo(mutableMapOf()) { it.value.content }
         try {
@@ -69,7 +71,13 @@ class ScriptRunner {
                 var attempt = 0
                 var outcome = StepOutcome(false, "not_executed")
                 do {
-                    if (step !is ScriptStep.Launch) {
+                    val stopped = stopOutcome(access)
+                    if (stopped != null) {
+                        outcome = stopped
+                        break
+                    }
+                    // coldStart 自己会拉起目标 App，跟 launch 一样豁免前台校验
+                    if (step !is ScriptStep.Launch && step !is ScriptStep.ColdStart) {
                         ScriptGuard.rejection(access.foregroundPackage(), script.targetPackages)?.let { code ->
                             val entry = log(index, step, false, attempt, code)
                             logs += entry
@@ -80,7 +88,8 @@ class ScriptRunner {
                     }
                     attempt++
                     outcome = execute(step, access, script.targetPackages, variables)
-                } while (!outcome.ok && attempt <= step.retries)
+                    if (!outcome.isTerminal) outcome = stopOutcome(access) ?: outcome
+                } while (!outcome.ok && !outcome.isTerminal && attempt <= step.retries)
                 if (failure != null) break
                 val entry = log(index, step, outcome.ok, attempt, outcome.message)
                 logs += entry
@@ -90,7 +99,8 @@ class ScriptRunner {
                     break
                 }
             }
-            if (failure != null) runOnFail(script, access, variables, logs, onStep)
+            if (failure != null && failure !in setOf("cancelled", "screen_off")) runOnFail(script, access, variables, logs, onStep)
+            stopOutcome(access)?.let { failure = it.errorCode }
             return ScriptRunResult(runId = runId, success = failure == null, errorCode = failure, logs = logs)
         } finally { running.set(false) }
     }
@@ -99,22 +109,31 @@ class ScriptRunner {
         logs: MutableList<ScriptRunLog>, onStep: suspend (ScriptRunLog, Long) -> Unit) {
         val started = access.monotonicMs()
         for (step in script.onFail.take(10)) {
+            stopOutcome(access)?.let {
+                val entry = log(-1, step, false, 0, it.message, "on_fail:")
+                logs += entry
+                runCatching { onStep(entry, 0) }
+                return
+            }
             val remaining = 60_000 - (access.monotonicMs() - started)
             if (remaining <= 0) break
             val stepStarted = System.nanoTime()
             val guarded = if (step is ScriptStep.Launch) null
                 else ScriptGuard.rejection(access.foregroundPackage(), script.targetPackages)
-            val outcome = guarded?.let { StepOutcome(false, it, it) } ?: withTimeoutOrNull(remaining) {
+            val performed = guarded?.let { StepOutcome(false, it, it) } ?: withTimeoutOrNull(remaining) {
                 execute(step, access, script.targetPackages, variables)
             } ?: StepOutcome(false, "timeout", "step_timeout")
+            val outcome = if (performed.isTerminal) performed else stopOutcome(access) ?: performed
             val entry = log(-1, step, outcome.ok, 1, outcome.message, "on_fail:")
             logs += entry
             runCatching { onStep(entry, elapsedMs(stepStarted)) }
+            if (outcome.isTerminal) return
         }
     }
 
     private suspend fun execute(step: ScriptStep, access: ScriptAccess, targetPackages: Collection<String>,
         variables: MutableMap<String, String>): StepOutcome {
+        stopOutcome(access)?.let { return it }
         // Probe 自带超时（内部轮询到 deadline），外面再套一层会把判别式提前取消掉
         val timeout = if (step is ScriptStep.Probe) null else step.timeoutMs?.coerceAtLeast(1)
         return try {
@@ -174,6 +193,7 @@ class ScriptRunner {
                 val started = access.monotonicMs()
                 var outcome = StepOutcome(true, if (fallback) "loop_stop:times;times_fallback" else "loop_stop:times")
                 for (iteration in 0 until times) {
+                    stopOutcome(access)?.let { return it }
                     if (access.monotonicMs() - started >= maxTotalMs) { outcome = StepOutcome(true, "loop_stop:max_total_ms"); break }
                     val child = performChildren(step.steps, access, targetPackages, variables, "loop")
                     if (!child.ok) return child
@@ -198,7 +218,12 @@ class ScriptRunner {
         is ScriptStep.ColdStart -> {
             val message = access.coldStartTo(step.packageName, step.bootPage, step.homePage,
                 step.tapX, step.tapY, step.bootWaitMs, step.homeWaitMs, step.intervalMs)
-            StepOutcome(message.startsWith("ok"), message)
+            val code = when {
+                message.startsWith("fail:cancelled") -> "cancelled"
+                message.startsWith("fail:screen_off") -> "screen_off"
+                else -> null
+            }
+            StepOutcome(message.startsWith("ok"), message, code)
         }
         is ScriptStep.Snapshot -> {
             val tag = step.tag.replace(Regex("[^A-Za-z0-9_-]"), "_").take(32).ifEmpty { "_" }
@@ -236,6 +261,7 @@ class ScriptRunner {
         var previous = access.frameSample() ?: return StepOutcome(false, "capture_failed")
         var stable = 0
         while (true) {
+            stopOutcome(access)?.let { return it }
             access.waitMs(interval)
             val current = access.frameSample() ?: return StepOutcome(false, "capture_failed")
             stable = if (meanAbsDiff(previous, current) <= tolerance) stable + 1 else 0
@@ -252,10 +278,13 @@ class ScriptRunner {
             var attempt = 0
             var outcome: StepOutcome
             do {
-                if (step !is ScriptStep.Launch) ScriptGuard.rejection(access.foregroundPackage(), targetPackages)?.let { return StepOutcome(false, it, it) }
+                stopOutcome(access)?.let { return it }
+                if (step !is ScriptStep.Launch && step !is ScriptStep.ColdStart)
+                    ScriptGuard.rejection(access.foregroundPackage(), targetPackages)?.let { return StepOutcome(false, it, it) }
                 attempt++
                 outcome = execute(step, access, targetPackages, variables)
-            } while (!outcome.ok && attempt <= step.retries)
+                if (!outcome.isTerminal) outcome = stopOutcome(access) ?: outcome
+            } while (!outcome.ok && !outcome.isTerminal && attempt <= step.retries)
             if (!outcome.ok) return StepOutcome(false, "$owner:${outcome.message}", outcome.errorCode)
         }
         return StepOutcome(true, owner)
@@ -276,6 +305,14 @@ class ScriptRunner {
             is ScriptStep.ColdStart -> "coldStart"
         }, success, attempts, message)
     private fun elapsedMs(startedAt: Long) = (System.nanoTime() - startedAt) / 1_000_000
-    private data class StepOutcome(val ok: Boolean, val message: String, val errorCode: String? = null)
+    private fun stopOutcome(access: ScriptAccess): StepOutcome? = when {
+        ScriptRunControl.isCancelled() -> StepOutcome(false, "cancelled reason=${ScriptRunControl.reason}", "cancelled")
+        !access.screenOn() -> StepOutcome(false, "screen_off", "screen_off")
+        else -> null
+    }
+
+    private data class StepOutcome(val ok: Boolean, val message: String, val errorCode: String? = null) {
+        val isTerminal: Boolean get() = errorCode == "cancelled" || errorCode == "screen_off"
+    }
 
 }

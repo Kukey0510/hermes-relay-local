@@ -2,18 +2,18 @@ package com.axiomlabs.hermesrelay.localvision
 
 data class PageSpec(val pages: Map<String, Page>)
 
-data class Page(val checks: List<PageCheck>)
+data class Page(val checks: List<PageCheck>, val need: Int = 0)
 
 sealed interface PageCheck
 
-data class ColorPageCheck(val area: Rect, val expect: IntArray, val tol: Int) : PageCheck {
+data class ColorPageCheck(val area: Rect, val expect: IntArray, val tol: Int, val ignore: List<Rect> = emptyList()) : PageCheck {
     override fun equals(other: Any?): Boolean =
-        other is ColorPageCheck && area == other.area && expect.contentEquals(other.expect) && tol == other.tol
+        other is ColorPageCheck && area == other.area && expect.contentEquals(other.expect) && tol == other.tol && ignore == other.ignore
 
-    override fun hashCode(): Int = 31 * (31 * area.hashCode() + expect.contentHashCode()) + tol
+    override fun hashCode(): Int = 31 * (31 * (31 * area.hashCode() + expect.contentHashCode()) + tol) + ignore.hashCode()
 }
 
-data class TemplatePageCheck(val file: String, val area: Rect, val min: Double) : PageCheck
+data class TemplatePageCheck(val file: String, val area: Rect, val min: Double, val ignore: List<Rect> = emptyList()) : PageCheck
 
 data class UnknownPageCheck(val type: String) : PageCheck
 
@@ -27,18 +27,24 @@ class PageDetector(
     fun detect(img: RgbImage): String = try {
         val gray by lazy { Grayscale.fromRgb(img) }
         spec.pages.entries.firstOrNull { (_, page) ->
-            page.checks.all { check ->
-                when (check) {
-                    is ColorPageCheck -> ColorCheck.within(ColorCheck.meanInArea(img, check.area), check.expect, check.tol)
+            val need = page.need.takeIf { it in 1..page.checks.size } ?: page.checks.size
+            var hits = 0
+            for ((index, check) in page.checks.withIndex()) {
+                val matched = when (check) {
+                    is ColorPageCheck -> ColorCheck.within(ColorCheck.meanInArea(img, check.area, check.ignore), check.expect, check.tol)
                     is TemplatePageCheck -> {
                         val template = templateCache[check.file] ?: loader.load(check.file)?.also {
                             templateCache[check.file] = it
                         }
-                        template != null && TemplateMatcher(template).find(gray, check.area, check.min).found
+                        template != null && TemplateMatcher(template).find(gray, check.area, check.min, ignore = check.ignore).found
                     }
                     is UnknownPageCheck -> false
                 }
+                if (matched) hits++
+                if (hits >= need) return@firstOrNull true
+                if (hits + page.checks.size - index - 1 < need) return@firstOrNull false
             }
+            hits >= need
         }?.key ?: "other"
     } catch (_: Exception) {
         "other"
@@ -55,7 +61,8 @@ object PageSpecParser {
                 val id = rawId as? String ?: invalid()
                 val pageObject = rawPage as? Map<*, *> ?: invalid()
                 val rawChecks = pageObject["checks"] as? List<*> ?: invalid()
-                pages[id] = Page(rawChecks.map { parseCheck(it as? Map<*, *> ?: invalid()) })
+                pages[id] = Page(rawChecks.map { parseCheck(it as? Map<*, *> ?: invalid()) },
+                    if ("need" in pageObject) number(pageObject["need"]).toInt() else 0)
             }
             return PageSpec(pages)
         } catch (error: IllegalArgumentException) {
@@ -68,15 +75,20 @@ object PageSpecParser {
     private fun parseCheck(value: Map<*, *>): PageCheck {
         val type = value["type"] as? String ?: invalid()
         return when (type) {
-            "color" -> ColorPageCheck(rect(value["area"]), ints(value["expect"], 3), number(value["tol"]).toInt())
+            "color" -> ColorPageCheck(rect(value["area"]), ints(value["expect"], 3), number(value["tol"]).toInt(), ignore(value))
             "template" -> TemplatePageCheck(
                 value["file"] as? String ?: invalid(),
                 rect(value["area"]),
                 number(value["min"]).toDouble(),
+                ignore(value),
             )
             else -> UnknownPageCheck(type)
         }
     }
+
+    private fun ignore(value: Map<*, *>): List<Rect> =
+        if ("ignore" !in value) emptyList()
+        else (value["ignore"] as? List<*> ?: invalid()).map { rect(it) }
 
     private fun rect(value: Any?): Rect {
         val values = ints(value, 4)

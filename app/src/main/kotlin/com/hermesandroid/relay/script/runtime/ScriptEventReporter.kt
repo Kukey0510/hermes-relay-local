@@ -104,7 +104,7 @@ class HttpScriptEventSender(
 internal fun ScriptRunLog.toEvent(scriptId: String, runId: String) = ScriptEvent(
     scriptId = scriptId,
     runId = runId,
-    level = if (success) "info" else "error",
+    level = if (success) "info" else if (message.contains("cancelled") || message.contains("screen_off")) "warn" else "error",
     stepIndex = stepIndex,
     op = op,
     message = message,

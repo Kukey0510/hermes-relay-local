@@ -441,6 +441,15 @@ class BridgeCommandHandler(
         method: String,
         body: JsonObject,
     ) {
+        // Stopping must remain available even when Device Control is unavailable or denied.
+        if (path.substringBefore('?').trimEnd('/') == "/script/stop" && method.equals("POST", ignoreCase = true)) {
+            com.hermesandroid.relay.script.runtime.ScriptRunControl.requestStop("bridge:/script/stop")
+            respond(requestId, 200, buildJsonObject {
+                put("ok", true)
+                put("stopping", true)
+            })
+            return
+        }
         // Resolve path + method through the closed capability registry before
         // any wake, confirmation, event read, executor, or run-tracker effect.
         val registeredAuthority =

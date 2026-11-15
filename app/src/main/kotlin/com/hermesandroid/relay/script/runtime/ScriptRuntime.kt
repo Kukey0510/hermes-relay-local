@@ -105,15 +105,16 @@ object ScriptRuntime {
             keepAlive.cancel()
         }
         if (result.errorCode == "run_in_progress") return result
+        val endMessage = "errorCode=${result.errorCode} ${result.logs.lastOrNull()?.message.orEmpty().take(120)}"
         runCatching { store.append(ScriptLogEvent(
             event = "run_end", scriptId = script.id, runId = runId, ts = ScriptLogEvent.timestamp(),
             success = result.success, durationMs = (System.nanoTime() - startedAt) / 1_000_000,
-            errorCode = result.errorCode,
+            errorCode = result.errorCode, message = endMessage,
         )) }
         runCatching { reporter.report(ScriptEvent(
-            scriptId = script.id, runId = runId, level = if (result.success) "info" else "error",
+            scriptId = script.id, runId = runId, level = if (result.success) "info" else if (result.errorCode in setOf("cancelled", "screen_off")) "warn" else "error",
             stepIndex = result.logs.lastOrNull()?.stepIndex ?: 0,
-            op = "run_end", message = result.errorCode ?: "completed", ts = java.time.Instant.now().toString(),
+            op = "run_end", message = endMessage, ts = java.time.Instant.now().toString(),
         )) }
         runCatching { store.clearPending() }
         return result
@@ -131,6 +132,9 @@ object ScriptRuntime {
         override suspend fun tapText(text: String) = service.actionExecutor.tapText(text).ok
         override suspend fun swipe(fromX: Int, fromY: Int, toX: Int, toY: Int, durationMs: Long) =
             service.actionExecutor.swipe(fromX, fromY, toX, toY, durationMs).ok
+        override fun screenOn(): Boolean =
+            (context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager).isInteractive
+
         override fun screenSize(): Pair<Int, Int> =
             context.resources.displayMetrics.let { it.widthPixels to it.heightPixels }
 
@@ -180,6 +184,8 @@ object ScriptRuntime {
             var taps = 0
             var firstBootAt = 0L
             var lastPage = "?"
+            var otherSince: Long? = null
+            var rescues = 0
 
             suspend fun detectPage(): String = runCatching {
                 val result = LocalVisionBridgeRoutes.handle(capture, context, buildJsonObject {
@@ -190,12 +196,14 @@ object ScriptRuntime {
             }.getOrDefault("other")
 
             while (monotonicMs() - started < bootWaitMs) {
+                if (ScriptRunControl.isCancelled()) return "fail:cancelled reason=${ScriptRunControl.reason} rescue=$rescues"
+                if (!screenOn()) return "fail:screen_off rescue=$rescues"
                 val frame = runCatching { capture?.captureLocalFrame()?.getOrNull() }.getOrNull()
                 val landscape = frame != null && frame.width > frame.height
                 if (!landscape) {
                     landscapeStreak = 0
                     if (monotonicMs() - lastLaunchAt >= 2_000) {
-                        val name = pkg ?: return "fail:no_package"
+                        val name = pkg ?: return "fail:no_package rescue=$rescues"
                         lastLaunchAt = monotonicMs()
                         launchApp(name)
                     }
@@ -207,14 +215,28 @@ object ScriptRuntime {
                 delay(2_000)
             }
             if (landscapeStreak < 2) {
-                return "fail:no_landscape elapsed=${monotonicMs() - started}ms"
+                return "fail:no_landscape rescue=$rescues elapsed=${monotonicMs() - started}ms"
             }
 
             val pageDeadline = monotonicMs() + homeWaitMs
             while (monotonicMs() < pageDeadline) {
+                if (ScriptRunControl.isCancelled()) return "fail:cancelled reason=${ScriptRunControl.reason} rescue=$rescues"
+                if (!screenOn()) return "fail:screen_off rescue=$rescues"
                 lastPage = detectPage()
                 if (lastPage == homePage) {
                     return "ok:home_at_${monotonicMs() - started}ms taps=$taps"
+                }
+                val now = monotonicMs()
+                if (lastPage == "other") {
+                    val since = otherSince ?: now.also { otherSince = it }
+                    if (pkg != null && now - since >= 20_000 && now - lastLaunchAt >= 20_000 && rescues < 5) {
+                        lastLaunchAt = now
+                        launchApp(pkg)
+                        rescues++
+                        otherSince = monotonicMs()
+                    }
+                } else {
+                    otherSince = null
                 }
                 if (lastPage == bootPage) {
                     if (firstBootAt == 0L) firstBootAt = monotonicMs()
@@ -227,7 +249,7 @@ object ScriptRuntime {
                 }
                 delay(intervalMs.coerceIn(300, 5_000))
             }
-            return "fail:no_home last=$lastPage taps=$taps elapsed=${monotonicMs() - started}ms"
+            return "fail:no_home rescue=$rescues last=$lastPage taps=$taps elapsed=${monotonicMs() - started}ms"
         }
 
         override suspend fun back(): Boolean =

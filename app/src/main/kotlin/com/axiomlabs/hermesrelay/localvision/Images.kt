@@ -12,7 +12,10 @@ data class GrayImage(val width: Int, val height: Int, val pixels: ByteArray) {
     }
 }
 
-data class Rect(val x: Int, val y: Int, val w: Int, val h: Int)
+data class Rect(val x: Int, val y: Int, val w: Int, val h: Int) {
+    fun contains(px: Int, py: Int): Boolean = w > 0 && h > 0 &&
+        px.toLong() >= x && py.toLong() >= y && px.toLong() < x.toLong() + w && py.toLong() < y.toLong() + h
+}
 
 data class MatchResult(val found: Boolean, val x: Int, val y: Int, val score: Double)
 
@@ -50,22 +53,26 @@ object Grayscale {
 }
 
 object ColorCheck {
-    fun meanInArea(img: RgbImage, area: Rect): IntArray {
+    fun meanInArea(img: RgbImage, area: Rect, ignore: List<Rect> = emptyList()): IntArray {
         require(area.w > 0 && area.h > 0)
         require(area.x >= 0 && area.y >= 0 && area.x + area.w <= img.width && area.y + area.h <= img.height)
         var red = 0L
         var green = 0L
         var blue = 0L
+        var count = 0L
         for (y in area.y until area.y + area.h) {
             var index = y * img.width + area.x
             repeat(area.w) {
+                val x = index % img.width
                 val color = img.rgb[index++]
+                if (ignore.any { it.contains(x, y) }) return@repeat
+                count++
                 red += color ushr 16 and 0xff
                 green += color ushr 8 and 0xff
                 blue += color and 0xff
             }
         }
-        val count = area.w.toLong() * area.h
+        if (count == 0L) return intArrayOf()
         return intArrayOf((red / count).toInt(), (green / count).toInt(), (blue / count).toInt())
     }
 
