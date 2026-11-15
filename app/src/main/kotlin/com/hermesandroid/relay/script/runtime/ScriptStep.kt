@@ -69,6 +69,9 @@ sealed interface ScriptStep {
         val homePage: String = "home", val tapX: Int? = null, val tapY: Int? = null,
         val bootWaitMs: Long = 60_000, val homeWaitMs: Long = 90_000,
         val intervalMs: Long = 1_000,
+        /** 主页上盖着的中心弹窗（判据里的 popup 页）；命中就点 popupX/popupY 关掉再继续等主页。 */
+        val popupPage: String = "popup", val popupX: Int = 1580, val popupY: Int = 375,
+        val maxPopups: Int = 3,
         override val id: String? = null, override val timeoutMs: Long? = null,
         override val retries: Int = 0) : ScriptStep
 }
@@ -118,6 +121,10 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
                 text("boot_wait_ms")?.toLongOrNull() ?: 60_000,
                 text("home_wait_ms")?.toLongOrNull() ?: 90_000,
                 text("interval_ms")?.toLongOrNull() ?: 1_000,
+                text("popup") ?: "popup",
+                text("popup_x")?.toIntOrNull() ?: 1580,
+                text("popup_y")?.toIntOrNull() ?: 375,
+                text("max_popups")?.toIntOrNull() ?: 3,
                 id, timeout, retries)
             else -> throw UnsupportedOperationException("unsupported script op: $op")
         }
@@ -158,7 +165,9 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
                 put("boot", value.bootPage); put("home", value.homePage)
                 value.tapX?.let { put("x", it) }; value.tapY?.let { put("y", it) }
                 put("boot_wait_ms", value.bootWaitMs); put("home_wait_ms", value.homeWaitMs)
-                put("interval_ms", value.intervalMs) }
+                put("interval_ms", value.intervalMs)
+                put("popup", value.popupPage); put("popup_x", value.popupX); put("popup_y", value.popupY)
+                put("max_popups", value.maxPopups) }
         }
         value.id?.let { put("id", it) }
         value.timeoutMs?.let { put("timeout_ms", it) }

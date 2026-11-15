@@ -174,7 +174,8 @@ object ScriptRuntime {
          * ④ 命中 home 立刻返回，带上从启动到进主页的毫秒数。
          */
         override suspend fun coldStartTo(pkg: String?, bootPage: String, homePage: String,
-            tapX: Int?, tapY: Int?, bootWaitMs: Long, homeWaitMs: Long, intervalMs: Long): String {
+            tapX: Int?, tapY: Int?, bootWaitMs: Long, homeWaitMs: Long, intervalMs: Long,
+            popupPage: String, popupX: Int, popupY: Int, maxPopups: Int): String {
             val started = monotonicMs()
             val (screenWidth, screenHeight) = screenSize()
             val tx = tapX ?: (screenWidth / 2)
@@ -186,6 +187,7 @@ object ScriptRuntime {
             var lastPage = "?"
             var otherSince: Long? = null
             var rescues = 0
+            var popupTaps = 0
 
             suspend fun detectPage(): String = runCatching {
                 val result = LocalVisionBridgeRoutes.handle(capture, context, buildJsonObject {
@@ -224,12 +226,21 @@ object ScriptRuntime {
                 if (!screenOn()) return "fail:screen_off rescue=$rescues"
                 lastPage = detectPage()
                 if (lastPage == homePage) {
-                    return "ok:home_at_${monotonicMs() - started}ms taps=$taps"
+                    return "ok:home_at_${monotonicMs() - started}ms taps=$taps popups=$popupTaps"
+                }
+                // 主页上常盖一层「信息」弹窗：判据会先命中 popup，此时点右上角 X 关掉再继续等主页。
+                // 不处理的话会一直卡在 popup，永远不会等于 home（2026-11-15 真机实测）。
+                if (lastPage == popupPage && popupTaps < maxPopups) {
+                    tap(popupX, popupY)
+                    popupTaps++
+                    delay(1_500)
+                    continue
                 }
                 val now = monotonicMs()
                 if (lastPage == "other") {
                     val since = otherSince ?: now.also { otherSince = it }
-                    if (pkg != null && now - since >= 20_000 && now - lastLaunchAt >= 20_000 && rescues < 5) {
+                    // 只在「还没点到启动页」的加载阶段自救；已经开始点 boot 之后就别再重开游戏了
+                    if (taps == 0 && pkg != null && now - since >= 20_000 && now - lastLaunchAt >= 20_000 && rescues < 3) {
                         lastLaunchAt = now
                         launchApp(pkg)
                         rescues++
