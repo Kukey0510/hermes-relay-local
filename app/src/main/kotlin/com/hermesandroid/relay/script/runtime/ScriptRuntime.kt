@@ -266,6 +266,14 @@ object ScriptRuntime {
         override suspend fun back(): Boolean =
             service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
 
+        override suspend fun currentPage(): String? = runCatching {
+            val result = LocalVisionBridgeRoutes.handle(capture, context, buildJsonObject {
+                put("with_frame", false)
+                put("save_unknown", false)
+            })
+            (result.payload["page"] as? JsonPrimitive)?.content
+        }.getOrNull()
+
         override suspend fun frameSample(): IntArray? {
             val image = capture?.captureLocalFrame()?.getOrNull() ?: return null
             val sampleCount = (image.rgb.size + 31) / 32

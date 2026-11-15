@@ -20,6 +20,8 @@ interface ScriptAccess {
     suspend fun launchApp(pkg: String): Boolean = false
     /** Back from a root page may leave the app; scripts must follow it with a probe. */
     suspend fun back(): Boolean = false
+    /** 立刻判一次当前页（不等待、不点屏）；判不出返回 null。脚本用 op "page" 调它。 */
+    suspend fun currentPage(): String? = null
     suspend fun frameSample(): IntArray? = null
     suspend fun saveSnapshot(tag: String): Boolean = false
     suspend fun recognizePowers(minConfidence: Double): PowerRecognition? = null
@@ -322,6 +324,7 @@ class ScriptRunner {
             is ScriptStep.Probe -> "probe"; is ScriptStep.Read -> "read"; is ScriptStep.Swipe -> "swipe"
             is ScriptStep.TapIfText -> "tapIfText"; is ScriptStep.IfPage -> "if_page"; is ScriptStep.Loop -> "loop"
             is ScriptStep.Launch -> "launch"; is ScriptStep.Back -> "back"; is ScriptStep.WaitStable -> "wait_stable"
+            is ScriptStep.Page -> "page"; is ScriptStep.IfVar -> "if_var"
             is ScriptStep.Snapshot -> "snapshot"
             is ScriptStep.TapWeakest -> "tapWeakest"
             is ScriptStep.ColdStart -> "coldStart"
