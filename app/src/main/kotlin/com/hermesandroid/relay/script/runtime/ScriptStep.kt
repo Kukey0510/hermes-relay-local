@@ -31,7 +31,7 @@ sealed interface ScriptStep {
         override val id: String? = null, override val retries: Int = 0) : ScriptStep
     data class Read(val field: String, override val id: String? = null,
         override val timeoutMs: Long? = null, override val retries: Int = 0,
-        val asName: String = field) : ScriptStep
+        val asName: String = field, val optional: Boolean = false) : ScriptStep
     data class Swipe(val fromX: Int, val fromY: Int, val toX: Int, val toY: Int,
         val durationMs: Long = 400, override val id: String? = null,
         override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
@@ -46,6 +46,9 @@ sealed interface ScriptStep {
         override val id: String? = null, override val timeoutMs: Long? = null,
         override val retries: Int = 0, val timesFrom: String? = null) : ScriptStep
     data class Launch(val packageName: String? = null, val waitMs: Long = 0,
+        override val id: String? = null, override val timeoutMs: Long? = null,
+        override val retries: Int = 0) : ScriptStep
+    data class ForceStop(val packageName: String, val waitMs: Long = 1_500,
         override val id: String? = null, override val timeoutMs: Long? = null,
         override val retries: Int = 0) : ScriptStep
     /** 立刻判一次当前页（不等待），结果写进变量。纯读，不点屏。 */
@@ -103,7 +106,8 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
             "tapText" -> ScriptStep.TapText(required("text"), id, timeout, retries)
             "wait" -> ScriptStep.Wait(required("ms").toLong(), id, timeout, retries)
             "probe" -> ScriptStep.Probe(required("expect"), timeout, id, retries)
-            "read" -> ScriptStep.Read(required("field"), id, timeout, retries, text("as") ?: required("field"))
+            "read" -> ScriptStep.Read(required("field"), id, timeout, retries, text("as") ?: required("field"),
+                (json["optional"] as? JsonPrimitive)?.booleanOrNull ?: false)
             "swipe" -> ScriptStep.Swipe(required("from_x").toInt(), required("from_y").toInt(),
                 required("to_x").toInt(), required("to_y").toInt(),
                 text("duration_ms")?.toLong() ?: 400, id, timeout, retries)
@@ -113,6 +117,7 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
             "loop" -> ScriptStep.Loop(required("times").toInt(),
                 text("max_total_ms")?.toLong() ?: 600_000, text("until"),
                 steps("steps"), id, timeout, retries, text("times_from"))
+            "force_stop" -> ScriptStep.ForceStop(required("package"), text("wait_ms")?.toLong() ?: 1_500, id, timeout, retries)
             "launch" -> ScriptStep.Launch(text("package"), text("wait_ms")?.toLong() ?: 0, id, timeout, retries)
             "page" -> ScriptStep.Page(text("as") ?: "page", id, timeout, retries)
             "if_var" -> ScriptStep.IfVar(required("name"), text("equals"), text("not_equals"),
@@ -155,7 +160,8 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
             is ScriptStep.Wait -> { put("op", "wait"); put("ms", value.ms) }
             is ScriptStep.Probe -> { put("op", "probe"); put("expect", value.expect) }
             is ScriptStep.Read -> { put("op", "read"); put("field", value.field)
-                if (value.asName != value.field) put("as", value.asName) }
+                if (value.asName != value.field) put("as", value.asName)
+                if (value.optional) put("optional", true) }
             is ScriptStep.Swipe -> { put("op", "swipe"); put("from_x", value.fromX); put("from_y", value.fromY)
                 put("to_x", value.toX); put("to_y", value.toY); put("duration_ms", value.durationMs) }
             is ScriptStep.TapIfText -> { put("op", "tapIfText"); put("text", value.text); put("optional", value.optional) }
@@ -164,6 +170,7 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
             is ScriptStep.Loop -> { put("op", "loop"); put("times", value.times)
                 put("max_total_ms", value.maxTotalMs); value.timesFrom?.let { put("times_from", it) }
                 value.until?.let { put("until", it) }; putSteps("steps", value.steps) }
+            is ScriptStep.ForceStop -> { put("op", "force_stop"); put("package", value.packageName); put("wait_ms", value.waitMs) }
             is ScriptStep.Launch -> { put("op", "launch"); value.packageName?.let { put("package", it) }; put("wait_ms", value.waitMs) }
             is ScriptStep.Page -> { put("op", "page"); put("as", value.asName) }
             is ScriptStep.IfVar -> { put("op", "if_var"); put("name", value.name)

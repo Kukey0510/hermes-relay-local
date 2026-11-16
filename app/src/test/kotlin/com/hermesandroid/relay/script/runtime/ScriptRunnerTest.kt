@@ -83,9 +83,9 @@ class ScriptRunnerTest {
         assertFalse(failed.success)
     }
 
-    @Test fun nestedIfPageIsInvalidScript() = runTest {
+    @Test fun nestedIfPageChoosesBranch() = runTest {
         val nested = ScriptStep.IfPage("home", thenSteps = listOf(ScriptStep.IfPage("dialog")))
-        assertEquals("invalid_script", ScriptRunner().run(script(nested), FakeAccess()).errorCode)
+        assertTrue(ScriptRunner().run(script(nested), FakeAccess(probeAnswers = mutableListOf(true, true))).success)
     }
 
     @Test fun loopStopsForTimesAndUntil() = runTest {

@@ -239,6 +239,53 @@ object ScriptRuntime {
             return (result.payload["value"] as? JsonPrimitive)?.contentOrNull
         }
 
+        override var forceStopFailureReason: String = "unsupported"
+            private set
+
+        override suspend fun forceStop(pkg: String, waitMs: Long): Boolean {
+            fun fail(reason: String): Boolean {
+                forceStopFailureReason = reason
+                android.util.Log.w("ScriptRuntime", "force_stop failed: $reason")
+                return false
+            }
+            fun nodes() = service.rootInActiveWindow?.let { service.reader.readScreen(it).nodes }.orEmpty()
+            val stopLabels = setOf("强行停止", "强制停止", "Force stop")
+            fun matches(node: com.hermesandroid.relay.accessibility.ScreenReader.ScreenNode,
+                labels: Set<String>) = labels.any {
+                it.equals(node.text?.trim(), ignoreCase = true) ||
+                    it.equals(node.contentDescription?.trim(), ignoreCase = true)
+            }
+            try {
+                android.util.Log.i("ScriptRuntime", "force_stop open settings: $pkg")
+                val opened = service.actionExecutor.sendIntent(
+                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    "package:$pkg", null, null, null, null)
+                if (!opened.ok) return fail("open_settings")
+                delay(1_000)
+                val button = nodes().firstOrNull { it.enabled && matches(it, stopLabels) }
+                    ?: return fail("force_stop_button_missing")
+                android.util.Log.i("ScriptRuntime", "force_stop tap stop button")
+                if (!tap(button.bounds.centerX, button.bounds.centerY)) return fail("tap_stop")
+                delay(600)
+                val currentNodes = nodes()
+                val confirm = currentNodes.firstOrNull { it.enabled && it.viewId == "android:id/button1" }
+                    ?: currentNodes.firstOrNull { it.enabled && matches(it, setOf("确定", "强行停止", "OK")) }
+                if (confirm != null) {
+                    android.util.Log.i("ScriptRuntime", "force_stop tap confirmation")
+                    if (!tap(confirm.bounds.centerX, confirm.bounds.centerY)) return fail("tap_confirmation")
+                } else android.util.Log.i("ScriptRuntime", "force_stop no confirmation")
+                val wait = waitMs.coerceIn(0, 10_000)
+                android.util.Log.i("ScriptRuntime", "force_stop wait_ms=$wait")
+                delay(wait)
+                android.util.Log.i("ScriptRuntime", "force_stop complete: $pkg")
+                return true
+            } catch (cancel: kotlinx.coroutines.CancellationException) {
+                throw cancel
+            } catch (error: Exception) {
+                return fail(error.javaClass.simpleName)
+            }
+        }
+
         override suspend fun launchApp(pkg: String): Boolean {
             val intent = context.packageManager.getLaunchIntentForPackage(pkg) ?: return false
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
