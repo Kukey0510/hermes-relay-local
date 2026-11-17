@@ -45,7 +45,7 @@ sealed interface ScriptStep {
         val until: String? = null, val steps: List<ScriptStep> = emptyList(),
         override val id: String? = null, override val timeoutMs: Long? = null,
         override val retries: Int = 0, val timesFrom: String? = null) : ScriptStep
-    /** wait_ms defaults to 0 and is clamped to 0..45_000 ms. */
+    /** wait_ms defaults to 0 and is clamped to 0..90_000 ms. */
     data class Launch(val packageName: String? = null, val waitMs: Long = 0,
         override val id: String? = null, override val timeoutMs: Long? = null,
         override val retries: Int = 0) : ScriptStep

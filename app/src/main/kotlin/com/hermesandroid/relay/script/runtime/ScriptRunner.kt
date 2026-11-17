@@ -229,7 +229,7 @@ class ScriptRunner {
             val pkg = step.packageName ?: targetPackages.firstOrNull()
                 ?: return StepOutcome(false, "launch_no_package", "invalid_script")
             if (!access.launchApp(pkg)) StepOutcome(false, "launch_failed", "launch_failed")
-            else { val wait = step.waitMs.coerceIn(0, 45_000); access.waitMs(wait); StepOutcome(true, "launch_wait_ms=$wait") }
+            else { val wait = step.waitMs.coerceIn(0, 90_000); access.waitMs(wait); StepOutcome(true, "launch_wait_ms=$wait") }
         }
         is ScriptStep.Page -> {
             val current = access.currentPage() ?: "other"

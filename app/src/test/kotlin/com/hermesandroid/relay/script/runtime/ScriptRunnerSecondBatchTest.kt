@@ -12,7 +12,7 @@ class ScriptRunnerSecondBatchTest {
         val explicit = Access()
         assertTrue(run(script(ScriptStep.Launch("other", 99_999)), explicit).success)
         assertEquals(listOf("other"), explicit.launches)
-        assertEquals(listOf(45_000L), explicit.waits)
+        assertEquals(listOf(90_000L), explicit.waits)
 
         val fallback = Access()
         assertTrue(run(script(ScriptStep.Launch()), fallback).success)
@@ -21,11 +21,11 @@ class ScriptRunnerSecondBatchTest {
         assertEquals("launch_failed", run(script(ScriptStep.Launch()), Access(launchOk = false)).errorCode)
     }
 
-    @Test fun launchWaitAllowsFortyFiveSecondsAndClampsLargerValues() = runTest {
+    @Test fun launchWaitAllowsNinetySecondsAndClampsLargerValues() = runTest {
         val access = Access()
-        assertTrue(run(script(ScriptStep.Launch(waitMs = 45_000),
+        assertTrue(run(script(ScriptStep.Launch(waitMs = 90_000),
             ScriptStep.Launch(waitMs = 1_000_000)), access).success)
-        assertEquals(listOf(45_000L, 45_000L), access.waits)
+        assertEquals(listOf(90_000L, 90_000L), access.waits)
     }
 
     @Test fun containersAfterLaunchBypassGuardButChildrenStillRejectSystemUi() = runTest {
