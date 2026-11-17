@@ -13,8 +13,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.UUID
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -30,14 +32,43 @@ object ScriptRuntime {
     private val runner = ScriptRunner()
     private val json = Json { ignoreUnknownKeys = true }
 
-    @Serializable private data class Catalog(val scripts: List<RuntimeScript>)
+    @Volatile private var loadErrors: Map<String, String> = emptyMap()
+
+    internal fun decodeCatalog(content: String): List<RuntimeScript> {
+        loadErrors = emptyMap()
+        val root = json.parseToJsonElement(content)
+        val entries = when (root) {
+            is JsonArray -> root
+            is JsonObject -> root["scripts"] as? JsonArray ?: error("missing scripts array")
+            else -> error("invalid catalog root")
+        }
+        val errors = mutableMapOf<String, String>()
+        val scripts = entries.mapNotNull { entry ->
+            runCatching { json.decodeFromJsonElement<RuntimeScript>(entry) }.getOrElse { error ->
+                val id = ((entry as? JsonObject)?.get("id") as? JsonPrimitive)?.contentOrNull
+                if (id != null) errors[id] = error.message ?: error.javaClass.simpleName
+                null
+            }
+        }
+        loadErrors = errors.toMap()
+        return scripts
+    }
+
+    internal fun missingScriptError(scriptId: String): String =
+        if (loadErrors.containsKey(scriptId)) "invalid_script" else "script_not_found"
+
+    internal fun coldStartTapPoint(tapX: Int?, tapY: Int?, frameSize: Pair<Int, Int>?,
+        fallbackSize: () -> Pair<Int, Int>): Pair<Int, Int> {
+        if (tapX != null && tapY != null) return tapX to tapY
+        val (width, height) = frameSize ?: fallbackSize()
+        return (tapX ?: width / 2) to (tapY ?: height / 2)
+    }
 
     fun load(context: Context, scriptId: String): RuntimeScript? {
         val cache = ScriptCatalog.cacheFile(context)
         val content = if (cache.isFile) cache.readText()
             else context.assets.open("scripts.json").bufferedReader().use { it.readText() }
-        val scripts = if (content.trimStart().startsWith("[")) json.decodeFromString<List<RuntimeScript>>(content)
-            else json.decodeFromString<Catalog>(content).scripts
+        val scripts = decodeCatalog(content)
         return scripts.firstOrNull { it.id == scriptId }
     }
 
@@ -134,13 +165,21 @@ object ScriptRuntime {
     private suspend fun executeRun(context: Context, screenCapture: ScreenCapture?, scriptId: String,
         runId: String): ScriptRunResult {
         val store = ScriptRunStore(context.filesDir)
+        val startedAt = System.nanoTime()
+        fun earlyFailure(code: String): ScriptRunResult {
+            runCatching { store.append(ScriptLogEvent(
+                event = "run_end", scriptId = scriptId, runId = runId, ts = ScriptLogEvent.timestamp(),
+                success = false, durationMs = (System.nanoTime() - startedAt) / 1_000_000,
+                errorCode = code, message = "errorCode=$code ",
+            )) }
+            return ScriptRunResult(success = false, errorCode = code)
+        }
         runCatching { store.cleanupExpiredLogs() }
         val script = runCatching { load(context, scriptId) }.getOrElse {
-            return ScriptRunResult(success = false, errorCode = "invalid_script")
-        } ?: return ScriptRunResult(success = false, errorCode = "script_not_found")
+            return earlyFailure("invalid_script")
+        } ?: return earlyFailure(missingScriptError(scriptId))
         val service = HermesAccessibilityService.instance
-            ?: return ScriptRunResult(success = false, errorCode = "service_unavailable")
-        val startedAt = System.nanoTime()
+            ?: return earlyFailure("service_unavailable")
         val app = context.applicationContext as com.hermesandroid.relay.HermesRelayApp
         val connection = app.runtime.connectionViewModel
         val reporter = ScriptEventReporter(HttpScriptEventSender(
@@ -182,7 +221,7 @@ object ScriptRuntime {
         } catch (error: Throwable) {
             if (error is kotlinx.coroutines.CancellationException) throw error
             store.clearPending()
-            return ScriptRunResult(success = false, errorCode = "run_exception")
+            return earlyFailure("run_exception")
         } finally {
             keepAlive.cancel()
         }
@@ -306,9 +345,6 @@ object ScriptRuntime {
             tapX: Int?, tapY: Int?, bootWaitMs: Long, homeWaitMs: Long, intervalMs: Long,
             popupPage: String, popupX: Int, popupY: Int, maxPopups: Int): String {
             val started = monotonicMs()
-            val (screenWidth, screenHeight) = screenSize()
-            val tx = tapX ?: (screenWidth / 2)
-            val ty = tapY ?: (screenHeight / 2)
             var landscapeStreak = 0
             var lastLaunchAt = 0L
             var taps = 0
@@ -381,6 +417,11 @@ object ScriptRuntime {
                 if (lastPage == bootPage) {
                     if (firstBootAt == 0L) firstBootAt = monotonicMs()
                     if (taps < 3 && monotonicMs() - firstBootAt < 15_000) {
+                        val frame = if (tapX == null || tapY == null)
+                            runCatching { capture?.captureLocalFrame()?.getOrNull() }.getOrNull()
+                        else null
+                        val (tx, ty) = coldStartTapPoint(tapX, tapY,
+                            frame?.let { it.width to it.height }, ::screenSize)
                         tap(tx, ty)
                         taps++
                         delay(2_000)

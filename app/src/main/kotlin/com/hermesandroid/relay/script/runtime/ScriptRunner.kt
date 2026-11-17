@@ -81,9 +81,10 @@ class ScriptRunner {
                         outcome = stopped
                         break
                     }
-                    // coldStart 自己会拉起目标 App，跟 launch 一样豁免前台校验
+                    // 容器只调度子步骤；前台校验由子步骤各自执行。
                     if (step !is ScriptStep.Launch && step !is ScriptStep.ForceStop && step !is ScriptStep.ColdStart &&
-                        step !is ScriptStep.Page && step !is ScriptStep.IfVar) {
+                        step !is ScriptStep.Page && step !is ScriptStep.IfVar &&
+                    step !is ScriptStep.Loop && step !is ScriptStep.IfPage) {
                         ScriptGuard.rejection(access.foregroundPackage(), script.targetPackages)?.let { code ->
                             val entry = log(index, step, false, attempt, code)
                             logs += entry
@@ -228,7 +229,7 @@ class ScriptRunner {
             val pkg = step.packageName ?: targetPackages.firstOrNull()
                 ?: return StepOutcome(false, "launch_no_package", "invalid_script")
             if (!access.launchApp(pkg)) StepOutcome(false, "launch_failed", "launch_failed")
-            else { val wait = step.waitMs.coerceIn(0, 15_000); access.waitMs(wait); StepOutcome(true, "launch_wait_ms=$wait") }
+            else { val wait = step.waitMs.coerceIn(0, 45_000); access.waitMs(wait); StepOutcome(true, "launch_wait_ms=$wait") }
         }
         is ScriptStep.Page -> {
             val current = access.currentPage() ?: "other"
@@ -316,7 +317,8 @@ class ScriptRunner {
             do {
                 stopOutcome(access)?.let { return it }
                 if (step !is ScriptStep.Launch && step !is ScriptStep.ForceStop && step !is ScriptStep.ColdStart &&
-                    step !is ScriptStep.Page && step !is ScriptStep.IfVar)
+                    step !is ScriptStep.Page && step !is ScriptStep.IfVar &&
+                    step !is ScriptStep.Loop && step !is ScriptStep.IfPage)
                     ScriptGuard.rejection(access.foregroundPackage(), targetPackages)?.let { return StepOutcome(false, it, it) }
                 attempt++
                 outcome = execute(step, access, targetPackages, variables, depth)

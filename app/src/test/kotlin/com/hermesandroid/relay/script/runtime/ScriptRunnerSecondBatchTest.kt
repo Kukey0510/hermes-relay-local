@@ -12,13 +12,36 @@ class ScriptRunnerSecondBatchTest {
         val explicit = Access()
         assertTrue(run(script(ScriptStep.Launch("other", 99_999)), explicit).success)
         assertEquals(listOf("other"), explicit.launches)
-        assertEquals(listOf(15_000L), explicit.waits)
+        assertEquals(listOf(45_000L), explicit.waits)
 
         val fallback = Access()
         assertTrue(run(script(ScriptStep.Launch()), fallback).success)
         assertEquals(listOf("game.pkg"), fallback.launches)
         assertEquals("invalid_script", run(RuntimeScript("id", emptyList(), listOf(ScriptStep.Launch())), Access()).errorCode)
         assertEquals("launch_failed", run(script(ScriptStep.Launch()), Access(launchOk = false)).errorCode)
+    }
+
+    @Test fun launchWaitAllowsFortyFiveSecondsAndClampsLargerValues() = runTest {
+        val access = Access()
+        assertTrue(run(script(ScriptStep.Launch(waitMs = 45_000),
+            ScriptStep.Launch(waitMs = 1_000_000)), access).success)
+        assertEquals(listOf(45_000L, 45_000L), access.waits)
+    }
+
+    @Test fun containersAfterLaunchBypassGuardButChildrenStillRejectSystemUi() = runTest {
+        val delegate = Access()
+        val access = object : ScriptAccess by delegate {
+            override fun foregroundPackage() = "com.android.systemui"
+        }
+        val emptyContainers = script(ScriptStep.Launch(), ScriptStep.Loop(1, steps = listOf(
+            ScriptStep.IfPage("home", elseSteps = listOf(ScriptStep.Loop(1))))))
+        assertTrue(run(emptyContainers, access).success)
+        val guardedChild = script(ScriptStep.Launch(), ScriptStep.Loop(1, steps = listOf(
+            ScriptStep.IfPage("home", elseSteps = listOf(ScriptStep.Tap(1, 1))))))
+        val result = run(guardedChild, access)
+        assertFalse(result.success)
+        assertTrue(result.logs.last().message.contains("guard_system_ui"))
+        assertEquals(0, delegate.tapCalls)
     }
 
     @Test fun backSucceedsOrFailsWithOneAction() = runTest {

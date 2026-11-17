@@ -45,6 +45,7 @@ sealed interface ScriptStep {
         val until: String? = null, val steps: List<ScriptStep> = emptyList(),
         override val id: String? = null, override val timeoutMs: Long? = null,
         override val retries: Int = 0, val timesFrom: String? = null) : ScriptStep
+    /** wait_ms defaults to 0 and is clamped to 0..45_000 ms. */
     data class Launch(val packageName: String? = null, val waitMs: Long = 0,
         override val id: String? = null, override val timeoutMs: Long? = null,
         override val retries: Int = 0) : ScriptStep
@@ -73,7 +74,7 @@ sealed interface ScriptStep {
     /**
      * 冷启动到指定页的全自动流程，不依赖服务器逐步指挥：
      * 每 2 秒检查是否横屏（不在前台就再拉起一次），连续两次横屏才开始判页；
-     * 之后每 intervalMs 判一次页，命中 bootPage 就点 tapX/tapY（默认屏幕中心），
+     * 之后每 intervalMs 判一次页，命中 bootPage 就点 tapX/tapY（默认当前抓帧中心，无帧时退回屏幕尺寸），
      * 点完 2 秒复查，最多点 3 次；命中 homePage 立即结束。
      */
     data class ColdStart(val packageName: String? = null, val bootPage: String = "boot",
