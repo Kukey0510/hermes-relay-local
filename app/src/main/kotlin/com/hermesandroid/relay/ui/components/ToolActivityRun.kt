@@ -9,6 +9,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -33,6 +35,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -47,6 +50,18 @@ import com.hermesandroid.relay.data.isImageGenerationToolName
 import com.hermesandroid.relay.ui.components.pet.petObstacleSurface
 
 private val TOOL_ACTIVITY_PET_ROUTES = setOf("chat")
+
+/**
+ * Captions used to rely on the chat background alone, so with a user-picked photo behind
+ * them the grey tool/system lines washed out against the image. Give these rows their own
+ * themed surface so readability never depends on what the photo happens to contain.
+ */
+private val TOOL_CAPTION_SHAPE = RoundedCornerShape(10.dp)
+
+@Composable
+private fun Modifier.toolCaptionSurface(): Modifier = this
+    .clip(TOOL_CAPTION_SHAPE)
+    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.86f))
 private val FILE_EDIT_TOOLS = setOf("edit_file", "write_file", "apply_patch", "patch")
 private val ATTENTION_TOOLS = setOf(
     "clarify",
@@ -175,7 +190,7 @@ fun ToolActivityRun(
     ) {
         Row(
             modifier = Modifier
-                .fillMaxWidth()
+                .toolCaptionSurface()
                 .clickable(role = Role.Button) {
                     expanded = !expanded
                     onExpandedChange(expanded)
@@ -184,7 +199,7 @@ fun ToolActivityRun(
                     contentDescription = summary
                     stateDescription = expansionState
                 }
-                .padding(horizontal = 4.dp, vertical = 4.dp),
+                .padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
@@ -201,7 +216,7 @@ fun ToolActivityRun(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f, fill = false),
             )
             Icon(
                 imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
@@ -225,10 +240,13 @@ fun ToolActivityRun(
                 Text(
                     text = toolActivityTickerLabel(visible),
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(start = 26.dp, end = 4.dp, bottom = 4.dp),
+                    modifier = Modifier
+                        .padding(start = 26.dp, bottom = 4.dp)
+                        .toolCaptionSurface()
+                        .padding(horizontal = 8.dp, vertical = 3.dp),
                 )
             }
         }
