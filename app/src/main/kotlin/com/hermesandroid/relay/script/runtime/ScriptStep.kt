@@ -69,6 +69,12 @@ sealed interface ScriptStep {
         val thenSteps: List<ScriptStep> = emptyList(), val elseSteps: List<ScriptStep> = emptyList(),
         override val id: String? = null, override val timeoutMs: Long? = null,
         override val retries: Int = 0) : ScriptStep
+    data class Include(val script: String, override val id: String? = null,
+        override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
+    data class SetVar(val name: String, val value: String, override val id: String? = null,
+        override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
+    data class IncrVar(val name: String, val by: Long = 1, override val id: String? = null,
+        override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
     data class Back(override val id: String? = null, override val timeoutMs: Long? = null,
         override val retries: Int = 0) : ScriptStep
     data class WaitStable(val stableFrames: Int = 3, val intervalMs: Long = 250,
@@ -142,6 +148,9 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
             "page" -> ScriptStep.Page(text("as") ?: "page", id, timeout, retries, game())
             "if_var" -> ScriptStep.IfVar(required("name"), text("equals"), text("not_equals"),
                 steps("then"), steps("else"), id, timeout, retries)
+            "include" -> ScriptStep.Include(required("script"), id, timeout, retries)
+            "set_var" -> ScriptStep.SetVar(required("name"), required("value"), id, timeout, retries)
+            "incr_var" -> ScriptStep.IncrVar(required("name"), text("by")?.toLong() ?: 1, id, timeout, retries)
             "back" -> ScriptStep.Back(id, timeout, retries)
             "wait_stable" -> ScriptStep.WaitStable(text("frames")?.toInt() ?: 3,
                 text("interval_ms")?.toLong() ?: 250, text("timeout_ms")?.toLong() ?: 10_000,
@@ -209,6 +218,9 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
                 value.equals?.let { put("equals", it) }
                 value.notEquals?.let { put("not_equals", it) }
                 putSteps("then", value.thenSteps); putSteps("else", value.elseSteps) }
+            is ScriptStep.Include -> { put("op", "include"); put("script", value.script) }
+            is ScriptStep.SetVar -> { put("op", "set_var"); put("name", value.name); put("value", value.value) }
+            is ScriptStep.IncrVar -> { put("op", "incr_var"); put("name", value.name); put("by", value.by) }
             is ScriptStep.Back -> put("op", "back")
             is ScriptStep.WaitStable -> { put("op", "wait_stable"); put("frames", value.stableFrames)
                 put("interval_ms", value.intervalMs); put("timeout_ms", value.stableTimeoutMs); put("tolerance", value.tolerance) }
@@ -247,4 +259,5 @@ data class RuntimeScript(
     val orientation: String? = null,
     @SerialName("boot") val bootPage: String? = null,
     @SerialName("home") val homePage: String? = null,
+    @SerialName("auto_evidence") val autoEvidence: Boolean = true,
 )

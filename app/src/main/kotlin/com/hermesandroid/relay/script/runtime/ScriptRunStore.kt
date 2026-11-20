@@ -42,6 +42,24 @@ class ScriptRunStore(
         file.appendText(json.encodeToString(event) + "\n")
     }
 
+    /** Separate local evidence: never forwarded to the event reporter or outbox. */
+    @Synchronized
+    fun appendFailureEvidence(scriptId: String, runId: String, errorCode: String,
+        logs: List<ScriptRunLog>, snapshotTag: String, snapshotSaved: Boolean) {
+        val file = evidenceFile(runId)
+        logs.takeLast(20).forEach { log ->
+            file.appendText(json.encodeToString(ScriptLogEvent(
+                event = "step", scriptId = scriptId, runId = runId, ts = ScriptLogEvent.timestamp(clock),
+                stepIndex = log.stepIndex, op = log.op, success = log.success, attempts = log.attempts,
+                message = log.message, errorCode = errorCode, stepId = log.stepId,
+                snapshotTag = snapshotTag, snapshotSaved = snapshotSaved,
+            )) + "\n")
+        }
+    }
+
+    fun evidenceFile(runId: String): File = File(logsDir(),
+        "script-failure-${runId.replace(Regex("[^A-Za-z0-9_-]"), "_")}.jsonl")
+
     fun recentLines(limit: Int = 50): List<String> =
         if (!todayLogFile().isFile) emptyList() else todayLogFile().useLines { it.toList().takeLast(limit) }
 
@@ -79,6 +97,9 @@ data class ScriptLogEvent(
     val message: String? = null,
     val durationMs: Long? = null,
     val errorCode: String? = null,
+    val stepId: String? = null,
+    val snapshotTag: String? = null,
+    val snapshotSaved: Boolean? = null,
 ) {
     companion object {
         fun timestamp(clock: Clock = Clock.systemUTC()): String = Instant.now(clock).toString()

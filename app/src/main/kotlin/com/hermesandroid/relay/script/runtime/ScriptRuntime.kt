@@ -239,6 +239,11 @@ object ScriptRuntime {
                     script = script,
                     access = AndroidAccess(context, screenCapture, service),
                     runId = runId,
+                    resolveScript = { id ->
+                        load(context, id) ?: if (missingScriptError(id) == "invalid_script")
+                            error("invalid included script") else null
+                    },
+                    evidenceStore = store,
                     onRunStart = {
                         restoreStopRequest()
                         store.writePending(PendingScriptRun(script.id, runId, 0))

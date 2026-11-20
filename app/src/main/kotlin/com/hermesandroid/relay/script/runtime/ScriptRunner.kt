@@ -70,11 +70,15 @@ class ScriptRunner {
         runId: String = UUID.randomUUID().toString(),
         onRunStart: suspend () -> Unit = {},
         onStep: suspend (ScriptRunLog, Long) -> Unit = { _, _ -> },
+        resolveScript: (String) -> RuntimeScript? = { null },
+        evidenceStore: ScriptRunStore? = null,
     ): ScriptRunResult {
         if (!running.compareAndSet(false, true)) return ScriptRunResult(runId = runId, success = false, errorCode = "run_in_progress")
         ScriptRunControl.reset()
         val logs = mutableListOf<ScriptRunLog>()
-        val variables = script.vars.mapValuesTo(mutableMapOf()) { it.value.content }
+        val variables = RunVariables(resolveScript, mutableListOf(script.id)).apply {
+            putAll(script.vars.mapValues { it.value.content })
+        }
         try {
             runCatching { onRunStart() }
             var failure: String? = null
@@ -91,7 +95,7 @@ class ScriptRunner {
                     // 容器只调度子步骤；前台校验由子步骤各自执行。
                     if (step !is ScriptStep.Launch && step !is ScriptStep.ForceStop && step !is ScriptStep.ColdStart &&
                         step !is ScriptStep.WaitForeground && step !is ScriptStep.Page && step !is ScriptStep.IfVar &&
-                    step !is ScriptStep.Loop && step !is ScriptStep.IfPage) {
+                    step !is ScriptStep.Loop && step !is ScriptStep.IfPage && step !is ScriptStep.Include) {
                         ScriptGuard.rejection(access.foregroundPackage(), script.targetPackages)?.let { code ->
                             val entry = log(index, step, false, attempt, code)
                             logs += entry
@@ -113,13 +117,20 @@ class ScriptRunner {
                     break
                 }
             }
+            val failedStepIndex = logs.lastOrNull()?.stepIndex ?: 0
             if (failure != null && failure !in setOf("cancelled", "screen_off")) runOnFail(script, access, variables, logs, onStep)
             stopOutcome(access)?.let { failure = it.errorCode }
+            val evidenceError = failure
+            if (script.autoEvidence && evidenceError != null && evidenceError !in setOf("cancelled", "screen_off")) {
+                val tag = "fail_${script.id}_$failedStepIndex"
+                val saved = runCatching { access.saveSnapshot(tag) }.getOrDefault(false)
+                runCatching { evidenceStore?.appendFailureEvidence(script.id, runId, evidenceError, logs, tag, saved) }
+            }
             return ScriptRunResult(runId = runId, success = failure == null, errorCode = failure, logs = logs)
         } finally { running.set(false) }
     }
 
-    private suspend fun runOnFail(script: RuntimeScript, access: ScriptAccess, variables: MutableMap<String, String>,
+    private suspend fun runOnFail(script: RuntimeScript, access: ScriptAccess, variables: RunVariables,
         logs: MutableList<ScriptRunLog>, onStep: suspend (ScriptRunLog, Long) -> Unit) {
         val started = access.monotonicMs()
         for (step in script.onFail.take(10)) {
@@ -133,7 +144,7 @@ class ScriptRunner {
             if (remaining <= 0) break
             val stepStarted = System.nanoTime()
             val guarded = if (step is ScriptStep.Launch || step is ScriptStep.ForceStop || step is ScriptStep.Page ||
-                step is ScriptStep.IfVar || step is ScriptStep.WaitForeground) null
+                step is ScriptStep.IfVar || step is ScriptStep.WaitForeground || step is ScriptStep.Include) null
                 else ScriptGuard.rejection(access.foregroundPackage(), script.targetPackages)
             val performed = guarded?.let { StepOutcome(false, it, it) } ?: withTimeoutOrNull(remaining) {
                 execute(step, access, script.targetPackages, variables)
@@ -147,7 +158,7 @@ class ScriptRunner {
     }
 
     private suspend fun execute(step: ScriptStep, access: ScriptAccess, targetPackages: Collection<String>,
-        variables: MutableMap<String, String>, depth: Int = 0): StepOutcome {
+        variables: RunVariables, depth: Int = 0): StepOutcome {
         if (depth > 8) return StepOutcome(false, "nesting_too_deep", "invalid_script")
         stopOutcome(access)?.let { return it }
         // Polling primitives own their deadlines and timeout result messages.
@@ -165,134 +176,161 @@ class ScriptRunner {
     }
 
     private suspend fun perform(step: ScriptStep, access: ScriptAccess, targetPackages: Collection<String>,
-        variables: MutableMap<String, String>, depth: Int): StepOutcome = when (step) {
-        is ScriptStep.Tap -> StepOutcome(access.tap(step.x, step.y), "tap")
-        is ScriptStep.TapText -> StepOutcome(access.tapText(substitute(step.text, variables)), "tapText")
-        is ScriptStep.Wait -> {
-            val clamped = step.ms.coerceIn(0, 30_000)
-            access.waitMs(clamped); StepOutcome(true, "wait_ms=$clamped")
-        }
-        is ScriptStep.Probe -> StepOutcome(access.probe(step.expect, step.timeoutMs ?: 3_000, step.game), "probe=${step.expect}")
-        is ScriptStep.Read -> access.read(step.field)?.let { value ->
-            firstNumber(value)?.let { variables[step.asName] = it }
-            StepOutcome(true, "${step.field}=$value")
-        } ?: if (step.optional) {
-            variables[step.asName] = ""
-            StepOutcome(true, "read_optional:${step.field}=null")
-        } else StepOutcome(false, "read_failed:${step.field}")
-        is ScriptStep.Swipe -> {
-            val (width, height) = access.screenSize()
-            val maxX = (width - 1).coerceAtLeast(0)
-            val maxY = (height - 1).coerceAtLeast(0)
-            val duration = step.durationMs.coerceIn(50, 2_000)
-            StepOutcome(access.swipe(step.fromX.coerceIn(0, maxX), step.fromY.coerceIn(0, maxY),
-                step.toX.coerceIn(0, maxX), step.toY.coerceIn(0, maxY), duration), "swipe")
-        }
-        is ScriptStep.TapIfText -> {
-            val text = substitute(step.text, variables)
-            val found = access.tapText(text)
-            if (found) StepOutcome(true, "tapIfText") else StepOutcome(step.optional, "absent:$text")
-        }
-        is ScriptStep.IfPage -> {
-            val expect = substitute(step.expect, variables)
-            val branch = if (access.probe(expect, step.timeoutMs ?: 3_000, step.game)) step.thenSteps else step.elseSteps
-            performChildren(branch, access, targetPackages, variables, "if_page", depth + 1)
-        }
-        is ScriptStep.Loop -> {
-            val fromVariable = step.timesFrom?.let { variables[it] }?.let(::firstNumber)?.toIntOrNull()
-            val times = fromVariable ?: step.times
-            val fallback = step.timesFrom != null && fromVariable == null
-            if (times !in 1..100 || step.maxTotalMs < 0) {
-                StepOutcome(false, "invalid_loop", "invalid_script")
-            } else {
-                val maxTotalMs = step.maxTotalMs.takeIf { it > 0 } ?: 600_000
-                val started = access.monotonicMs()
-                var outcome = StepOutcome(true, if (fallback) "loop_stop:times;times_fallback" else "loop_stop:times")
-                for (iteration in 0 until times) {
-                    stopOutcome(access)?.let { return it }
-                    if (access.monotonicMs() - started >= maxTotalMs) { outcome = StepOutcome(true, "loop_stop:max_total_ms"); break }
-                    val child = performChildren(step.steps, access, targetPackages, variables, "loop", depth + 1)
-                    if (!child.ok) return child
-                    if (access.monotonicMs() - started >= maxTotalMs) { outcome = StepOutcome(true, "loop_stop:max_total_ms"); break }
-                    val until = step.until?.let { substitute(it, variables) }
-                    if (until != null && access.probe(until, 1_000)) return StepOutcome(true, "loop_stop:until")
+        variables: RunVariables, depth: Int): StepOutcome {
+        return when (step) {
+            is ScriptStep.Tap -> StepOutcome(access.tap(step.x, step.y), "tap")
+            is ScriptStep.TapText -> StepOutcome(access.tapText(substitute(step.text, variables)), "tapText")
+            is ScriptStep.Wait -> {
+                val clamped = step.ms.coerceIn(0, 30_000)
+                access.waitMs(clamped); StepOutcome(true, "wait_ms=$clamped")
+            }
+            is ScriptStep.Probe -> StepOutcome(access.probe(step.expect, step.timeoutMs ?: 3_000, step.game), "probe=${step.expect}")
+            is ScriptStep.Read -> access.read(step.field)?.let { value ->
+                firstNumber(value)?.let { variables[step.asName] = it }
+                StepOutcome(true, "${step.field}=$value")
+            } ?: if (step.optional) {
+                variables[step.asName] = ""
+                StepOutcome(true, "read_optional:${step.field}=null")
+            } else StepOutcome(false, "read_failed:${step.field}")
+            is ScriptStep.Swipe -> {
+                val (width, height) = access.screenSize()
+                val maxX = (width - 1).coerceAtLeast(0)
+                val maxY = (height - 1).coerceAtLeast(0)
+                val duration = step.durationMs.coerceIn(50, 2_000)
+                StepOutcome(access.swipe(step.fromX.coerceIn(0, maxX), step.fromY.coerceIn(0, maxY),
+                    step.toX.coerceIn(0, maxX), step.toY.coerceIn(0, maxY), duration), "swipe")
+            }
+            is ScriptStep.TapIfText -> {
+                val text = substitute(step.text, variables)
+                val found = access.tapText(text)
+                if (found) StepOutcome(true, "tapIfText") else StepOutcome(step.optional, "absent:$text")
+            }
+            is ScriptStep.IfPage -> {
+                val expect = substitute(step.expect, variables)
+                val branch = if (access.probe(expect, step.timeoutMs ?: 3_000, step.game)) step.thenSteps else step.elseSteps
+                performChildren(branch, access, targetPackages, variables, "if_page", depth + 1)
+            }
+            is ScriptStep.Loop -> {
+                val fromVariable = step.timesFrom?.let { variables[it] }?.let(::firstNumber)?.toIntOrNull()
+                val times = fromVariable ?: step.times
+                val fallback = step.timesFrom != null && fromVariable == null
+                if (times !in 1..100 || step.maxTotalMs < 0) {
+                    StepOutcome(false, "invalid_loop", "invalid_script")
+                } else {
+                    val maxTotalMs = step.maxTotalMs.takeIf { it > 0 } ?: 600_000
+                    val started = access.monotonicMs()
+                    var outcome = StepOutcome(true, if (fallback) "loop_stop:times;times_fallback" else "loop_stop:times")
+                    for (iteration in 0 until times) {
+                        stopOutcome(access)?.let { return it }
+                        if (access.monotonicMs() - started >= maxTotalMs) { outcome = StepOutcome(true, "loop_stop:max_total_ms"); break }
+                        val child = performChildren(step.steps, access, targetPackages, variables, "loop", depth + 1)
+                        if (!child.ok) return child
+                        if (access.monotonicMs() - started >= maxTotalMs) { outcome = StepOutcome(true, "loop_stop:max_total_ms"); break }
+                        val until = step.until?.let { substitute(it, variables) }
+                        if (until != null && access.probe(until, 1_000)) return StepOutcome(true, "loop_stop:until")
+                    }
+                    outcome
                 }
-                outcome
             }
-        }
-        is ScriptStep.ForceStop -> {
-            try {
-                if (access.forceStop(step.packageName, step.waitMs.coerceIn(0, 10_000)))
-                    StepOutcome(true, "force_stop:${step.packageName}")
-                else StepOutcome(false, if (access.forceStopFailureReason == "force_stop_button_missing")
-                    "force_stop_button_missing" else "force_stop_failed:${access.forceStopFailureReason}")
-            } catch (cancel: kotlinx.coroutines.CancellationException) {
-                throw cancel
-            } catch (error: Exception) {
-                StepOutcome(false, "force_stop_failed:${error.javaClass.simpleName}")
+            is ScriptStep.ForceStop -> {
+                try {
+                    if (access.forceStop(step.packageName, step.waitMs.coerceIn(0, 10_000)))
+                        StepOutcome(true, "force_stop:${step.packageName}")
+                    else StepOutcome(false, if (access.forceStopFailureReason == "force_stop_button_missing")
+                        "force_stop_button_missing" else "force_stop_failed:${access.forceStopFailureReason}")
+                } catch (cancel: kotlinx.coroutines.CancellationException) {
+                    throw cancel
+                } catch (error: Exception) {
+                    StepOutcome(false, "force_stop_failed:${error.javaClass.simpleName}")
+                }
             }
-        }
-        is ScriptStep.Launch -> {
-            val pkg = step.packageName ?: targetPackages.firstOrNull()
-                ?: return StepOutcome(false, "launch_no_package", "invalid_script")
-            if (!access.launchApp(pkg)) StepOutcome(false, "launch_failed", "launch_failed")
-            else { val wait = step.waitMs.coerceIn(0, 90_000); access.waitMs(wait); StepOutcome(true, "launch_wait_ms=$wait") }
-        }
-        is ScriptStep.Page -> {
-            val current = access.currentPage(step.game) ?: "other"
-            variables[step.asName] = current
-            StepOutcome(true, "page=$current as=${step.asName}")
-        }
-        is ScriptStep.IfVar -> {
-            val value = variables[step.name] ?: ""
-            val hit = when {
-                step.notEquals != null -> value != step.notEquals
-                step.equals != null -> value == step.equals
-                else -> false
+            is ScriptStep.Launch -> {
+                val pkg = step.packageName ?: targetPackages.firstOrNull()
+                    ?: return StepOutcome(false, "launch_no_package", "invalid_script")
+                if (!access.launchApp(pkg)) StepOutcome(false, "launch_failed", "launch_failed")
+                else { val wait = step.waitMs.coerceIn(0, 90_000); access.waitMs(wait); StepOutcome(true, "launch_wait_ms=$wait") }
             }
-            performChildren(if (hit) step.thenSteps else step.elseSteps, access, targetPackages, variables, "if_var", depth + 1)
-        }
-        is ScriptStep.Back -> {
-            val ok = access.back()
-            StepOutcome(ok, if (ok) "back" else "back_failed")
-        }
-        is ScriptStep.WaitForeground -> waitForeground(step, access, targetPackages)
-        is ScriptStep.WaitStable -> waitStable(step, access)
-        is ScriptStep.ColdStart -> {
-            val message = access.coldStartTo(step.packageName ?: targetPackages.firstOrNull(), step.bootPage, step.homePage,
-                step.tapX, step.tapY, step.bootWaitMs, step.homeWaitMs, step.intervalMs,
-                step.popupPage, step.popupX, step.popupY, step.maxPopups, step.accept, step.orientation)
-            val code = when {
-                message.startsWith("fail:cancelled") -> "cancelled"
-                message.startsWith("fail:screen_off") -> "screen_off"
-                else -> null
+            is ScriptStep.Page -> {
+                val current = access.currentPage(step.game) ?: "other"
+                variables[step.asName] = current
+                StepOutcome(true, "page=$current as=${step.asName}")
             }
-            StepOutcome(message.startsWith("ok"), message, code)
-        }
-        is ScriptStep.Snapshot -> {
-            val tag = step.tag.replace(Regex("[^A-Za-z0-9_-]"), "_").take(32).ifEmpty { "_" }
-            val ok = access.saveSnapshot(tag)
-            StepOutcome(ok, if (ok) "snapshot:$tag" else "capture_failed")
-        }
-        is ScriptStep.TapWeakest -> {
-            val fallback = step.fallbackIndex.coerceIn(0, 3)
-            val minConfidence = step.minConfidence.coerceIn(0.0, 1.0)
-            val recognition = access.recognizePowers(minConfidence)
-            val cards = recognition?.cards.orEmpty()
-            val sums = (0..3).map { index -> cards.getOrNull(index)?.takeIf { it.size == 2 && it.all { reading ->
-                reading.value != null && (reading.confidence < 0f || reading.confidence >= minConfidence)
-            } }
-                ?.sumOf { it.value!! } }
-            val selected = sums.withIndex().filter { it.value != null }.minByOrNull { it.value!! }?.index ?: fallback
-            val isFallback = sums.all { it == null }
-            val tapped = step.dry || access.tap(CARD_CENTERS[selected], CARD_CENTER_Y)
-            val readings = (0..3).joinToString(";") { card ->
-                val rows = cards.getOrNull(card).orEmpty()
-                "$card:${rows.getOrNull(0)?.value ?: "?"}@${rows.getOrNull(0)?.confidence ?: -1f}+" +
-                    "${rows.getOrNull(1)?.value ?: "?"}@${rows.getOrNull(1)?.confidence ?: -1f}=${sums[card] ?: "?"}"
+            is ScriptStep.IfVar -> {
+                val value = variables[step.name] ?: ""
+                val hit = when {
+                    step.notEquals != null -> value != step.notEquals
+                    step.equals != null -> value == step.equals
+                    else -> false
+                }
+                performChildren(if (hit) step.thenSteps else step.elseSteps, access, targetPackages, variables, "if_var", depth + 1)
             }
-            val event = if (isFallback) "power_fallback" else "power_selected"
-            StepOutcome(tapped, "$event cards=[$readings] selected=$selected duration_ms=${recognition?.durationMs ?: 0} dry=${step.dry}")
+            is ScriptStep.Include -> {
+                if (step.script in variables.includeStack) return StepOutcome(false, "include_cycle:${step.script}", "invalid_script")
+                val included = try {
+                    variables.resolveScript(step.script)
+                } catch (cancel: kotlinx.coroutines.CancellationException) {
+                    throw cancel
+                } catch (_: Exception) {
+                    return StepOutcome(false, "include_invalid:${step.script}", "invalid_script")
+                } ?: return StepOutcome(false, "include_missing:${step.script}", "script_not_found")
+                variables.includeStack += step.script
+                try {
+                    performChildren(included.steps, access, targetPackages, variables, "include", depth + 1)
+                } finally {
+                    variables.includeStack.removeAt(variables.includeStack.lastIndex)
+                }
+            }
+            is ScriptStep.SetVar -> {
+                variables[step.name] = substitute(step.value, variables)
+                StepOutcome(true, "set_var:${step.name}")
+            }
+            is ScriptStep.IncrVar -> {
+                val value = variables[step.name]?.toLongOrNull() ?: 0L
+                variables[step.name] = (value + step.by).toString()
+                StepOutcome(true, "incr_var:${step.name}")
+            }
+            is ScriptStep.Back -> {
+                val ok = access.back()
+                StepOutcome(ok, if (ok) "back" else "back_failed")
+            }
+            is ScriptStep.WaitForeground -> waitForeground(step, access, targetPackages)
+            is ScriptStep.WaitStable -> waitStable(step, access)
+            is ScriptStep.ColdStart -> {
+                val message = access.coldStartTo(step.packageName ?: targetPackages.firstOrNull(), step.bootPage, step.homePage,
+                    step.tapX, step.tapY, step.bootWaitMs, step.homeWaitMs, step.intervalMs,
+                    step.popupPage, step.popupX, step.popupY, step.maxPopups, step.accept, step.orientation)
+                val code = when {
+                    message.startsWith("fail:cancelled") -> "cancelled"
+                    message.startsWith("fail:screen_off") -> "screen_off"
+                    else -> null
+                }
+                StepOutcome(message.startsWith("ok"), message, code)
+            }
+            is ScriptStep.Snapshot -> {
+                val tag = step.tag.replace(Regex("[^A-Za-z0-9_-]"), "_").take(32).ifEmpty { "_" }
+                val ok = access.saveSnapshot(tag)
+                StepOutcome(ok, if (ok) "snapshot:$tag" else "capture_failed")
+            }
+            is ScriptStep.TapWeakest -> {
+                val fallback = step.fallbackIndex.coerceIn(0, 3)
+                val minConfidence = step.minConfidence.coerceIn(0.0, 1.0)
+                val recognition = access.recognizePowers(minConfidence)
+                val cards = recognition?.cards.orEmpty()
+                val sums = (0..3).map { index -> cards.getOrNull(index)?.takeIf { it.size == 2 && it.all { reading ->
+                    reading.value != null && (reading.confidence < 0f || reading.confidence >= minConfidence)
+                } }
+                    ?.sumOf { it.value!! } }
+                val selected = sums.withIndex().filter { it.value != null }.minByOrNull { it.value!! }?.index ?: fallback
+                val isFallback = sums.all { it == null }
+                val tapped = step.dry || access.tap(CARD_CENTERS[selected], CARD_CENTER_Y)
+                val readings = (0..3).joinToString(";") { card ->
+                    val rows = cards.getOrNull(card).orEmpty()
+                    "$card:${rows.getOrNull(0)?.value ?: "?"}@${rows.getOrNull(0)?.confidence ?: -1f}+" +
+                        "${rows.getOrNull(1)?.value ?: "?"}@${rows.getOrNull(1)?.confidence ?: -1f}=${sums[card] ?: "?"}"
+                }
+                val event = if (isFallback) "power_fallback" else "power_selected"
+                StepOutcome(tapped, "$event cards=[$readings] selected=$selected duration_ms=${recognition?.durationMs ?: 0} dry=${step.dry}")
+            }
         }
     }
 
@@ -340,7 +378,7 @@ class ScriptRunner {
     }
 
     private suspend fun performChildren(steps: List<ScriptStep>, access: ScriptAccess,
-        targetPackages: Collection<String>, variables: MutableMap<String, String>, owner: String, depth: Int = 0): StepOutcome {
+        targetPackages: Collection<String>, variables: RunVariables, owner: String, depth: Int = 0): StepOutcome {
         if (depth > 8) return StepOutcome(false, "nesting_too_deep", "invalid_script")
         for (step in steps) {
             var attempt = 0
@@ -349,7 +387,7 @@ class ScriptRunner {
                 stopOutcome(access)?.let { return it }
                 if (step !is ScriptStep.Launch && step !is ScriptStep.ForceStop && step !is ScriptStep.ColdStart &&
                     step !is ScriptStep.WaitForeground && step !is ScriptStep.Page && step !is ScriptStep.IfVar &&
-                    step !is ScriptStep.Loop && step !is ScriptStep.IfPage)
+                    step !is ScriptStep.Loop && step !is ScriptStep.IfPage && step !is ScriptStep.Include)
                     ScriptGuard.rejection(access.foregroundPackage(), targetPackages)?.let { return StepOutcome(false, it, it) }
                 attempt++
                 outcome = execute(step, access, targetPackages, variables, depth)
@@ -372,6 +410,7 @@ class ScriptRunner {
             is ScriptStep.ForceStop -> "force_stop"
             is ScriptStep.Launch -> "launch"; is ScriptStep.Back -> "back"; is ScriptStep.WaitStable -> "wait_stable"
             is ScriptStep.Page -> "page"; is ScriptStep.IfVar -> "if_var"
+            is ScriptStep.Include -> "include"; is ScriptStep.SetVar -> "set_var"; is ScriptStep.IncrVar -> "incr_var"
             is ScriptStep.Snapshot -> "snapshot"
             is ScriptStep.TapWeakest -> "tapWeakest"
             is ScriptStep.ColdStart -> "coldStart"
@@ -383,6 +422,12 @@ class ScriptRunner {
         !access.screenOn() -> StepOutcome(false, "screen_off", "screen_off")
         else -> null
     }
+
+    /** Per-run state; include only shares variables, never child defaults or failure handlers. */
+    private class RunVariables(
+        val resolveScript: (String) -> RuntimeScript?,
+        val includeStack: MutableList<String>,
+    ) : LinkedHashMap<String, String>()
 
     private data class StepOutcome(val ok: Boolean, val message: String, val errorCode: String? = null) {
         val isTerminal: Boolean get() = errorCode == "cancelled" || errorCode == "screen_off"
