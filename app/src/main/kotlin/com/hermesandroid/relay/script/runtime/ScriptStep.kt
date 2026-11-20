@@ -21,6 +21,12 @@ sealed interface ScriptStep {
     val timeoutMs: Long?
     val retries: Int
 
+    data class Pause(val reason: String = "need_help", val pauseTimeoutMs: Long = 600_000,
+        override val id: String? = null, override val timeoutMs: Long? = null,
+        override val retries: Int = 0) : ScriptStep
+    data class AskServer(val reason: String = "need_help", val pauseTimeoutMs: Long = 600_000,
+        val thenSteps: List<ScriptStep> = emptyList(), override val id: String? = null,
+        override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
     data class Tap(val x: Int, val y: Int, override val id: String? = null,
         override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
     data class TapText(val text: String, override val id: String? = null,
@@ -127,6 +133,8 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
             kotlinx.serialization.json.Json.decodeFromJsonElement(this, it)
         } ?: emptyList()
         return when (val op = required("op")) {
+            "pause" -> ScriptStep.Pause(text("reason") ?: "need_help", (timeout ?: 600_000).coerceIn(0, 3_600_000), id, retries = retries)
+            "ask_server" -> ScriptStep.AskServer(text("reason") ?: "need_help", (timeout ?: 600_000).coerceIn(0, 3_600_000), steps("then"), id, retries = retries)
             "tap" -> ScriptStep.Tap(required("x").toInt(), required("y").toInt(), id, timeout, retries)
             "tapText" -> ScriptStep.TapText(required("text"), id, timeout, retries)
             "wait" -> ScriptStep.Wait(required("ms").toLong(), id, timeout, retries)
@@ -191,6 +199,9 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
             fields[name] = JsonArray(value.map { kotlinx.serialization.json.Json.encodeToJsonElement(this, it) })
         }
         when (value) {
+            is ScriptStep.Pause -> { put("op", "pause"); put("reason", value.reason); put("timeout_ms", value.pauseTimeoutMs.coerceIn(0, 3_600_000)) }
+            is ScriptStep.AskServer -> { put("op", "ask_server"); put("reason", value.reason)
+                put("timeout_ms", value.pauseTimeoutMs.coerceIn(0, 3_600_000)); putSteps("then", value.thenSteps) }
             is ScriptStep.Tap -> { put("op", "tap"); put("x", value.x); put("y", value.y) }
             is ScriptStep.TapText -> { put("op", "tapText"); put("text", value.text) }
             is ScriptStep.Wait -> { put("op", "wait"); put("ms", value.ms) }
@@ -239,7 +250,7 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
                 put("orientation", value.orientation) }
         }
         value.id?.let { put("id", it) }
-        value.timeoutMs?.let { put("timeout_ms", it) }
+        if (value !is ScriptStep.Pause && value !is ScriptStep.AskServer) value.timeoutMs?.let { put("timeout_ms", it) }
         if (value.retries != 0) put("retries", value.retries)
         (encoder as? JsonEncoder)?.encodeJsonElement(JsonObject(fields))
             ?: error("ScriptStep only supports JSON")

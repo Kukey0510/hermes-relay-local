@@ -450,6 +450,10 @@ class BridgeCommandHandler(
             })
             return
         }
+        if (path.substringBefore('?').trimEnd('/') == "/script/resume" && method.equals("POST", ignoreCase = true)) {
+            respond(requestId, 200, com.hermesandroid.relay.script.runtime.ScriptRuntime.resume(body))
+            return
+        }
         // Resolve path + method through the closed capability registry before
         // any wake, confirmation, event read, executor, or run-tracker effect.
         val registeredAuthority =

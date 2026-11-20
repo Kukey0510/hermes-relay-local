@@ -107,7 +107,20 @@ object ScriptRuntime {
         kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default,
     )
 
-    @Synchronized fun status(runId: String): RunStatus? = history[runId]
+    @Synchronized fun status(runId: String): RunStatus? = history[runId]?.let {
+        if (runId == activeRunId && ScriptRunControl.isPaused(runId)) it.copy(state = "paused") else it
+    }
+
+    /** Same JSON response contract for local and bridge callers. */
+    @Synchronized fun resume(body: JsonObject): JsonObject {
+        val runId = (body["runId"] as? JsonPrimitive)?.content.orEmpty()
+        if (runId != activeRunId || history[runId]?.finishedAt != null) return buildJsonObject {
+            put("ok", false); put("error", "run_not_found")
+        }
+        val steps = body["steps"]?.let { json.decodeFromJsonElement<List<ScriptStep>>(it) }
+        ScriptRunControl.resume(runId, steps)
+        return buildJsonObject { put("ok", true); put("runId", runId); put("resumed", true) }
+    }
 
     @Synchronized fun isRunning(): Boolean = activeRunId != null
 
@@ -248,6 +261,13 @@ object ScriptRuntime {
                         restoreStopRequest()
                         store.writePending(PendingScriptRun(script.id, runId, 0))
                         store.append(ScriptLogEvent("run_start", script.id, runId, ScriptLogEvent.timestamp()))
+                    },
+                    onPause = { event ->
+                        runCatching { store.append(ScriptLogEvent(
+                            event = event.op, scriptId = script.id, runId = runId,
+                            ts = event.ts, stepIndex = event.stepIndex, op = event.op, message = event.message,
+                        )) }
+                        reporter.report(event)
                     },
                     onStep = { log, durationMs ->
                         stepCompleted(runId, log.stepIndex)

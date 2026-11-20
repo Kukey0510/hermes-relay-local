@@ -17,6 +17,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
 @Serializable
 data class ScriptEvent(
     val scriptId: String,
@@ -26,6 +27,10 @@ data class ScriptEvent(
     val op: String,
     val message: String,
     val ts: String,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val page: String? = null,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val lastStep: String? = null,
 )
 
 fun interface ScriptEventSender { suspend fun send(event: ScriptEvent) }

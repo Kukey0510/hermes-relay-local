@@ -72,17 +72,19 @@ class ScriptRunner {
         onStep: suspend (ScriptRunLog, Long) -> Unit = { _, _ -> },
         resolveScript: (String) -> RuntimeScript? = { null },
         evidenceStore: ScriptRunStore? = null,
+        onPause: suspend (ScriptEvent) -> Unit = {},
     ): ScriptRunResult {
         if (!running.compareAndSet(false, true)) return ScriptRunResult(runId = runId, success = false, errorCode = "run_in_progress")
         ScriptRunControl.reset()
         val logs = mutableListOf<ScriptRunLog>()
-        val variables = RunVariables(resolveScript, mutableListOf(script.id)).apply {
+        val variables = RunVariables(resolveScript, mutableListOf(script.id), script.id, runId, onPause).apply {
             putAll(script.vars.mapValues { it.value.content })
         }
         try {
             runCatching { onRunStart() }
             var failure: String? = null
             for ((index, step) in script.steps.withIndex()) {
+                variables.stepIndex = index
                 val startedAt = System.nanoTime()
                 var attempt = 0
                 var outcome = StepOutcome(false, "not_executed")
@@ -95,7 +97,8 @@ class ScriptRunner {
                     // 容器只调度子步骤；前台校验由子步骤各自执行。
                     if (step !is ScriptStep.Launch && step !is ScriptStep.ForceStop && step !is ScriptStep.ColdStart &&
                         step !is ScriptStep.WaitForeground && step !is ScriptStep.Page && step !is ScriptStep.IfVar &&
-                    step !is ScriptStep.Loop && step !is ScriptStep.IfPage && step !is ScriptStep.Include) {
+                    step !is ScriptStep.Loop && step !is ScriptStep.IfPage && step !is ScriptStep.Include &&
+                        step !is ScriptStep.Pause && step !is ScriptStep.AskServer) {
                         ScriptGuard.rejection(access.foregroundPackage(), script.targetPackages)?.let { code ->
                             val entry = log(index, step, false, attempt, code)
                             logs += entry
@@ -127,7 +130,7 @@ class ScriptRunner {
                 runCatching { evidenceStore?.appendFailureEvidence(script.id, runId, evidenceError, logs, tag, saved) }
             }
             return ScriptRunResult(runId = runId, success = failure == null, errorCode = failure, logs = logs)
-        } finally { running.set(false) }
+        } finally { ScriptRunControl.endPause(); running.set(false) }
     }
 
     private suspend fun runOnFail(script: RuntimeScript, access: ScriptAccess, variables: RunVariables,
@@ -144,7 +147,8 @@ class ScriptRunner {
             if (remaining <= 0) break
             val stepStarted = System.nanoTime()
             val guarded = if (step is ScriptStep.Launch || step is ScriptStep.ForceStop || step is ScriptStep.Page ||
-                step is ScriptStep.IfVar || step is ScriptStep.WaitForeground || step is ScriptStep.Include) null
+                step is ScriptStep.IfVar || step is ScriptStep.WaitForeground || step is ScriptStep.Include ||
+                step is ScriptStep.Pause || step is ScriptStep.AskServer) null
                 else ScriptGuard.rejection(access.foregroundPackage(), script.targetPackages)
             val performed = guarded?.let { StepOutcome(false, it, it) } ?: withTimeoutOrNull(remaining) {
                 execute(step, access, script.targetPackages, variables)
@@ -162,11 +166,14 @@ class ScriptRunner {
         if (depth > 8) return StepOutcome(false, "nesting_too_deep", "invalid_script")
         stopOutcome(access)?.let { return it }
         // Polling primitives own their deadlines and timeout result messages.
-        val timeout = if (step is ScriptStep.Probe || step is ScriptStep.WaitForeground) null else step.timeoutMs?.coerceAtLeast(1)
+        val timeout = if (step is ScriptStep.Probe || step is ScriptStep.WaitForeground ||
+            step is ScriptStep.Pause || step is ScriptStep.AskServer) null else step.timeoutMs?.coerceAtLeast(1)
         return try {
-            if (timeout == null) perform(step, access, targetPackages, variables, depth)
+            val result = if (timeout == null) perform(step, access, targetPackages, variables, depth)
             else withTimeoutOrNull(timeout) { perform(step, access, targetPackages, variables, depth) }
                 ?: StepOutcome(false, "timeout", "step_timeout")
+            variables.lastStep = step.id ?: log(0, step, result.ok, 1, result.message).op
+            result
         } catch (cancel: kotlinx.coroutines.CancellationException) {
             throw cancel
         } catch (error: Throwable) {
@@ -178,6 +185,8 @@ class ScriptRunner {
     private suspend fun perform(step: ScriptStep, access: ScriptAccess, targetPackages: Collection<String>,
         variables: RunVariables, depth: Int): StepOutcome {
         return when (step) {
+            is ScriptStep.Pause -> pause(step.reason, step.pauseTimeoutMs, false, emptyList(), access, targetPackages, variables, depth)
+            is ScriptStep.AskServer -> pause(step.reason, step.pauseTimeoutMs, true, step.thenSteps, access, targetPackages, variables, depth)
             is ScriptStep.Tap -> StepOutcome(access.tap(step.x, step.y), "tap")
             is ScriptStep.TapText -> StepOutcome(access.tapText(substitute(step.text, variables)), "tapText")
             is ScriptStep.Wait -> {
@@ -334,6 +343,29 @@ class ScriptRunner {
         }
     }
 
+    private suspend fun pause(reason: String, timeoutMs: Long, askServer: Boolean,
+        thenSteps: List<ScriptStep>, access: ScriptAccess, targetPackages: Collection<String>,
+        variables: RunVariables, depth: Int): StepOutcome {
+        // Capture context before entering paused state; waiting performs no device access.
+        val page = if (askServer) access.currentPage() else null
+        val signal = ScriptRunControl.beginPause(variables.runId)
+        val resumed = try {
+            variables.onPause(ScriptEvent(variables.scriptId, variables.runId, "warn", variables.stepIndex,
+                if (askServer) "ask_server" else "pause", reason, java.time.Instant.now().toString(),
+                page, if (askServer) variables.lastStep else null))
+            withTimeoutOrNull(timeoutMs.coerceIn(0, 3_600_000)) { ResumeSteps(signal.await()) }
+        } finally {
+            ScriptRunControl.endPause()
+        }
+        if (ScriptRunControl.isCancelled()) return StepOutcome(false, "cancelled reason=${ScriptRunControl.reason}", "cancelled")
+        if (resumed == null) return StepOutcome(false, "timeout", "step_timeout")
+        val children = if (askServer) resumed.steps ?: thenSteps else emptyList()
+        if (children.isEmpty()) return StepOutcome(true, if (askServer) "ask_server" else "pause")
+        return performChildren(children, access, targetPackages, variables, if (askServer) "ask_server" else "pause", depth + 1)
+    }
+
+    private data class ResumeSteps(val steps: List<ScriptStep>?)
+
     private suspend fun waitForeground(step: ScriptStep.WaitForeground, access: ScriptAccess,
         targetPackages: Collection<String>): StepOutcome {
         val pkg = step.packageName ?: targetPackages.firstOrNull() ?: return StepOutcome(false, "fail:no_package")
@@ -387,7 +419,8 @@ class ScriptRunner {
                 stopOutcome(access)?.let { return it }
                 if (step !is ScriptStep.Launch && step !is ScriptStep.ForceStop && step !is ScriptStep.ColdStart &&
                     step !is ScriptStep.WaitForeground && step !is ScriptStep.Page && step !is ScriptStep.IfVar &&
-                    step !is ScriptStep.Loop && step !is ScriptStep.IfPage && step !is ScriptStep.Include)
+                    step !is ScriptStep.Loop && step !is ScriptStep.IfPage && step !is ScriptStep.Include &&
+                        step !is ScriptStep.Pause && step !is ScriptStep.AskServer)
                     ScriptGuard.rejection(access.foregroundPackage(), targetPackages)?.let { return StepOutcome(false, it, it) }
                 attempt++
                 outcome = execute(step, access, targetPackages, variables, depth)
@@ -404,6 +437,7 @@ class ScriptRunner {
 
     private fun log(index: Int, step: ScriptStep, success: Boolean, attempts: Int, message: String, prefix: String = "") =
         ScriptRunLog(index, step.id, prefix + when (step) {
+            is ScriptStep.Pause -> "pause"; is ScriptStep.AskServer -> "ask_server"
             is ScriptStep.Tap -> "tap"; is ScriptStep.TapText -> "tapText"; is ScriptStep.Wait -> "wait"
             is ScriptStep.Probe -> "probe"; is ScriptStep.Read -> "read"; is ScriptStep.Swipe -> "swipe"
             is ScriptStep.TapIfText -> "tapIfText"; is ScriptStep.IfPage -> "if_page"; is ScriptStep.Loop -> "loop"
@@ -427,6 +461,11 @@ class ScriptRunner {
     private class RunVariables(
         val resolveScript: (String) -> RuntimeScript?,
         val includeStack: MutableList<String>,
+        val scriptId: String,
+        val runId: String,
+        val onPause: suspend (ScriptEvent) -> Unit,
+        var stepIndex: Int = 0,
+        var lastStep: String? = null,
     ) : LinkedHashMap<String, String>()
 
     private data class StepOutcome(val ok: Boolean, val message: String, val errorCode: String? = null) {

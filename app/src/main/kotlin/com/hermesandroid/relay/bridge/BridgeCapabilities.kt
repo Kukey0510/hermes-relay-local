@@ -74,6 +74,7 @@ object BridgeCommandRegistry {
         route("POST", "/localvision", timed(BridgeCapability.SCREEN_INSPECTION))
         route("POST", "/read", timed(BridgeCapability.SCREEN_INSPECTION))
         route("POST", "/script/stop", permanent(BridgeCapability.SCREEN_CONTROL))
+        route("POST", "/script/resume", permanent(BridgeCapability.SCREEN_CONTROL))
         route("POST", "/script/status", permanent(BridgeCapability.SCREEN_CONTROL))
         route("POST", "/script/run", permanent(BridgeCapability.SCREEN_CONTROL))
         route("POST", "/keep_foreground", timed(BridgeCapability.SCREEN_CONTROL))
