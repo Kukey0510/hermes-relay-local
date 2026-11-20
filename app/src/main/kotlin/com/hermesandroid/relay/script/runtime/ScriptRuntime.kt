@@ -7,6 +7,7 @@ import android.accessibilityservice.AccessibilityService
 import com.axiomlabs.hermesrelay.localvision.FrameArchive
 import com.hermesandroid.relay.accessibility.HermesAccessibilityService
 import com.hermesandroid.relay.accessibility.ScreenCapture
+import com.hermesandroid.relay.bridge.BridgeRunTracker
 import com.hermesandroid.relay.network.relay.LocalVisionBridgeRoutes
 import com.hermesandroid.relay.ui.scripts.ScriptCatalog
 import kotlinx.coroutines.delay
@@ -171,6 +172,22 @@ object ScriptRuntime {
         }
     }
 
+    /** Apply the script's bounded hold on every exit, including coroutine cancellation. */
+    internal suspend fun <T> withForegroundHold(
+        script: RuntimeScript,
+        onHeld: (Long) -> Unit = {},
+        block: suspend () -> T,
+    ): T = try {
+        block()
+    } finally {
+        val seconds = (script.holdForegroundMs / 1_000L)
+            .coerceIn(0L, BridgeRunTracker.MAX_KEEP_FOREGROUND_SECONDS)
+        if (seconds > 0L && HermesAccessibilityService.instance?.isMasterEnabled() == true) {
+            BridgeRunTracker.keepForeground(seconds)
+            runCatching { onHeld(seconds) }
+        }
+    }
+
     private suspend fun executeRun(context: Context, screenCapture: ScreenCapture?, scriptId: String,
         runId: String): ScriptRunResult {
         val store = ScriptRunStore(context.filesDir)
@@ -206,27 +223,34 @@ object ScriptRuntime {
             }
         }
         val result = try {
-            runner.run(
-            script = script,
-            access = AndroidAccess(context, screenCapture, service),
-            runId = runId,
-            onRunStart = {
-                restoreStopRequest()
-                store.writePending(PendingScriptRun(script.id, runId, 0))
-                store.append(ScriptLogEvent("run_start", script.id, runId, ScriptLogEvent.timestamp()))
-            },
-            onStep = { log, durationMs ->
-                stepCompleted(runId, log.stepIndex)
-                store.writePending(PendingScriptRun(script.id, runId, log.stepIndex))
+            withForegroundHold(script, onHeld = { seconds ->
                 store.append(ScriptLogEvent(
-                    event = if (log.message.startsWith("power_fallback")) "power_fallback" else "step",
-                    scriptId = script.id, runId = runId, ts = ScriptLogEvent.timestamp(),
-                    stepIndex = log.stepIndex, op = log.op, success = log.success, attempts = log.attempts,
-                    message = log.message, durationMs = durationMs,
+                    event = "keep_foreground", scriptId = script.id, runId = runId,
+                    ts = ScriptLogEvent.timestamp(), message = "已保持前台 $seconds 秒",
                 ))
-                if (!log.success) runCatching { reporter.report(log.toEvent(script.id, runId)) }
-            },
-        )
+            }) {
+                runner.run(
+                    script = script,
+                    access = AndroidAccess(context, screenCapture, service),
+                    runId = runId,
+                    onRunStart = {
+                        restoreStopRequest()
+                        store.writePending(PendingScriptRun(script.id, runId, 0))
+                        store.append(ScriptLogEvent("run_start", script.id, runId, ScriptLogEvent.timestamp()))
+                    },
+                    onStep = { log, durationMs ->
+                        stepCompleted(runId, log.stepIndex)
+                        store.writePending(PendingScriptRun(script.id, runId, log.stepIndex))
+                        store.append(ScriptLogEvent(
+                            event = if (log.message.startsWith("power_fallback")) "power_fallback" else "step",
+                            scriptId = script.id, runId = runId, ts = ScriptLogEvent.timestamp(),
+                            stepIndex = log.stepIndex, op = log.op, success = log.success, attempts = log.attempts,
+                            message = log.message, durationMs = durationMs,
+                        ))
+                        if (!log.success) runCatching { reporter.report(log.toEvent(script.id, runId)) }
+                    },
+                )
+            }
         } catch (error: Throwable) {
             if (error is kotlinx.coroutines.CancellationException) throw error
             store.clearPending()

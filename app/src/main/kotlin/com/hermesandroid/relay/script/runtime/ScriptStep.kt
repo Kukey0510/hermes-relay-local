@@ -222,4 +222,5 @@ data class RuntimeScript(
     val steps: List<ScriptStep>,
     val vars: Map<String, JsonPrimitive> = emptyMap(),
     @SerialName("on_fail") val onFail: List<ScriptStep> = emptyList(),
+    @SerialName("hold_foreground_ms") val holdForegroundMs: Long = 0L,
 )
