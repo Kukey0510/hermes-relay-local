@@ -6,46 +6,57 @@ import android.os.SystemClock
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 
-data class LocalVisionResult(val page: String, val elapsedMs: Double, val source: String = "assets")
+data class LocalVisionResult(
+    val page: String,
+    val elapsedMs: Double,
+    val source: String = "assets",
+    val spec: String = "assets",
+)
 
 /** Android asset adapter for the platform-independent local page detector. */
-class LocalVisionRunner(context: Context, private val hotReloadDir: File? = null) {
+class LocalVisionRunner(
+    context: Context,
+    private val hotReloadDir: File? = null,
+    game: String? = null,
+    private val specStore: LocalVisionSpecStore = LocalVisionSpecStore(),
+) {
     private val appContext = context.applicationContext
+
+    init {
+        require(game == null || isValidLocalVisionGame(game)) { "invalid game" }
+    }
 
     private data class DetectorState(
         val detector: PageDetector,
         val source: String,
+        val spec: String,
         val usedTemplateFallback: AtomicBoolean,
     )
 
-    private val detectorState: DetectorState? by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+    private val detectorState: DetectorState? =
         runCatching {
-            val hotPages = hotReloadDir?.resolve("pages.json")
-            val hotSpec = hotPages?.takeIf(File::isFile)?.let { file ->
-                runCatching { PageSpecParser.parse(file.readText()) }.getOrNull()
+            val selection = specStore.load(hotReloadDir, game) {
+                appContext.assets.open("pages.json").bufferedReader().use { it.readText() }
             }
             val source = when {
-                hotSpec != null -> "hot"
+                selection.hot -> "hot"
                 hotReloadDir != null -> "assets_fallback"
                 else -> "assets"
-            }
-            val spec = hotSpec ?: appContext.assets.open("pages.json").bufferedReader().use {
-                PageSpecParser.parse(it.readText())
             }
             val usedTemplateFallback = AtomicBoolean(false)
             DetectorState(
                 PageDetector(
-                    spec,
+                    selection.pages,
                     object : TemplateLoader {
                         override fun load(name: String): GrayImage? =
                             loadTemplate(name, usedTemplateFallback)
                     },
                 ),
                 source,
+                selection.spec,
                 usedTemplateFallback,
             )
         }.getOrNull()
-    }
 
     fun detect(image: RgbImage): LocalVisionResult {
         val started = SystemClock.elapsedRealtimeNanos()
@@ -57,7 +68,7 @@ class LocalVisionRunner(context: Context, private val hotReloadDir: File? = null
             state.usedTemplateFallback.get() -> "assets_fallback"
             else -> state.source
         }
-        return LocalVisionResult(page, elapsedMs, source)
+        return LocalVisionResult(page, elapsedMs, source, state?.spec ?: "assets")
     }
 
     private fun loadTemplate(name: String, usedFallback: AtomicBoolean): GrayImage? = runCatching {

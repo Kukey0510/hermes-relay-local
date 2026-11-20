@@ -280,7 +280,7 @@ object ScriptRuntime {
         return result
     }
 
-    private class AndroidAccess(
+    internal class AndroidAccess(
         private val context: Context,
         private val capture: ScreenCapture?,
         private val service: HermesAccessibilityService,
@@ -303,13 +303,16 @@ object ScriptRuntime {
         override fun screenSize(): Pair<Int, Int> =
             context.resources.displayMetrics.let { it.widthPixels to it.heightPixels }
 
-        override suspend fun probe(expect: String, timeoutMs: Long): Boolean {
+        override suspend fun probe(expect: String, timeoutMs: Long): Boolean = probe(expect, timeoutMs, null)
+
+        override suspend fun probe(expect: String, timeoutMs: Long, game: String?): Boolean {
             val deadline = android.os.SystemClock.elapsedRealtime() + timeoutMs.coerceAtLeast(0)
             do {
                 // save_unknown=false：probe 在超时前会轮询多次，每轮都存档会把手机构建目录刷爆
                 val result = LocalVisionBridgeRoutes.handle(capture, context, buildJsonObject {
                     put("with_frame", false)
                     put("save_unknown", false)
+                    game?.let { put("game", it) }
                 })
                 if ((result.payload["page"] as? JsonPrimitive)?.content == expect) return true
                 if (android.os.SystemClock.elapsedRealtime() >= deadline) return false
@@ -396,10 +399,13 @@ object ScriptRuntime {
         override suspend fun back(): Boolean =
             service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
 
-        override suspend fun currentPage(): String? = runCatching {
+        override suspend fun currentPage(): String? = currentPage(null)
+
+        override suspend fun currentPage(game: String?): String? = runCatching {
             val result = LocalVisionBridgeRoutes.handle(capture, context, buildJsonObject {
                 put("with_frame", false)
                 put("save_unknown", false)
+                game?.let { put("game", it) }
             })
             (result.payload["page"] as? JsonPrimitive)?.content
         }.getOrNull()

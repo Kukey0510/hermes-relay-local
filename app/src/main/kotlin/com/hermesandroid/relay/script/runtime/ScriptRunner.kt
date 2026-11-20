@@ -20,6 +20,8 @@ interface ScriptAccess {
     fun screenSize(): Pair<Int, Int> = Int.MAX_VALUE to Int.MAX_VALUE
     fun monotonicMs(): Long = System.nanoTime() / 1_000_000
     suspend fun probe(expect: String, timeoutMs: Long): Boolean
+    /** Compatibility overload: existing access implementations keep their default-spec behavior. */
+    suspend fun probe(expect: String, timeoutMs: Long, game: String? = null): Boolean = probe(expect, timeoutMs)
     suspend fun read(field: String): String?
     suspend fun launchApp(pkg: String): Boolean = false
     suspend fun forceStop(pkg: String, waitMs: Long): Boolean = false
@@ -28,6 +30,7 @@ interface ScriptAccess {
     suspend fun back(): Boolean = false
     /** 立刻判一次当前页（不等待、不点屏）；判不出返回 null。脚本用 op "page" 调它。 */
     suspend fun currentPage(): String? = null
+    suspend fun currentPage(game: String? = null): String? = currentPage()
     suspend fun frameSample(): IntArray? = null
     suspend fun saveSnapshot(tag: String): Boolean = false
     suspend fun recognizePowers(minConfidence: Double): PowerRecognition? = null
@@ -169,7 +172,7 @@ class ScriptRunner {
             val clamped = step.ms.coerceIn(0, 30_000)
             access.waitMs(clamped); StepOutcome(true, "wait_ms=$clamped")
         }
-        is ScriptStep.Probe -> StepOutcome(access.probe(step.expect, step.timeoutMs ?: 3_000), "probe=${step.expect}")
+        is ScriptStep.Probe -> StepOutcome(access.probe(step.expect, step.timeoutMs ?: 3_000, step.game), "probe=${step.expect}")
         is ScriptStep.Read -> access.read(step.field)?.let { value ->
             firstNumber(value)?.let { variables[step.asName] = it }
             StepOutcome(true, "${step.field}=$value")
@@ -192,7 +195,7 @@ class ScriptRunner {
         }
         is ScriptStep.IfPage -> {
             val expect = substitute(step.expect, variables)
-            val branch = if (access.probe(expect, step.timeoutMs ?: 3_000)) step.thenSteps else step.elseSteps
+            val branch = if (access.probe(expect, step.timeoutMs ?: 3_000, step.game)) step.thenSteps else step.elseSteps
             performChildren(branch, access, targetPackages, variables, "if_page", depth + 1)
         }
         is ScriptStep.Loop -> {
@@ -236,7 +239,7 @@ class ScriptRunner {
             else { val wait = step.waitMs.coerceIn(0, 90_000); access.waitMs(wait); StepOutcome(true, "launch_wait_ms=$wait") }
         }
         is ScriptStep.Page -> {
-            val current = access.currentPage() ?: "other"
+            val current = access.currentPage(step.game) ?: "other"
             variables[step.asName] = current
             StepOutcome(true, "page=$current as=${step.asName}")
         }

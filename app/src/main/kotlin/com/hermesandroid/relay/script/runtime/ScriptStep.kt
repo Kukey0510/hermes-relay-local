@@ -28,7 +28,8 @@ sealed interface ScriptStep {
     data class Wait(val ms: Long, override val id: String? = null,
         override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
     data class Probe(val expect: String, override val timeoutMs: Long? = null,
-        override val id: String? = null, override val retries: Int = 0) : ScriptStep
+        override val id: String? = null, override val retries: Int = 0,
+        val game: String? = null) : ScriptStep
     data class Read(val field: String, override val id: String? = null,
         override val timeoutMs: Long? = null, override val retries: Int = 0,
         val asName: String = field, val optional: Boolean = false) : ScriptStep
@@ -40,7 +41,8 @@ sealed interface ScriptStep {
         override val retries: Int = 0) : ScriptStep
     data class IfPage(val expect: String, val thenSteps: List<ScriptStep> = emptyList(),
         val elseSteps: List<ScriptStep> = emptyList(), override val id: String? = null,
-        override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
+        override val timeoutMs: Long? = null, override val retries: Int = 0,
+        val game: String? = null) : ScriptStep
     data class Loop(val times: Int, val maxTotalMs: Long = 600_000,
         val until: String? = null, val steps: List<ScriptStep> = emptyList(),
         override val id: String? = null, override val timeoutMs: Long? = null,
@@ -60,7 +62,8 @@ sealed interface ScriptStep {
         override val retries: Int = 0) : ScriptStep
     /** 立刻判一次当前页（不等待），结果写进变量。纯读，不点屏。 */
     data class Page(val asName: String = "page", override val id: String? = null,
-        override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
+        override val timeoutMs: Long? = null, override val retries: Int = 0,
+        val game: String? = null) : ScriptStep
     /** 按变量分支：equals / not_equals 二选一（都没给就是 equals 空串，恒不命中）。 */
     data class IfVar(val name: String, val equals: String? = null, val notEquals: String? = null,
         val thenSteps: List<ScriptStep> = emptyList(), val elseSteps: List<ScriptStep> = emptyList(),
@@ -107,6 +110,10 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
             ?: error("ScriptStep only supports JSON objects")
         fun text(name: String) = (json[name] as? JsonPrimitive)?.content
         fun required(name: String) = text(name) ?: error("missing '$name'")
+        fun game(): String? = json["game"]?.takeUnless { it == kotlinx.serialization.json.JsonNull }?.let {
+            require(it is JsonPrimitive && it.isString) { "game must be a string" }
+            it.content
+        }
         val id = text("id")
         val timeout = (json["timeout_ms"] as? JsonPrimitive)?.longOrNull
         val retries = ((json["retries"] as? JsonPrimitive)?.intOrNull ?: 0).coerceAtLeast(0)
@@ -117,7 +124,7 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
             "tap" -> ScriptStep.Tap(required("x").toInt(), required("y").toInt(), id, timeout, retries)
             "tapText" -> ScriptStep.TapText(required("text"), id, timeout, retries)
             "wait" -> ScriptStep.Wait(required("ms").toLong(), id, timeout, retries)
-            "probe" -> ScriptStep.Probe(required("expect"), timeout, id, retries)
+            "probe" -> ScriptStep.Probe(required("expect"), timeout, id, retries, game())
             "read" -> ScriptStep.Read(required("field"), id, timeout, retries, text("as") ?: required("field"),
                 (json["optional"] as? JsonPrimitive)?.booleanOrNull ?: false)
             "swipe" -> ScriptStep.Swipe(required("from_x").toInt(), required("from_y").toInt(),
@@ -125,14 +132,14 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
                 text("duration_ms")?.toLong() ?: 400, id, timeout, retries)
             "tapIfText" -> ScriptStep.TapIfText(required("text"),
                 (json["optional"] as? JsonPrimitive)?.booleanOrNull ?: true, id, timeout, retries)
-            "if_page" -> ScriptStep.IfPage(required("expect"), steps("then"), steps("else"), id, timeout, retries)
+            "if_page" -> ScriptStep.IfPage(required("expect"), steps("then"), steps("else"), id, timeout, retries, game())
             "loop" -> ScriptStep.Loop(required("times").toInt(),
                 text("max_total_ms")?.toLong() ?: 600_000, text("until"),
                 steps("steps"), id, timeout, retries, text("times_from"))
             "force_stop" -> ScriptStep.ForceStop(required("package"), text("wait_ms")?.toLong() ?: 1_500, id, timeout, retries)
             "launch" -> ScriptStep.Launch(text("package"), text("wait_ms")?.toLong() ?: 0, id, timeout, retries)
             "wait_foreground" -> ScriptStep.WaitForeground(text("package"), text("orientation"), timeout ?: 60_000, id, retries)
-            "page" -> ScriptStep.Page(text("as") ?: "page", id, timeout, retries)
+            "page" -> ScriptStep.Page(text("as") ?: "page", id, timeout, retries, game())
             "if_var" -> ScriptStep.IfVar(required("name"), text("equals"), text("not_equals"),
                 steps("then"), steps("else"), id, timeout, retries)
             "back" -> ScriptStep.Back(id, timeout, retries)
@@ -178,7 +185,8 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
             is ScriptStep.Tap -> { put("op", "tap"); put("x", value.x); put("y", value.y) }
             is ScriptStep.TapText -> { put("op", "tapText"); put("text", value.text) }
             is ScriptStep.Wait -> { put("op", "wait"); put("ms", value.ms) }
-            is ScriptStep.Probe -> { put("op", "probe"); put("expect", value.expect) }
+            is ScriptStep.Probe -> { put("op", "probe"); put("expect", value.expect)
+                value.game?.let { put("game", it) } }
             is ScriptStep.Read -> { put("op", "read"); put("field", value.field)
                 if (value.asName != value.field) put("as", value.asName)
                 if (value.optional) put("optional", true) }
@@ -186,6 +194,7 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
                 put("to_x", value.toX); put("to_y", value.toY); put("duration_ms", value.durationMs) }
             is ScriptStep.TapIfText -> { put("op", "tapIfText"); put("text", value.text); put("optional", value.optional) }
             is ScriptStep.IfPage -> { put("op", "if_page"); put("expect", value.expect)
+                value.game?.let { put("game", it) }
                 putSteps("then", value.thenSteps); putSteps("else", value.elseSteps) }
             is ScriptStep.Loop -> { put("op", "loop"); put("times", value.times)
                 put("max_total_ms", value.maxTotalMs); value.timesFrom?.let { put("times_from", it) }
@@ -194,7 +203,8 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
             is ScriptStep.Launch -> { put("op", "launch"); value.packageName?.let { put("package", it) }; put("wait_ms", value.waitMs) }
             is ScriptStep.WaitForeground -> { put("op", "wait_foreground")
                 value.packageName?.let { put("package", it) }; value.orientation?.let { put("orientation", it) } }
-            is ScriptStep.Page -> { put("op", "page"); put("as", value.asName) }
+            is ScriptStep.Page -> { put("op", "page"); put("as", value.asName)
+                value.game?.let { put("game", it) } }
             is ScriptStep.IfVar -> { put("op", "if_var"); put("name", value.name)
                 value.equals?.let { put("equals", it) }
                 value.notEquals?.let { put("not_equals", it) }
