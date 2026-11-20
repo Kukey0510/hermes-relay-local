@@ -141,6 +141,8 @@ class ColdStartTest {
         var launches = 0
         val launchTimes = mutableListOf<Long>()
         val taps = mutableListOf<Pair<Int, Int>>()
+        override fun foregroundPackageFromWindows() = foregroundPackage()
+        override suspend fun frameSize(): Pair<Int, Int>? = null
         override fun foregroundPackage() = "game"
         override fun screenSize() = 1080 to 2460
         override fun monotonicMs() = clock

@@ -10,6 +10,8 @@ class ScriptStopTest {
         var taps = 0
         var interactive = true
         var stopOnTap = false
+        override fun foregroundPackageFromWindows() = foregroundPackage()
+        override suspend fun frameSize(): Pair<Int, Int>? = null
         override fun foregroundPackage(): String {
             check(interactive) { "foreground guard must not run while screen is off" }
             return "game.pkg"

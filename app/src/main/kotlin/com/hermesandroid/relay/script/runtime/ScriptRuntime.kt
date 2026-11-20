@@ -35,9 +35,15 @@ object ScriptRuntime {
 
     @Volatile private var loadErrors: Map<String, String> = emptyMap()
 
-    internal fun decodeCatalog(content: String): List<RuntimeScript> {
+    private fun catalogWarning(message: String) { android.util.Log.w("ScriptRuntime", message) }
+
+    internal fun gamesDeclaration(content: String, warn: (String) -> Unit = ::catalogWarning): Map<String, GameDeclaration> =
+        decodeGamesDeclaration(json.parseToJsonElement(content), json, warn)
+
+    internal fun decodeCatalog(content: String, warn: (String) -> Unit = ::catalogWarning): List<RuntimeScript> {
         loadErrors = emptyMap()
         val root = json.parseToJsonElement(content)
+        val games = decodeGamesDeclaration(root, json, warn)
         val entries = when (root) {
             is JsonArray -> root
             is JsonObject -> root["scripts"] as? JsonArray ?: error("missing scripts array")
@@ -45,7 +51,7 @@ object ScriptRuntime {
         }
         val errors = mutableMapOf<String, String>()
         val scripts = entries.mapNotNull { entry ->
-            runCatching { json.decodeFromJsonElement<RuntimeScript>(entry) }.getOrElse { error ->
+            runCatching { json.decodeFromJsonElement<RuntimeScript>(scriptWithGameDefaults(entry, games, warn)) }.getOrElse { error ->
                 val id = ((entry as? JsonObject)?.get("id") as? JsonPrimitive)?.contentOrNull
                 if (id != null) errors[id] = error.message ?: error.javaClass.simpleName
                 null
@@ -281,6 +287,11 @@ object ScriptRuntime {
     ) : ScriptAccess {
         override fun foregroundPackage(): String? =
             service.rootInActiveWindow?.packageName?.toString() ?: service.currentApp
+
+        override fun foregroundPackageFromWindows(): String? = service.foregroundPackageFromWindows()
+
+        override suspend fun frameSize(): Pair<Int, Int>? =
+            runCatching { capture?.captureLocalFrame()?.getOrNull() }.getOrNull()?.let { it.width to it.height }
 
         override suspend fun tap(x: Int, y: Int) = service.actionExecutor.tap(x, y).ok
         override suspend fun tapText(text: String) = service.actionExecutor.tapText(text).ok

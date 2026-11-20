@@ -186,6 +186,8 @@ class ScriptRunnerTest {
         val tapCoordinates = mutableListOf<Pair<Int, Int>>()
         var powers: PowerRecognition? = null
         val swipes = mutableListOf<SwipeCall>()
+        override fun foregroundPackageFromWindows() = foregroundPackage()
+        override suspend fun frameSize(): Pair<Int, Int>? = null
         override fun foregroundPackage() = packageName
         override suspend fun tap(x: Int, y: Int): Boolean {
             if (throwOnTap) error("boom")

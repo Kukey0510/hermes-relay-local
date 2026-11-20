@@ -225,6 +225,8 @@ class ScriptRunnerSecondBatchTest {
         val texts = mutableListOf<String>()
         val probeExpects = mutableListOf<String>()
         val snapshots = mutableListOf<String>()
+        override fun foregroundPackageFromWindows() = foregroundPackage()
+        override suspend fun frameSize(): Pair<Int, Int>? = null
         override fun foregroundPackage() = "game.pkg"
         override suspend fun tap(x: Int, y: Int): Boolean { tapCalls++; return tapOk }
         override suspend fun tapText(text: String): Boolean { texts += text; return true }

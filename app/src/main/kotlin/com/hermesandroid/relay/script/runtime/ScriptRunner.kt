@@ -9,6 +9,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 interface ScriptAccess {
     /** Must read rootInActiveWindow.packageName now, falling back only to the last window event. */
     fun foregroundPackage(): String?
+    /** Read live application windows; never fall back to accessibility event caches. */
+    fun foregroundPackageFromWindows(): String?
+    /** Dimensions of an actual captured frame, or null when capture is unavailable. */
+    suspend fun frameSize(): Pair<Int, Int>?
     suspend fun tap(x: Int, y: Int): Boolean
     suspend fun tapText(text: String): Boolean
     suspend fun swipe(fromX: Int, fromY: Int, toX: Int, toY: Int, durationMs: Long): Boolean = false
@@ -83,7 +87,7 @@ class ScriptRunner {
                     }
                     // 容器只调度子步骤；前台校验由子步骤各自执行。
                     if (step !is ScriptStep.Launch && step !is ScriptStep.ForceStop && step !is ScriptStep.ColdStart &&
-                        step !is ScriptStep.Page && step !is ScriptStep.IfVar &&
+                        step !is ScriptStep.WaitForeground && step !is ScriptStep.Page && step !is ScriptStep.IfVar &&
                     step !is ScriptStep.Loop && step !is ScriptStep.IfPage) {
                         ScriptGuard.rejection(access.foregroundPackage(), script.targetPackages)?.let { code ->
                             val entry = log(index, step, false, attempt, code)
@@ -126,7 +130,7 @@ class ScriptRunner {
             if (remaining <= 0) break
             val stepStarted = System.nanoTime()
             val guarded = if (step is ScriptStep.Launch || step is ScriptStep.ForceStop || step is ScriptStep.Page ||
-                step is ScriptStep.IfVar) null
+                step is ScriptStep.IfVar || step is ScriptStep.WaitForeground) null
                 else ScriptGuard.rejection(access.foregroundPackage(), script.targetPackages)
             val performed = guarded?.let { StepOutcome(false, it, it) } ?: withTimeoutOrNull(remaining) {
                 execute(step, access, script.targetPackages, variables)
@@ -143,8 +147,8 @@ class ScriptRunner {
         variables: MutableMap<String, String>, depth: Int = 0): StepOutcome {
         if (depth > 8) return StepOutcome(false, "nesting_too_deep", "invalid_script")
         stopOutcome(access)?.let { return it }
-        // Probe 自带超时（内部轮询到 deadline），外面再套一层会把判别式提前取消掉
-        val timeout = if (step is ScriptStep.Probe) null else step.timeoutMs?.coerceAtLeast(1)
+        // Polling primitives own their deadlines and timeout result messages.
+        val timeout = if (step is ScriptStep.Probe || step is ScriptStep.WaitForeground) null else step.timeoutMs?.coerceAtLeast(1)
         return try {
             if (timeout == null) perform(step, access, targetPackages, variables, depth)
             else withTimeoutOrNull(timeout) { perform(step, access, targetPackages, variables, depth) }
@@ -249,6 +253,7 @@ class ScriptRunner {
             val ok = access.back()
             StepOutcome(ok, if (ok) "back" else "back_failed")
         }
+        is ScriptStep.WaitForeground -> waitForeground(step, access, targetPackages)
         is ScriptStep.WaitStable -> waitStable(step, access)
         is ScriptStep.ColdStart -> {
             val message = access.coldStartTo(step.packageName ?: targetPackages.firstOrNull(), step.bootPage, step.homePage,
@@ -288,6 +293,29 @@ class ScriptRunner {
         }
     }
 
+    private suspend fun waitForeground(step: ScriptStep.WaitForeground, access: ScriptAccess,
+        targetPackages: Collection<String>): StepOutcome {
+        val pkg = step.packageName ?: targetPackages.firstOrNull() ?: return StepOutcome(false, "fail:no_package")
+        val started = access.monotonicMs()
+        val timeout = (step.timeoutMs ?: 60_000).coerceAtLeast(0)
+        while (true) {
+            stopOutcome(access)?.let { return it }
+            val lastPackage = access.foregroundPackageFromWindows()
+            if (lastPackage == pkg) {
+                val orientationMatches = when (step.orientation) {
+                    null, "any" -> true
+                    else -> access.frameSize()?.let { (width, height) ->
+                        if (step.orientation == "landscape") width > height else height > width
+                    } ?: false
+                }
+                if (orientationMatches) return StepOutcome(true, "ok:foreground_after=${access.monotonicMs() - started}")
+            }
+            val elapsed = access.monotonicMs() - started
+            if (elapsed >= timeout) return StepOutcome(false, "fail:foreground_timeout last=${lastPackage ?: "unknown"}")
+            access.waitMs(minOf(100L, timeout - elapsed))
+        }
+    }
+
     private suspend fun waitStable(step: ScriptStep.WaitStable, access: ScriptAccess): StepOutcome {
         val frames = step.stableFrames.coerceIn(2, 6)
         val interval = step.intervalMs.coerceIn(100, 1_000)
@@ -317,7 +345,7 @@ class ScriptRunner {
             do {
                 stopOutcome(access)?.let { return it }
                 if (step !is ScriptStep.Launch && step !is ScriptStep.ForceStop && step !is ScriptStep.ColdStart &&
-                    step !is ScriptStep.Page && step !is ScriptStep.IfVar &&
+                    step !is ScriptStep.WaitForeground && step !is ScriptStep.Page && step !is ScriptStep.IfVar &&
                     step !is ScriptStep.Loop && step !is ScriptStep.IfPage)
                     ScriptGuard.rejection(access.foregroundPackage(), targetPackages)?.let { return StepOutcome(false, it, it) }
                 attempt++
@@ -344,6 +372,7 @@ class ScriptRunner {
             is ScriptStep.Snapshot -> "snapshot"
             is ScriptStep.TapWeakest -> "tapWeakest"
             is ScriptStep.ColdStart -> "coldStart"
+            is ScriptStep.WaitForeground -> "wait_foreground"
         }, success, attempts, message)
     private fun elapsedMs(startedAt: Long) = (System.nanoTime() - startedAt) / 1_000_000
     private fun stopOutcome(access: ScriptAccess): StepOutcome? = when {

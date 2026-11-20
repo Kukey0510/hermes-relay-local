@@ -49,6 +49,12 @@ sealed interface ScriptStep {
     data class Launch(val packageName: String? = null, val waitMs: Long = 0,
         override val id: String? = null, override val timeoutMs: Long? = null,
         override val retries: Int = 0) : ScriptStep
+    /** Window identity is authoritative; optional orientation checks captured frame dimensions only. */
+    data class WaitForeground(val packageName: String? = null, val orientation: String? = null,
+        override val timeoutMs: Long? = 60_000, override val id: String? = null,
+        override val retries: Int = 0) : ScriptStep {
+        init { require(orientation == null || orientation in setOf("landscape", "portrait", "any")) { "invalid wait_foreground orientation" } }
+    }
     data class ForceStop(val packageName: String, val waitMs: Long = 1_500,
         override val id: String? = null, override val timeoutMs: Long? = null,
         override val retries: Int = 0) : ScriptStep
@@ -125,6 +131,7 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
                 steps("steps"), id, timeout, retries, text("times_from"))
             "force_stop" -> ScriptStep.ForceStop(required("package"), text("wait_ms")?.toLong() ?: 1_500, id, timeout, retries)
             "launch" -> ScriptStep.Launch(text("package"), text("wait_ms")?.toLong() ?: 0, id, timeout, retries)
+            "wait_foreground" -> ScriptStep.WaitForeground(text("package"), text("orientation"), timeout ?: 60_000, id, retries)
             "page" -> ScriptStep.Page(text("as") ?: "page", id, timeout, retries)
             "if_var" -> ScriptStep.IfVar(required("name"), text("equals"), text("not_equals"),
                 steps("then"), steps("else"), id, timeout, retries)
@@ -185,6 +192,8 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
                 value.until?.let { put("until", it) }; putSteps("steps", value.steps) }
             is ScriptStep.ForceStop -> { put("op", "force_stop"); put("package", value.packageName); put("wait_ms", value.waitMs) }
             is ScriptStep.Launch -> { put("op", "launch"); value.packageName?.let { put("package", it) }; put("wait_ms", value.waitMs) }
+            is ScriptStep.WaitForeground -> { put("op", "wait_foreground")
+                value.packageName?.let { put("package", it) }; value.orientation?.let { put("orientation", it) } }
             is ScriptStep.Page -> { put("op", "page"); put("as", value.asName) }
             is ScriptStep.IfVar -> { put("op", "if_var"); put("name", value.name)
                 value.equals?.let { put("equals", it) }
@@ -223,4 +232,9 @@ data class RuntimeScript(
     val vars: Map<String, JsonPrimitive> = emptyMap(),
     @SerialName("on_fail") val onFail: List<ScriptStep> = emptyList(),
     @SerialName("hold_foreground_ms") val holdForegroundMs: Long = 0L,
+    val game: String? = null,
+    @SerialName("package") val packageName: String? = null,
+    val orientation: String? = null,
+    @SerialName("boot") val bootPage: String? = null,
+    @SerialName("home") val homePage: String? = null,
 )

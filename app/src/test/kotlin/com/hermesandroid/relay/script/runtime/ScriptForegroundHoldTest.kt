@@ -41,6 +41,8 @@ class ScriptForegroundHoldTest {
         }]""").single()
 
     private class Access(val tapSucceeds: Boolean = true, val stopOnTap: Boolean = false) : ScriptAccess {
+        override fun foregroundPackageFromWindows() = foregroundPackage()
+        override suspend fun frameSize(): Pair<Int, Int>? = null
         override fun foregroundPackage() = "game.pkg"
         override suspend fun tap(x: Int, y: Int): Boolean {
             if (stopOnTap) ScriptRunControl.requestStop("test-stop")
