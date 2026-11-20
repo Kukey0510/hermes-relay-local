@@ -30,6 +30,12 @@ class ScriptRuntimeTest {
         })
     }
 
+    @Test fun coldStartUsesCurrentPortraitFrameCenter() {
+        assertEquals(540 to 1230, ScriptRuntime.coldStartTapPoint(null, null, 1080 to 2460) {
+            error("frame available; fallback must not be read")
+        })
+    }
+
     @Test fun coldStartFallsBackWithoutFrameAndPreservesExplicitCoordinates() {
         assertEquals(540 to 1230, ScriptRuntime.coldStartTapPoint(null, null, null) { 1080 to 2460 })
         assertEquals(12 to 34, ScriptRuntime.coldStartTapPoint(12, 34, 2460 to 1080) {

@@ -102,6 +102,15 @@ object ScriptRuntime {
 
     @Synchronized fun status(runId: String): RunStatus? = history[runId]
 
+    @Synchronized fun isRunning(): Boolean = activeRunId != null
+
+    /** Serialize cache replacement with run reservation; stale pending_run files do not block sync. */
+    @Synchronized internal fun updateCatalogIfIdle(update: () -> Unit): Boolean {
+        if (activeRunId != null) return false
+        update()
+        return true
+    }
+
     @Synchronized private fun reserve(): String? {
         if (activeRunId != null) return null
         val runId = UUID.randomUUID().toString()
@@ -334,104 +343,20 @@ object ScriptRuntime {
             return runCatching { service.startActivity(intent); true }.getOrDefault(false)
         }
 
-        /**
-         * 冷启动到 home：全自动闭环，中途不问服务器、不等外部指令。
-         * ① 每 2 秒看一次画面方向，竖屏（桌面/被抢前台）就再拉起一次 App；
-         * ② 连续两次横屏才认为游戏真起来了，避免一次误判就开始乱点；
-         * ③ 之后每 intervalMs 判一次页，命中 boot 就点屏幕中心，点完 2 秒复查，最多 3 次；
-         * ④ 命中 home 立刻返回，带上从启动到进主页的毫秒数。
-         */
+        /** Window identity confirms foreground independently of frame orientation. */
         override suspend fun coldStartTo(pkg: String?, bootPage: String, homePage: String,
             tapX: Int?, tapY: Int?, bootWaitMs: Long, homeWaitMs: Long, intervalMs: Long,
-            popupPage: String, popupX: Int, popupY: Int, maxPopups: Int): String {
-            val started = monotonicMs()
-            var landscapeStreak = 0
-            var lastLaunchAt = 0L
-            var taps = 0
-            var firstBootAt = 0L
-            var lastPage = "?"
-            var otherSince: Long? = null
-            var rescues = 0
-            var popupTaps = 0
-
-            suspend fun detectPage(): String = runCatching {
-                val result = LocalVisionBridgeRoutes.handle(capture, context, buildJsonObject {
-                    put("with_frame", false)
-                    put("save_unknown", false)
-                })
-                (result.payload["page"] as? JsonPrimitive)?.content ?: "other"
-            }.getOrDefault("other")
-
-            while (monotonicMs() - started < bootWaitMs) {
-                if (ScriptRunControl.isCancelled()) return "fail:cancelled reason=${ScriptRunControl.reason} rescue=$rescues"
-                if (!screenOn()) return "fail:screen_off rescue=$rescues"
-                val frame = runCatching { capture?.captureLocalFrame()?.getOrNull() }.getOrNull()
-                val landscape = frame != null && frame.width > frame.height
-                if (!landscape) {
-                    landscapeStreak = 0
-                    if (monotonicMs() - lastLaunchAt >= 2_000) {
-                        val name = pkg ?: return "fail:no_package rescue=$rescues"
-                        lastLaunchAt = monotonicMs()
-                        launchApp(name)
-                    }
-                    delay(2_000)
-                    continue
-                }
-                landscapeStreak++
-                if (landscapeStreak >= 2) break
-                delay(2_000)
-            }
-            if (landscapeStreak < 2) {
-                return "fail:no_landscape rescue=$rescues elapsed=${monotonicMs() - started}ms"
-            }
-
-            val pageDeadline = monotonicMs() + homeWaitMs
-            while (monotonicMs() < pageDeadline) {
-                if (ScriptRunControl.isCancelled()) return "fail:cancelled reason=${ScriptRunControl.reason} rescue=$rescues"
-                if (!screenOn()) return "fail:screen_off rescue=$rescues"
-                lastPage = detectPage()
-                if (lastPage == homePage) {
-                    return "ok:home_at_${monotonicMs() - started}ms taps=$taps popups=$popupTaps"
-                }
-                // 主页上常盖一层「信息」弹窗：判据会先命中 popup，此时点右上角 X 关掉再继续等主页。
-                // 不处理的话会一直卡在 popup，永远不会等于 home（2026-11-15 真机实测）。
-                if (lastPage == popupPage && popupTaps < maxPopups) {
-                    tap(popupX, popupY)
-                    popupTaps++
-                    delay(1_500)
-                    continue
-                }
-                val now = monotonicMs()
-                if (lastPage == "other") {
-                    val since = otherSince ?: now.also { otherSince = it }
-                    // 只在「还没点到启动页」的加载阶段自救；已经开始点 boot 之后就别再重开游戏了
-                    if (taps == 0 && pkg != null && now - since >= 20_000 && now - lastLaunchAt >= 20_000 && rescues < 3) {
-                        lastLaunchAt = now
-                        launchApp(pkg)
-                        rescues++
-                        otherSince = monotonicMs()
-                    }
-                } else {
-                    otherSince = null
-                }
-                if (lastPage == bootPage) {
-                    if (firstBootAt == 0L) firstBootAt = monotonicMs()
-                    if (taps < 3 && monotonicMs() - firstBootAt < 15_000) {
-                        val frame = if (tapX == null || tapY == null)
-                            runCatching { capture?.captureLocalFrame()?.getOrNull() }.getOrNull()
-                        else null
-                        val (tx, ty) = coldStartTapPoint(tapX, tapY,
-                            frame?.let { it.width to it.height }, ::screenSize)
-                        tap(tx, ty)
-                        taps++
-                        delay(2_000)
-                        continue
-                    }
-                }
-                delay(intervalMs.coerceIn(300, 5_000))
-            }
-            return "fail:no_home rescue=$rescues last=$lastPage taps=$taps elapsed=${monotonicMs() - started}ms"
-        }
+            popupPage: String, popupX: Int, popupY: Int, maxPopups: Int,
+            acceptPages: List<String>, orientation: String): String = coldStartToPages(
+                pkg, bootPage, homePage, tapX, tapY, bootWaitMs, homeWaitMs, intervalMs,
+                popupPage, popupX, popupY, maxPopups, acceptPages, orientation,
+                readForeground = service::foregroundPackageFromWindows,
+                detectPage = { currentPage() ?: "other" },
+                frameSize = {
+                    runCatching { capture?.captureLocalFrame()?.getOrNull() }
+                        .getOrNull()?.let { it.width to it.height }
+                },
+            )
 
         override suspend fun back(): Boolean =
             service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)

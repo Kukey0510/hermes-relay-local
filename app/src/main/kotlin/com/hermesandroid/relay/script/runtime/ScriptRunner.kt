@@ -27,11 +27,11 @@ interface ScriptAccess {
     suspend fun frameSample(): IntArray? = null
     suspend fun saveSnapshot(tag: String): Boolean = false
     suspend fun recognizePowers(minConfidence: Double): PowerRecognition? = null
-    /** 冷启动到 home 页的全自动流程；返回 "ok:home_at_<ms>" 或 "fail:<原因>"。 */
+    /** 冷启动到 home 页的全自动流程；返回 "ok:home_at_<ms>"、"ok:already_on_<page>" 或 "fail:<原因>"。 */
     suspend fun coldStartTo(pkg: String?, bootPage: String, homePage: String,
         tapX: Int?, tapY: Int?, bootWaitMs: Long, homeWaitMs: Long,
         intervalMs: Long, popupPage: String, popupX: Int, popupY: Int,
-        maxPopups: Int): String = "unsupported"
+        maxPopups: Int, acceptPages: List<String>, orientation: String): String = "unsupported"
     suspend fun waitMs(ms: Long) = delay(ms)
 }
 
@@ -251,9 +251,9 @@ class ScriptRunner {
         }
         is ScriptStep.WaitStable -> waitStable(step, access)
         is ScriptStep.ColdStart -> {
-            val message = access.coldStartTo(step.packageName, step.bootPage, step.homePage,
+            val message = access.coldStartTo(step.packageName ?: targetPackages.firstOrNull(), step.bootPage, step.homePage,
                 step.tapX, step.tapY, step.bootWaitMs, step.homeWaitMs, step.intervalMs,
-                step.popupPage, step.popupX, step.popupY, step.maxPopups)
+                step.popupPage, step.popupX, step.popupY, step.maxPopups, step.accept, step.orientation)
             val code = when {
                 message.startsWith("fail:cancelled") -> "cancelled"
                 message.startsWith("fail:screen_off") -> "screen_off"

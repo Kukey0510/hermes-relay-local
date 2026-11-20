@@ -73,9 +73,11 @@ sealed interface ScriptStep {
         override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
     /**
      * 冷启动到指定页的全自动流程，不依赖服务器逐步指挥：
-     * 每 2 秒检查是否横屏（不在前台就再拉起一次），连续两次横屏才开始判页；
+     * 按窗口包名确认前台，连续两次命中目标包才开始判页；
      * 之后每 intervalMs 判一次页，命中 bootPage 就点 tapX/tapY（默认当前抓帧中心，无帧时退回屏幕尺寸），
-     * 点完 2 秒复查，最多点 3 次；命中 homePage 立即结束。
+     * 不传 x/y = 当前帧中心；显式传 x/y = 钉死坐标（单轴缺省时仅该轴取中心）。
+     * 点完 2 秒复查，最多点 3 次；先处理 popup，再接受 homePage 或 accept 中的页面。
+     * orientation 仅控制无帧时的默认中心方向，不参与前台判定。
      */
     data class ColdStart(val packageName: String? = null, val bootPage: String = "boot",
         val homePage: String = "home", val tapX: Int? = null, val tapY: Int? = null,
@@ -84,8 +86,11 @@ sealed interface ScriptStep {
         /** 主页上盖着的中心弹窗（判据里的 popup 页）；命中就点 popupX/popupY 关掉再继续等主页。 */
         val popupPage: String = "popup", val popupX: Int = 1580, val popupY: Int = 375,
         val maxPopups: Int = 3,
+        val accept: List<String> = emptyList(), val orientation: String = "landscape",
         override val id: String? = null, override val timeoutMs: Long? = null,
-        override val retries: Int = 0) : ScriptStep
+        override val retries: Int = 0) : ScriptStep {
+        init { require(orientation in setOf("landscape", "portrait", "any")) { "invalid coldStart orientation" } }
+    }
 }
 
 object ScriptStepSerializer : KSerializer<ScriptStep> {
@@ -142,7 +147,14 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
                 text("popup_x")?.toIntOrNull() ?: 1580,
                 text("popup_y")?.toIntOrNull() ?: 375,
                 text("max_popups")?.toIntOrNull() ?: 3,
-                id, timeout, retries)
+                json["accept"]?.let { pages ->
+                    require(pages is JsonArray) { "coldStart accept must be a string array" }
+                    pages.map {
+                        require(it is JsonPrimitive && it.isString) { "coldStart accept must contain strings" }
+                        it.content
+                    }
+                } ?: emptyList(),
+                text("orientation") ?: "landscape", id, timeout, retries)
             else -> throw UnsupportedOperationException("unsupported script op: $op")
         }
     }
@@ -191,7 +203,9 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
                 put("boot_wait_ms", value.bootWaitMs); put("home_wait_ms", value.homeWaitMs)
                 put("interval_ms", value.intervalMs)
                 put("popup", value.popupPage); put("popup_x", value.popupX); put("popup_y", value.popupY)
-                put("max_popups", value.maxPopups) }
+                put("max_popups", value.maxPopups)
+                fields["accept"] = JsonArray(value.accept.map(::JsonPrimitive))
+                put("orientation", value.orientation) }
         }
         value.id?.let { put("id", it) }
         value.timeoutMs?.let { put("timeout_ms", it) }

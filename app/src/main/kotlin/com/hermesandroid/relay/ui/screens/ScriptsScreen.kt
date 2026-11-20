@@ -95,6 +95,9 @@ fun ScriptsScreen(onOpenScript: (String) -> Unit) {
         scope.launch {
             syncState = ScriptSyncState(ScriptSyncKind.Loading, syncManager.state.lastSyncMs)
             syncManager.refresh(force = true)
+            syncManager.state.message?.let {
+                android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_SHORT).show()
+            }
             syncState = syncManager.state
             result = ScriptCatalog.loadResult(context)
         }
@@ -104,9 +107,6 @@ fun ScriptsScreen(onOpenScript: (String) -> Unit) {
             it.cleanupExpiredLogs()
             pendingRun = it.readPending()
         }
-        syncState = ScriptSyncState(ScriptSyncKind.Loading, syncManager.state.lastSyncMs)
-        syncManager.refresh()
-        syncState = syncManager.state
         result = ScriptCatalog.loadResult(context)
     }
 
@@ -200,7 +200,7 @@ fun ScriptsScreen(onOpenScript: (String) -> Unit) {
 @Composable
 private fun ScriptSyncStatus(state: ScriptSyncState) {
     val time = state.lastSyncMs?.let { DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(it)) }.orEmpty()
-    val text = when (state.kind) {
+    val text = state.message ?: when (state.kind) {
         ScriptSyncKind.Loading -> stringResource(R.string.scripts_sync_loading)
         ScriptSyncKind.Synced -> stringResource(R.string.scripts_sync_at, time)
         ScriptSyncKind.Offline -> if (time.isBlank()) stringResource(R.string.scripts_sync_offline)

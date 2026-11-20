@@ -6,6 +6,7 @@ import android.content.Intent
 import android.os.Build
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityWindowInfo
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
@@ -129,6 +130,24 @@ class HermesAccessibilityService : AccessibilityService() {
     @Volatile
     var currentApp: String? = null
         private set
+
+    /** Read active application windows; event-cached currentApp may incorrectly name System UI. */
+    @Suppress("DEPRECATION")
+    fun foregroundPackageFromWindows(): String? {
+        val windowPackage = runCatching {
+            windows.orEmpty().sortedByDescending { it.layer }
+                .firstOrNull { it.type == AccessibilityWindowInfo.TYPE_APPLICATION && it.isActive }
+                ?.root?.let { root ->
+                    try { root.packageName?.toString() } finally { root.recycle() }
+                }
+        }.getOrNull()
+        if (windowPackage != null) return windowPackage
+        return runCatching {
+            rootInActiveWindow?.let { root ->
+                try { root.packageName?.toString() } finally { root.recycle() }
+            }
+        }.getOrNull()
+    }
 
     /**
      * Public accessor for the lazily-constructed [ActionExecutor]. The

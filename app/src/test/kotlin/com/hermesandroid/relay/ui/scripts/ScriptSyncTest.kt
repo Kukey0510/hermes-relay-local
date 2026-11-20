@@ -9,7 +9,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ScriptSyncTest {
-    private val catalog = """{"version":"v1","scripts":[]}"""
+    private val catalog = """{"version":"2026-11-19T11:59:51Z","scripts":[]}"""
 
     @Test
     fun cacheIsPreferredWithoutReadingAssets() {
@@ -25,6 +25,7 @@ class ScriptSyncTest {
         val manager = manager(server, storage)
         assertFalse(runBlocking { manager.refresh() })
         assertEquals(catalog, storage.cached)
+        assertEquals(0, storage.writes)
         assertEquals(ScriptSyncKind.Offline, manager.state.kind)
     }
 
@@ -64,6 +65,9 @@ class ScriptSyncTest {
         override var lastAttemptMs = 0L
         override var lastSyncMs = 0L
         override var pendingTags: Map<String, List<String>>? = null
-        override fun writeCatalog(content: String) { cached = content }
+        var writes = 0
+        override fun readCatalog() = cached
+        override fun backupCatalog(timestampMs: Long) = Unit
+        override fun writeCatalog(content: String) { writes++; cached = content }
     }
 }
