@@ -17,7 +17,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 internal object FileBridgeSandbox {
-    fun resolve(roots: List<File>, rel: String): File? {
+    fun resolve(roots: List<File>, rel: String, rejectEscapes: Boolean = false): File? {
         if (rel.isBlank() || File(rel).isAbsolute) return null
         if (rel.replace('\\', '/').split('/').any { it == ".." }) return null
 
@@ -27,7 +27,10 @@ internal object FileBridgeSandbox {
             val candidate = runCatching { File(canonicalRoot, rel).canonicalFile }.getOrNull()
                 ?: return@mapNotNull null
             val prefix = canonicalRoot.path + File.separator
-            candidate.takeIf { it == canonicalRoot || it.path.startsWith(prefix) }
+            val withinRoot = candidate == canonicalRoot || candidate.path.startsWith(prefix)
+            // Delete must reject an escape before another root can mask it as a missing path.
+            if (rejectEscapes && !withinRoot) return null
+            candidate.takeIf { withinRoot }
         }
         return candidates.firstOrNull { it.exists() } ?: candidates.firstOrNull()
     }
@@ -150,7 +153,7 @@ object FileBridgeRoutes {
 
     private fun delete(roots: List<File>, body: JsonObject): Result {
         val rel = string(body, "path") ?: return error("bad_request", "Missing path")
-        val target = FileBridgeSandbox.resolve(roots, rel)
+        val target = FileBridgeSandbox.resolve(roots, rel, rejectEscapes = true)
             ?: return error("path_outside_sandbox", "Path is outside the allowed roots")
         if (roots.any { target == it.canonicalFile }) {
             return error("path_outside_sandbox", "Cannot delete a sandbox root")

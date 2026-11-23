@@ -79,7 +79,13 @@ class FileBridgeRoutesTest {
         assertError(400, "path_outside_sandbox", delete(context, outside.path))
         Files.createSymbolicLink(context.filesDir.resolve("escape").toPath(), outside.toPath())
         assertError(400, "path_outside_sandbox", delete(context, "escape"))
+        val cacheFile = context.cacheDir.resolve("escape").apply { writeText("keep cache") }
+        assertError(400, "path_outside_sandbox", delete(context, "escape"))
         assertEquals("keep", outside.readText())
+        assertEquals("keep cache", cacheFile.readText())
+        val outsideDir = temporary.newFolder()
+        Files.createSymbolicLink(context.filesDir.resolve("escape-dir").toPath(), outsideDir.toPath())
+        assertError(400, "path_outside_sandbox", delete(context, "escape-dir/missing.txt"))
     }
 
     @Test
@@ -99,6 +105,20 @@ class FileBridgeRoutesTest {
         assertEquals(200, delete(context, "external.txt").status)
         assertFalse(cacheFile.exists())
         assertFalse(externalFile.exists())
+    }
+
+    @Test
+    fun otherFileRoutesKeepTheirExistingMultiRootResolutionAndErrorCodes() = runTest {
+        val context = context()
+        val outside = temporary.newFile().apply { writeText("keep") }
+        Files.createSymbolicLink(context.filesDir.resolve("escape").toPath(), outside.toPath())
+        for (path in listOf("/fs/list", "/fs/read")) {
+            val result = FileBridgeRoutes.handle(context, path, "POST", buildJsonObject { put("path", "escape") })
+            assertError(400, "not_found", result)
+        }
+        assertEquals(200, write(context, "escape", false).status)
+        assertEquals("saved", context.cacheDir.resolve("escape").readText())
+        assertEquals("keep", outside.readText())
     }
 
     private suspend fun write(context: Context, path: String, mkdirs: Boolean) = FileBridgeRoutes.handle(
