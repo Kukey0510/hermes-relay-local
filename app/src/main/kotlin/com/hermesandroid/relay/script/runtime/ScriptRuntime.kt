@@ -5,14 +5,22 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.accessibilityservice.AccessibilityService
 import com.axiomlabs.hermesrelay.localvision.FrameArchive
+import com.axiomlabs.hermesrelay.localvision.Grayscale
+import com.axiomlabs.hermesrelay.localvision.LocalVisionTemplateLoader
+import com.axiomlabs.hermesrelay.localvision.Rect
+import com.axiomlabs.hermesrelay.localvision.TemplateMatcher
 import com.hermesandroid.relay.accessibility.HermesAccessibilityService
 import com.hermesandroid.relay.accessibility.ScreenCapture
 import com.hermesandroid.relay.bridge.BridgeRunTracker
 import com.hermesandroid.relay.network.relay.LocalVisionBridgeRoutes
 import com.hermesandroid.relay.ui.scripts.ScriptCatalog
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.UUID
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -319,6 +327,32 @@ object ScriptRuntime {
             runCatching { capture?.captureLocalFrame()?.getOrNull() }.getOrNull()?.let { it.width to it.height }
 
         override suspend fun tap(x: Int, y: Int) = service.actionExecutor.tap(x, y).ok
+        override suspend fun tapTemplate(name: String, area: List<Int>?, minScore: Double,
+            offsetX: Int, offsetY: Int): String? {
+            val foreground = foregroundPackage()?.takeIf { it.isNotBlank() } ?: return null
+            val frame = capture?.captureLocalFrame(fresh = true)?.getOrNull() ?: return null
+            val searchArea = area?.let { (x, y, w, h) ->
+                if (x < 0 || y < 0 || w <= 0 || h <= 0 ||
+                    x.toLong() + w > frame.width || y.toLong() + h > frame.height
+                ) return null
+                Rect(x, y, w, h)
+            }
+            val (match, template) = withContext(Dispatchers.Default) {
+                val template = LocalVisionTemplateLoader(context).load(name) ?: return@withContext null
+                TemplateMatcher(template).find(Grayscale.fromRgb(frame), searchArea, minScore) to template
+            } ?: return null
+            if (!match.found) return null
+
+            val (width, height) = screenSize()
+            val maxX = (width - 1).coerceAtLeast(0).toLong()
+            val maxY = (height - 1).coerceAtLeast(0).toLong()
+            val x = (match.x.toLong() + template.width / 2 + offsetX).coerceIn(0L, maxX).toInt()
+            val y = (match.y.toLong() + template.height / 2 + offsetY).coerceIn(0L, maxY).toInt()
+            currentCoroutineContext().ensureActive()
+            if (ScriptRunControl.isCancelled() || !screenOn() || foregroundPackage() != foreground) return null
+            return if (tap(x, y)) "hit:${match.score}:$x,$y" else null
+        }
+
         override suspend fun tapText(text: String) = service.actionExecutor.tapText(text).ok
         override suspend fun swipe(fromX: Int, fromY: Int, toX: Int, toY: Int, durationMs: Long) =
             service.actionExecutor.swipe(fromX, fromY, toX, toY, durationMs).ok

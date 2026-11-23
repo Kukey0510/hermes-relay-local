@@ -1,5 +1,6 @@
 package com.hermesandroid.relay.script.runtime
 
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
@@ -14,6 +15,9 @@ interface ScriptAccess {
     /** Dimensions of an actual captured frame, or null when capture is unavailable. */
     suspend fun frameSize(): Pair<Int, Int>?
     suspend fun tap(x: Int, y: Int): Boolean
+    /** Tap the matched template center plus offset and return "hit:<score>:<x>,<y>", or null on a miss. */
+    suspend fun tapTemplate(name: String, area: List<Int>?, minScore: Double,
+        offsetX: Int, offsetY: Int): String? = null
     suspend fun tapText(text: String): Boolean
     suspend fun swipe(fromX: Int, fromY: Int, toX: Int, toY: Int, durationMs: Long): Boolean = false
     fun screenOn(): Boolean = true
@@ -188,6 +192,19 @@ class ScriptRunner {
             is ScriptStep.Pause -> pause(step.reason, step.pauseTimeoutMs, false, emptyList(), access, targetPackages, variables, depth)
             is ScriptStep.AskServer -> pause(step.reason, step.pauseTimeoutMs, true, step.thenSteps, access, targetPackages, variables, depth)
             is ScriptStep.Tap -> StepOutcome(access.tap(step.x, step.y), "tap")
+            is ScriptStep.TapTemplate -> {
+                val hit = access.tapTemplate(step.template, step.area, step.min, step.offsetX, step.offsetY)
+                if (hit != null) {
+                    val (_, score, point) = hit.split(':', limit = 3)
+                    step.asName?.takeIf { it.isNotEmpty() }?.let { variables[it] = point }
+                    val formattedScore = String.format(Locale.ROOT, "%.2f", score.toDouble())
+                    StepOutcome(true, "template=${step.template} score=$formattedScore at=$point")
+                } else if (step.optional) {
+                    StepOutcome(true, "absent:${step.template}")
+                } else {
+                    StepOutcome(false, "template_not_found:${step.template}")
+                }
+            }
             is ScriptStep.TapText -> StepOutcome(access.tapText(substitute(step.text, variables)), "tapText")
             is ScriptStep.Wait -> {
                 val clamped = step.ms.coerceIn(0, 30_000)
@@ -439,6 +456,7 @@ class ScriptRunner {
         ScriptRunLog(index, step.id, prefix + when (step) {
             is ScriptStep.Pause -> "pause"; is ScriptStep.AskServer -> "ask_server"
             is ScriptStep.Tap -> "tap"; is ScriptStep.TapText -> "tapText"; is ScriptStep.Wait -> "wait"
+            is ScriptStep.TapTemplate -> "tap_template"
             is ScriptStep.Probe -> "probe"; is ScriptStep.Read -> "read"; is ScriptStep.Swipe -> "swipe"
             is ScriptStep.TapIfText -> "tapIfText"; is ScriptStep.IfPage -> "if_page"; is ScriptStep.Loop -> "loop"
             is ScriptStep.ForceStop -> "force_stop"

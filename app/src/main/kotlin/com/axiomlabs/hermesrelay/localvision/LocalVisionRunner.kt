@@ -47,10 +47,7 @@ class LocalVisionRunner(
             DetectorState(
                 PageDetector(
                     selection.pages,
-                    object : TemplateLoader {
-                        override fun load(name: String): GrayImage? =
-                            loadTemplate(name, usedTemplateFallback)
-                    },
+                    LocalVisionTemplateLoader(appContext, hotReloadDir) { usedTemplateFallback.set(true) },
                 ),
                 source,
                 selection.spec,
@@ -70,13 +67,21 @@ class LocalVisionRunner(
         }
         return LocalVisionResult(page, elapsedMs, source, state?.spec ?: "assets")
     }
+}
 
-    private fun loadTemplate(name: String, usedFallback: AtomicBoolean): GrayImage? = runCatching {
+internal class LocalVisionTemplateLoader(
+    context: Context,
+    private val hotReloadDir: File? = context.filesDir.resolve("localvision"),
+    private val onAssetFallback: () -> Unit = {},
+) : TemplateLoader {
+    private val appContext = context.applicationContext
+
+    override fun load(name: String): GrayImage? = runCatching {
         val hotTemplate = hotReloadDir?.resolve("templates")?.resolve(name)
         val bitmap = hotTemplate?.takeIf(File::isFile)?.let { file ->
             runCatching { file.inputStream().use(BitmapFactory::decodeStream) }.getOrNull()
         } ?: run {
-            if (hotReloadDir != null) usedFallback.set(true)
+            if (hotReloadDir != null) onAssetFallback()
             appContext.assets.open("templates/$name").use(BitmapFactory::decodeStream)
         }
             ?: return@runCatching null

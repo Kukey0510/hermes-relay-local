@@ -6,6 +6,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -124,6 +125,88 @@ class ScriptRunnerPrimitivesTest {
         assertFalse(Json.decodeFromString<RuntimeScript>(source.dropLast(1) + ",\"auto_evidence\":false}").autoEvidence)
     }
 
+    @Test fun tapTemplateReportsHitAndSharesTappedCoordinates() = runTest {
+        val access = Access().apply { templateHit = "hit:0.93:190,720" }
+        val area = listOf(100, 600, 200, 240)
+        val result = ScriptRunner().run(script(steps = arrayOf(
+            ScriptStep.TapTemplate("pool.png", area, 0.92, asName = "pool", offsetX = -4, offsetY = 8),
+            ScriptStep.TapText("${'$'}{pool}"),
+        )), access)
+
+        assertTrue(result.success)
+        assertEquals("tap_template", result.logs.first().op)
+        assertEquals("template=pool.png score=0.93 at=190,720", result.logs.first().message)
+        assertEquals(listOf("190,720"), access.texts)
+        assertEquals(
+            listOf(ScriptStep.TapTemplate("pool.png", area, 0.92, offsetX = -4, offsetY = 8)),
+            access.templateCalls,
+        )
+    }
+
+    @Test fun tapTemplateMissUsesOptionalSemanticsAndKeepsPreviousVariable() = runTest {
+        val access = Access()
+        val required = ScriptRunner().run(script(steps = arrayOf(ScriptStep.TapTemplate("pool.png"))), access)
+        assertFalse(required.success)
+        assertEquals("step_failed", required.errorCode)
+        assertEquals("template_not_found:pool.png", required.logs.single().message)
+
+        val optional = ScriptRunner().run(script(steps = arrayOf(
+            ScriptStep.SetVar("pool", "previous"),
+            ScriptStep.TapTemplate("pool.png", optional = true, asName = "pool"),
+            ScriptStep.TapText("${'$'}{pool}"),
+        )), access)
+        assertTrue(optional.success)
+        assertEquals("absent:pool.png", optional.logs[1].message)
+        assertEquals(listOf("previous"), access.texts)
+    }
+
+    @Test fun tapTemplateIsGuardedBeforeMatching() = runTest {
+        val access = Access().apply { foreground = "com.android.systemui" }
+        val result = ScriptRunner().run(script(steps = arrayOf(
+            ScriptStep.TapTemplate("pool.png", optional = true),
+        )), access)
+
+        assertEquals("guard_system_ui", result.errorCode)
+        assertTrue(access.templateCalls.isEmpty())
+    }
+
+    @Test fun tapTemplateRoundTripsFieldsAndClampsFiniteScores() {
+        val source = """{"op":"tap_template","template":"pool.png","area":[100,600,200,240],
+            "min":0.93,"optional":true,"as":"pool","offset_x":-4,"offset_y":8,
+            "id":"select","timeout_ms":5000,"retries":2}"""
+        val step = Json.decodeFromString<ScriptStep>(source)
+        assertEquals(ScriptStep.TapTemplate(
+            "pool.png", listOf(100, 600, 200, 240), 0.93, true, "pool", -4, 8,
+            id = "select", timeoutMs = 5_000, retries = 2,
+        ), step)
+        assertEquals(step, Json.decodeFromString<ScriptStep>(Json.encodeToString(ScriptStepSerializer, step)))
+
+        val defaults = """{"op":"tap_template","template":"pool.png"}"""
+        assertEquals(ScriptStep.TapTemplate("pool.png"), Json.decodeFromString<ScriptStep>(defaults))
+        assertEquals(0.50, (Json.decodeFromString<ScriptStep>(source.replace("0.93", "0.30")) as ScriptStep.TapTemplate).min, 0.0)
+        assertEquals(1.00, (Json.decodeFromString<ScriptStep>(source.replace("0.93", "1.30")) as ScriptStep.TapTemplate).min, 0.0)
+    }
+
+    @Test fun tapTemplateRejectsMalformedFieldsInCatalog() {
+        val invalidSteps = listOf(
+            "",
+            ""","template":"" """,
+            ""","template":"../pool.png" """,
+            ""","template":"pool.png","min":null""",
+            ""","template":"pool.png","min":"invalid" """,
+            ""","template":"pool.png","min":"NaN" """,
+            ""","template":"pool.png","min":1e400""",
+            ""","template":"pool.png","area":[0,0,100]""",
+            ""","template":"pool.png","area":[0,0,100,1.5]""",
+        )
+        for (fields in invalidSteps) {
+            val catalog = """[{"id":"invalid","targetPackages":["game.pkg"],
+                "steps":[{"op":"tap_template"$fields}]}]"""
+            assertNull(catalog, ScriptRuntime.decodeCatalog(catalog, warn = {}).singleOrNull())
+            assertEquals("invalid_script", ScriptRuntime.missingScriptError("invalid"))
+        }
+    }
+
     @Test fun failureCapturesOnceAndAppendsOnlyLastTwentyLogsAsJsonLines() = runTest {
         val root = Files.createTempDirectory("script-evidence-").toFile()
         try {
@@ -189,6 +272,8 @@ class ScriptRunnerPrimitivesTest {
         var on = true
         var tapOk = true
         var taps = 0
+        var templateHit: String? = null
+        val templateCalls = mutableListOf<ScriptStep.TapTemplate>()
         var snapshotThrows = false
         val texts = mutableListOf<String>()
         val snapshots = mutableListOf<String>()
@@ -197,6 +282,11 @@ class ScriptRunnerPrimitivesTest {
         override fun screenOn() = on
         override suspend fun frameSize(): Pair<Int, Int>? = null
         override suspend fun tap(x: Int, y: Int): Boolean { taps++; return tapOk }
+        override suspend fun tapTemplate(name: String, area: List<Int>?, minScore: Double,
+            offsetX: Int, offsetY: Int): String? {
+            templateCalls += ScriptStep.TapTemplate(name, area, minScore, offsetX = offsetX, offsetY = offsetY)
+            return templateHit
+        }
         override suspend fun tapText(text: String): Boolean { texts += text; return true }
         override suspend fun probe(expect: String, timeoutMs: Long) = false
         override suspend fun read(field: String): String? = null

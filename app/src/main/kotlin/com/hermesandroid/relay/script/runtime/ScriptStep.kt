@@ -29,6 +29,18 @@ sealed interface ScriptStep {
         override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
     data class Tap(val x: Int, val y: Int, override val id: String? = null,
         override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
+    data class TapTemplate(
+        val template: String,
+        val area: List<Int>? = null,
+        val min: Double = 0.90,
+        val optional: Boolean = false,
+        val asName: String? = null,
+        val offsetX: Int = 0,
+        val offsetY: Int = 0,
+        override val id: String? = null,
+        override val timeoutMs: Long? = null,
+        override val retries: Int = 0,
+    ) : ScriptStep
     data class TapText(val text: String, override val id: String? = null,
         override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
     data class Wait(val ms: Long, override val id: String? = null,
@@ -136,6 +148,34 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
             "pause" -> ScriptStep.Pause(text("reason") ?: "need_help", (timeout ?: 600_000).coerceIn(0, 3_600_000), id, retries = retries)
             "ask_server" -> ScriptStep.AskServer(text("reason") ?: "need_help", (timeout ?: 600_000).coerceIn(0, 3_600_000), steps("then"), id, retries = retries)
             "tap" -> ScriptStep.Tap(required("x").toInt(), required("y").toInt(), id, timeout, retries)
+            "tap_template" -> {
+                val template = json["template"] ?: error("missing 'template'")
+                require(template is JsonPrimitive && template.isString && template.content.isNotBlank() &&
+                    '/' !in template.content && '\\' !in template.content &&
+                    template.content != "." && template.content != "..") { "invalid 'template' filename" }
+                val area = json["area"]?.let {
+                    require(it is JsonArray && it.size == 4) { "'area' must contain four integers" }
+                    it.map { coordinate ->
+                        (coordinate as? JsonPrimitive)?.intOrNull ?: error("'area' must contain four integers")
+                    }
+                }
+                val min = json["min"]?.let {
+                    (it as? JsonPrimitive)?.content?.toDoubleOrNull()?.takeIf { score -> score.isFinite() }
+                        ?: error("invalid 'min'")
+                } ?: 0.90
+                ScriptStep.TapTemplate(
+                    template = template.content,
+                    area = area,
+                    min = min.coerceIn(0.50, 1.00),
+                    optional = (json["optional"] as? JsonPrimitive)?.booleanOrNull ?: false,
+                    asName = text("as"),
+                    offsetX = text("offset_x")?.toInt() ?: 0,
+                    offsetY = text("offset_y")?.toInt() ?: 0,
+                    id = id,
+                    timeoutMs = timeout,
+                    retries = retries,
+                )
+            }
             "tapText" -> ScriptStep.TapText(required("text"), id, timeout, retries)
             "wait" -> ScriptStep.Wait(required("ms").toLong(), id, timeout, retries)
             "probe" -> ScriptStep.Probe(required("expect"), timeout, id, retries, game())
@@ -203,6 +243,16 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
             is ScriptStep.AskServer -> { put("op", "ask_server"); put("reason", value.reason)
                 put("timeout_ms", value.pauseTimeoutMs.coerceIn(0, 3_600_000)); putSteps("then", value.thenSteps) }
             is ScriptStep.Tap -> { put("op", "tap"); put("x", value.x); put("y", value.y) }
+            is ScriptStep.TapTemplate -> {
+                put("op", "tap_template")
+                put("template", value.template)
+                value.area?.let { fields["area"] = JsonArray(it.map(::JsonPrimitive)) }
+                put("min", value.min)
+                put("optional", value.optional)
+                value.asName?.let { put("as", it) }
+                put("offset_x", value.offsetX)
+                put("offset_y", value.offsetY)
+            }
             is ScriptStep.TapText -> { put("op", "tapText"); put("text", value.text) }
             is ScriptStep.Wait -> { put("op", "wait"); put("ms", value.ms) }
             is ScriptStep.Probe -> { put("op", "probe"); put("expect", value.expect)
