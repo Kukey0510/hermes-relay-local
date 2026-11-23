@@ -140,7 +140,7 @@ class ScriptRunnerTest {
             listOf(PowerReading(100), PowerReading(200)), listOf(PowerReading(50), PowerReading(60)),
             listOf(PowerReading(null), PowerReading(1)), listOf(PowerReading(90), PowerReading(90)),
         ), 17) }
-        val result = ScriptRunner().run(script(ScriptStep.TapWeakest(dry = true)), access)
+        val result = ScriptRunner().run(script(ScriptStep.TapWeakest(dry = true, centers = listOf(590, 960, 1330, 1700), y = 355)), access)
         assertTrue(result.success)
         assertTrue(access.tapCoordinates.isEmpty())
         assertTrue(result.logs.single().message.contains("selected=1"))

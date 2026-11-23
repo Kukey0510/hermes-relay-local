@@ -94,10 +94,13 @@ class GameDeclarationTest {
                 "steps":[{"op":"coldStart","package":"step.pkg","home":"explicit_home"}]
             }]$games}""", warnings::add).single()
             assertEquals(1, warnings.size)
-            assertEquals(ScriptStep.ColdStart(packageName = "step.pkg", homePage = "explicit_home"), script.steps.single())
+            assertEquals(ScriptStep.ColdStart(packageName = "step.pkg", homePage = "explicit_home",
+                bootPage = "boot", popupPage = "popup", popupX = 1580, popupY = 375), script.steps.single())
         }
-        assertEquals(ScriptStep.ColdStart(), ScriptRuntime.decodeCatalog(
-            """[{"id":"legacy","targetPackages":[],"steps":[{"op":"coldStart"}]}]""") { fail(it) }.single().steps.single())
+        // 2026-11-23：coldStart 的 boot/home/popup 改为必填后，无参 legacy 条目不再被接受。
+        // 这条从这里开始守「缺参数就不进 catalog」，而不是「缺参数也能跑」。
+        assertTrue(ScriptRuntime.decodeCatalog(
+            """[{"id":"legacy","targetPackages":[],"steps":[{"op":"coldStart"}]}]""") { fail(it) }.isEmpty())
     }
 
     private class Access : ScriptAccess {

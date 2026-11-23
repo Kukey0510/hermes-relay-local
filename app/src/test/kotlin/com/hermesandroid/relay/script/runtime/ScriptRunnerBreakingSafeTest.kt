@@ -127,9 +127,10 @@ class ScriptRunnerBreakingSafeTest {
 
     @Test fun weakestInvalidCoordinatesReturnInvalidScriptBeforeRecognitionOrTapEvenWhenDry() = runTest {
         for (step in listOf(
-            ScriptStep.TapWeakest(centers = emptyList()),
-            ScriptStep.TapWeakest(centers = List(9) { it }),
-            ScriptStep.TapWeakest(y = -1), ScriptStep.TapWeakest(y = 1081, dry = true),
+            ScriptStep.TapWeakest(centers = emptyList(), y = 100),
+            ScriptStep.TapWeakest(centers = List(9) { it }, y = 100),
+            ScriptStep.TapWeakest(centers = listOf(100), y = -1),
+            ScriptStep.TapWeakest(centers = listOf(100), y = 1081, dry = true),
         )) {
             val access = Access()
             val result = ScriptRunner().run(script(step), access)

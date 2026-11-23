@@ -108,8 +108,9 @@ sealed interface ScriptStep {
     data class TapWeakest(val fallbackIndex: Int = 0, val minConfidence: Double = 0.5,
         val dry: Boolean = false, override val id: String? = null,
         override val timeoutMs: Long? = null, override val retries: Int = 0,
-        // 兼容期默认值（碧蓝四卡两行），所有脚本补完参数后删除
-        val centers: List<Int> = listOf(590, 960, 1330, 1700), val y: Int = 355) : ScriptStep
+        // 必填：卡位中心 x 坐标（1..8 个）与卡片中心 y。旧脚本靠默认值的时代已结束，
+        // 所有在跑脚本均已显式传参（碧蓝 4 条于 2026-11-23 补齐）。
+        val centers: List<Int>, val y: Int) : ScriptStep
     /**
      * 冷启动到指定页的全自动流程，不依赖服务器逐步指挥：
      * 按窗口包名确认前台，连续两次命中目标包才开始判页；
@@ -118,12 +119,12 @@ sealed interface ScriptStep {
      * 点完 2 秒复查，最多点 3 次；先处理 popup，再接受 homePage 或 accept 中的页面。
      * orientation 仅控制无帧时的默认中心方向，不参与前台判定。
      */
-    data class ColdStart(val packageName: String? = null, val bootPage: String = "boot",
-        val homePage: String = "home", val tapX: Int? = null, val tapY: Int? = null,
+    data class ColdStart(val packageName: String? = null, val bootPage: String,
+        val homePage: String, val tapX: Int? = null, val tapY: Int? = null,
         val bootWaitMs: Long = 60_000, val homeWaitMs: Long = 90_000,
         val intervalMs: Long = 1_000,
         /** 主页上盖着的中心弹窗（判据里的 popup 页）；命中就点 popupX/popupY 关掉再继续等主页。 */
-        val popupPage: String = "popup", val popupX: Int = 1580, val popupY: Int = 375,
+        val popupPage: String, val popupX: Int, val popupY: Int,
         val maxPopups: Int = 3,
         val accept: List<String> = emptyList(), val orientation: String = "landscape",
         override val id: String? = null, override val timeoutMs: Long? = null,
@@ -237,30 +238,32 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
                         (it as? JsonPrimitive)?.takeUnless { coordinate -> coordinate.isString }?.intOrNull
                             ?: error("centers must contain integers")
                     }
-                } ?: ScriptStep.TapWeakest().centers,
+                } ?: error("tapWeakest requires 'centers'"),
                 y = json["y"]?.let {
                     (it as? JsonPrimitive)?.takeUnless { coordinate -> coordinate.isString }?.intOrNull
                         ?: error("y must be an integer")
-                } ?: ScriptStep.TapWeakest().y)
+                } ?: error("tapWeakest requires 'y'"))
             "coldStart" -> ScriptStep.ColdStart(
-                text("package"), text("boot") ?: "boot", text("home") ?: "home",
-                (json["x"] as? JsonPrimitive)?.intOrNull,
-                (json["y"] as? JsonPrimitive)?.intOrNull,
-                text("boot_wait_ms")?.toLongOrNull() ?: 60_000,
-                text("home_wait_ms")?.toLongOrNull() ?: 90_000,
-                text("interval_ms")?.toLongOrNull() ?: 1_000,
-                text("popup") ?: "popup",
-                text("popup_x")?.toIntOrNull() ?: 1580,
-                text("popup_y")?.toIntOrNull() ?: 375,
-                text("max_popups")?.toIntOrNull() ?: 3,
-                json["accept"]?.let { pages ->
+                packageName = text("package"),
+                bootPage = required("boot"),
+                homePage = required("home"),
+                tapX = (json["x"] as? JsonPrimitive)?.intOrNull,
+                tapY = (json["y"] as? JsonPrimitive)?.intOrNull,
+                bootWaitMs = text("boot_wait_ms")?.toLongOrNull() ?: 60_000,
+                homeWaitMs = text("home_wait_ms")?.toLongOrNull() ?: 90_000,
+                intervalMs = text("interval_ms")?.toLongOrNull() ?: 1_000,
+                popupPage = required("popup"),
+                popupX = required("popup_x").toIntOrNull() ?: error("coldStart 'popup_x' must be an integer"),
+                popupY = required("popup_y").toIntOrNull() ?: error("coldStart 'popup_y' must be an integer"),
+                maxPopups = text("max_popups")?.toIntOrNull() ?: 3,
+                accept = json["accept"]?.let { pages ->
                     require(pages is JsonArray) { "coldStart accept must be a string array" }
                     pages.map {
                         require(it is JsonPrimitive && it.isString) { "coldStart accept must contain strings" }
                         it.content
                     }
                 } ?: emptyList(),
-                text("orientation") ?: "landscape", id, timeout, retries)
+                orientation = text("orientation") ?: "landscape", id = id, timeoutMs = timeout, retries = retries)
             else -> throw UnsupportedOperationException("unsupported script op: $op")
         }
     }

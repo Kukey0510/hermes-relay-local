@@ -130,7 +130,8 @@ class ColdStartTest {
             }
         }
         val result = ScriptRunner().run(RuntimeScript("cold", listOf("game"), listOf(
-            ScriptStep.ColdStart(accept = listOf("list"), orientation = "portrait"),
+            ScriptStep.ColdStart(accept = listOf("list"), orientation = "portrait",
+                bootPage = "boot", homePage = "home", popupPage = "popup", popupX = 1580, popupY = 375),
         )), access)
         assertTrue(result.success)
         assertEquals("ok:already_on_list", result.logs.single().message)
