@@ -9,13 +9,9 @@ name: unit-tests
 # 修好一个就从白名单删一行。
 
 on:
+  # 2026-11-23 定：取消 push 自动触发。改一行代码就跑一轮 10~15 分钟，额度白白烧掉；
+  # 只在「要出包/要编译证据」时手动派：gh workflow run unit-tests.yml --ref <分支>
   workflow_dispatch:
-  push:
-    branches: [main, feat/ui-redesign]
-    paths:
-      - 'app/src/**'
-      - 'app/build.gradle.kts'
-      - 'gradle/libs.versions.toml'
 
 permissions:
   contents: read
