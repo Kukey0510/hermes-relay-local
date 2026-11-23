@@ -5,6 +5,7 @@ import com.hermesandroid.relay.data.BuildFlavor
 import com.hermesandroid.relay.network.relay.BridgeCommandHandler
 import com.hermesandroid.relay.network.relay.models.Envelope
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkObject
@@ -59,7 +60,7 @@ class ScriptResumeRouteTest {
         mockkObject(BuildFlavor)
         every { BuildFlavor.isSideload } returns true
         val safety = mockk<BridgeSafetyManager>()
-        coEvery { safety.authorizeCapability(any(), any()) } returns BridgeSafetyManager.CapabilityAuthorization(true)
+        coEvery { safety.authorizeCapability("/script/status", "POST", any()) } returns BridgeSafetyManager.CapabilityAuthorization(true)
         val handler = BridgeCommandHandler(mockk(relaxed = true), this, safetyManager = safety)
         val runId = reserve()
         val body = buildJsonObject { put("runId", runId) }
@@ -67,14 +68,14 @@ class ScriptResumeRouteTest {
             val signal = ScriptRunControl.beginPause(runId)
             assertEquals("paused", ScriptRuntime.status(runId)?.state)
             val status = handler.handleLocalCommand(command("/script/status", body))
-            assertEquals(200, status.status)
+            assertEquals(status.errorMessage, 200, status.status)
             assertEquals("\"paused\"", status.resultJson?.get("state").toString())
             val resumeBody = buildJsonObject {
                 put("runId", runId)
                 if (steps != null) put("steps", Json.parseToJsonElement(steps))
             }
             val response = handler.handleLocalCommand(command("/script/resume/", resumeBody))
-            assertEquals(200, response.status)
+            assertEquals(response.errorMessage, 200, response.status)
             assertEquals(buildJsonObject { put("ok", true); put("runId", runId); put("resumed", true) }, response.resultJson)
             val delivered = signal.await()
             when (steps) {
@@ -85,5 +86,6 @@ class ScriptResumeRouteTest {
             assertEquals("running", ScriptRuntime.status(runId)?.state)
             ScriptRunControl.endPause()
         }
+        coVerify(exactly = 3) { safety.authorizeCapability("/script/status", "POST", any()) }
     }
 }
