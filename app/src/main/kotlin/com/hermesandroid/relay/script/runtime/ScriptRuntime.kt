@@ -5,16 +5,27 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.accessibilityservice.AccessibilityService
 import com.axiomlabs.hermesrelay.localvision.FrameArchive
+import com.axiomlabs.hermesrelay.localvision.Grayscale
+import com.axiomlabs.hermesrelay.localvision.LocalVisionTemplateLoader
+import com.axiomlabs.hermesrelay.localvision.Rect
+import com.axiomlabs.hermesrelay.localvision.TemplateMatcher
 import com.hermesandroid.relay.accessibility.HermesAccessibilityService
 import com.hermesandroid.relay.accessibility.ScreenCapture
+import com.hermesandroid.relay.bridge.BridgeRunTracker
 import com.hermesandroid.relay.network.relay.LocalVisionBridgeRoutes
 import com.hermesandroid.relay.ui.scripts.ScriptCatalog
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.UUID
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -30,14 +41,49 @@ object ScriptRuntime {
     private val runner = ScriptRunner()
     private val json = Json { ignoreUnknownKeys = true }
 
-    @Serializable private data class Catalog(val scripts: List<RuntimeScript>)
+    @Volatile private var loadErrors: Map<String, String> = emptyMap()
+
+    private fun catalogWarning(message: String) { android.util.Log.w("ScriptRuntime", message) }
+
+    internal fun gamesDeclaration(content: String, warn: (String) -> Unit = ::catalogWarning): Map<String, GameDeclaration> =
+        decodeGamesDeclaration(json.parseToJsonElement(content), json, warn)
+
+    internal fun decodeCatalog(content: String, warn: (String) -> Unit = ::catalogWarning): List<RuntimeScript> {
+        loadErrors = emptyMap()
+        val root = json.parseToJsonElement(content)
+        val games = decodeGamesDeclaration(root, json, warn)
+        val entries = when (root) {
+            is JsonArray -> root
+            is JsonObject -> root["scripts"] as? JsonArray ?: error("missing scripts array")
+            else -> error("invalid catalog root")
+        }
+        val errors = mutableMapOf<String, String>()
+        val scripts = entries.mapNotNull { entry ->
+            runCatching { json.decodeFromJsonElement<RuntimeScript>(scriptWithGameDefaults(entry, games, warn)) }.getOrElse { error ->
+                val id = ((entry as? JsonObject)?.get("id") as? JsonPrimitive)?.contentOrNull
+                if (id != null) errors[id] = error.message ?: error.javaClass.simpleName
+                null
+            }
+        }
+        loadErrors = errors.toMap()
+        return scripts
+    }
+
+    internal fun missingScriptError(scriptId: String): String =
+        if (loadErrors.containsKey(scriptId)) "invalid_script" else "script_not_found"
+
+    internal fun coldStartTapPoint(tapX: Int?, tapY: Int?, frameSize: Pair<Int, Int>?,
+        fallbackSize: () -> Pair<Int, Int>): Pair<Int, Int> {
+        if (tapX != null && tapY != null) return tapX to tapY
+        val (width, height) = frameSize ?: fallbackSize()
+        return (tapX ?: width / 2) to (tapY ?: height / 2)
+    }
 
     fun load(context: Context, scriptId: String): RuntimeScript? {
         val cache = ScriptCatalog.cacheFile(context)
         val content = if (cache.isFile) cache.readText()
             else context.assets.open("scripts.json").bufferedReader().use { it.readText() }
-        val scripts = if (content.trimStart().startsWith("[")) json.decodeFromString<List<RuntimeScript>>(content)
-            else json.decodeFromString<Catalog>(content).scripts
+        val scripts = decodeCatalog(content)
         return scripts.firstOrNull { it.id == scriptId }
     }
 
@@ -51,16 +97,142 @@ object ScriptRuntime {
         return reporter.flush()
     }
 
+    data class RunStatus(
+        val runId: String,
+        val state: String = "running",
+        val errorCode: String? = null,
+        val lastStep: Int? = null,
+        val startedAt: Long = System.nanoTime(),
+        val finishedAt: Long? = null,
+    ) {
+        val elapsedMs: Long get() = ((finishedAt ?: System.nanoTime()) - startedAt) / 1_000_000
+    }
+
+    private val history = linkedMapOf<String, RunStatus>()
+    private var activeRunId: String? = null
+    private var stopRequested = false
+    private val backgroundScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default,
+    )
+
+    @Synchronized fun status(runId: String): RunStatus? = history[runId]?.let {
+        if (runId == activeRunId && ScriptRunControl.isPaused(runId)) it.copy(state = "paused") else it
+    }
+
+    /** Same JSON response contract for local and bridge callers. */
+    @Synchronized fun resume(body: JsonObject): JsonObject {
+        val runId = (body["runId"] as? JsonPrimitive)?.content.orEmpty()
+        if (runId != activeRunId || history[runId]?.finishedAt != null) return buildJsonObject {
+            put("ok", false); put("error", "run_not_found")
+        }
+        val steps = body["steps"]?.let { json.decodeFromJsonElement<List<ScriptStep>>(it) }
+        ScriptRunControl.resume(runId, steps)
+        return buildJsonObject { put("ok", true); put("runId", runId); put("resumed", true) }
+    }
+
+    @Synchronized fun isRunning(): Boolean = activeRunId != null
+
+    /** Serialize cache replacement with run reservation; stale pending_run files do not block sync. */
+    @Synchronized internal fun updateCatalogIfIdle(update: () -> Unit): Boolean {
+        if (activeRunId != null) return false
+        update()
+        return true
+    }
+
+    @Synchronized private fun reserve(): String? {
+        if (activeRunId != null) return null
+        val runId = UUID.randomUUID().toString()
+        activeRunId = runId
+        stopRequested = false
+        history[runId] = RunStatus(runId)
+        while (history.size > 20) history.remove(history.keys.first())
+        return runId
+    }
+
+    @Synchronized fun requestStop(reason: String) {
+        if (activeRunId != null) stopRequested = true
+        ScriptRunControl.requestStop(reason)
+    }
+
+    @Synchronized private fun stepCompleted(runId: String, stepIndex: Int) {
+        history[runId]?.let { history[runId] = it.copy(lastStep = stepIndex) }
+    }
+
+    @Synchronized private fun restoreStopRequest() {
+        if (stopRequested) ScriptRunControl.requestStop("bridge:/script/stop")
+    }
+
+    /** Reservation happens before returning, so concurrent requests cannot queue extra runs. */
+    fun startAsync(context: Context, screenCapture: ScreenCapture?, scriptId: String): String? {
+        val runId = reserve() ?: return null
+        backgroundScope.launch { runReserved(context.applicationContext, screenCapture, scriptId, runId) }
+        return runId
+    }
+
     suspend fun run(context: Context, screenCapture: ScreenCapture?, scriptId: String): ScriptRunResult {
+        val runId = reserve() ?: return ScriptRunResult(success = false, errorCode = "run_in_progress")
+        return runReserved(context, screenCapture, scriptId, runId)
+    }
+
+    private suspend fun runReserved(context: Context, screenCapture: ScreenCapture?, scriptId: String,
+        runId: String): ScriptRunResult {
+        var errorCode: String? = "run_exception"
+        try {
+            val result = executeRun(context, screenCapture, scriptId, runId).copy(runId = runId)
+            errorCode = result.errorCode
+            return result
+        } catch (cancel: kotlinx.coroutines.CancellationException) {
+            errorCode = "cancelled"
+            throw cancel
+        } catch (_: Exception) {
+            return ScriptRunResult(runId = runId, success = false, errorCode = errorCode)
+        } finally {
+            synchronized(this) {
+                history[runId]?.let {
+                    history[runId] = it.copy(
+                        state = if (errorCode == "cancelled") "cancelled" else "done",
+                        errorCode = errorCode, finishedAt = System.nanoTime(),
+                    )
+                }
+                activeRunId = null
+            }
+        }
+    }
+
+    /** Apply the script's bounded hold on every exit, including coroutine cancellation. */
+    internal suspend fun <T> withForegroundHold(
+        script: RuntimeScript,
+        onHeld: (Long) -> Unit = {},
+        block: suspend () -> T,
+    ): T = try {
+        block()
+    } finally {
+        val seconds = (script.holdForegroundMs / 1_000L)
+            .coerceIn(0L, BridgeRunTracker.MAX_KEEP_FOREGROUND_SECONDS)
+        if (seconds > 0L && HermesAccessibilityService.instance?.isMasterEnabled() == true) {
+            BridgeRunTracker.keepForeground(seconds)
+            runCatching { onHeld(seconds) }
+        }
+    }
+
+    private suspend fun executeRun(context: Context, screenCapture: ScreenCapture?, scriptId: String,
+        runId: String): ScriptRunResult {
         val store = ScriptRunStore(context.filesDir)
+        val startedAt = System.nanoTime()
+        fun earlyFailure(code: String): ScriptRunResult {
+            runCatching { store.append(ScriptLogEvent(
+                event = "run_end", scriptId = scriptId, runId = runId, ts = ScriptLogEvent.timestamp(),
+                success = false, durationMs = (System.nanoTime() - startedAt) / 1_000_000,
+                errorCode = code, message = "errorCode=$code ",
+            )) }
+            return ScriptRunResult(success = false, errorCode = code)
+        }
         runCatching { store.cleanupExpiredLogs() }
         val script = runCatching { load(context, scriptId) }.getOrElse {
-            return ScriptRunResult(success = false, errorCode = "invalid_script")
-        } ?: return ScriptRunResult(success = false, errorCode = "script_not_found")
+            return earlyFailure("invalid_script")
+        } ?: return earlyFailure(missingScriptError(scriptId))
         val service = HermesAccessibilityService.instance
-            ?: return ScriptRunResult(success = false, errorCode = "service_unavailable")
-        val runId = UUID.randomUUID().toString()
-        val startedAt = System.nanoTime()
+            ?: return earlyFailure("service_unavailable")
         val app = context.applicationContext as com.hermesandroid.relay.HermesRelayApp
         val connection = app.runtime.connectionViewModel
         val reporter = ScriptEventReporter(HttpScriptEventSender(
@@ -78,29 +250,50 @@ object ScriptRuntime {
             }
         }
         val result = try {
-            runner.run(
-            script = script,
-            access = AndroidAccess(context, screenCapture, service),
-            runId = runId,
-            onRunStart = {
-                store.writePending(PendingScriptRun(script.id, runId, 0))
-                store.append(ScriptLogEvent("run_start", script.id, runId, ScriptLogEvent.timestamp()))
-            },
-            onStep = { log, durationMs ->
-                store.writePending(PendingScriptRun(script.id, runId, log.stepIndex))
+            withForegroundHold(script, onHeld = { seconds ->
                 store.append(ScriptLogEvent(
-                    event = if (log.message.startsWith("power_fallback")) "power_fallback" else "step",
-                    scriptId = script.id, runId = runId, ts = ScriptLogEvent.timestamp(),
-                    stepIndex = log.stepIndex, op = log.op, success = log.success, attempts = log.attempts,
-                    message = log.message, durationMs = durationMs,
+                    event = "keep_foreground", scriptId = script.id, runId = runId,
+                    ts = ScriptLogEvent.timestamp(), message = "已保持前台 $seconds 秒",
                 ))
-                if (!log.success) runCatching { reporter.report(log.toEvent(script.id, runId)) }
-            },
-        )
+            }) {
+                runner.run(
+                    script = script,
+                    access = AndroidAccess(context, screenCapture, service),
+                    runId = runId,
+                    resolveScript = { id ->
+                        load(context, id) ?: if (missingScriptError(id) == "invalid_script")
+                            error("invalid included script") else null
+                    },
+                    evidenceStore = store,
+                    onRunStart = {
+                        restoreStopRequest()
+                        store.writePending(PendingScriptRun(script.id, runId, 0))
+                        store.append(ScriptLogEvent("run_start", script.id, runId, ScriptLogEvent.timestamp()))
+                    },
+                    onPause = { event ->
+                        runCatching { store.append(ScriptLogEvent(
+                            event = event.op, scriptId = script.id, runId = runId,
+                            ts = event.ts, stepIndex = event.stepIndex, op = event.op, message = event.message,
+                        )) }
+                        reporter.report(event)
+                    },
+                    onStep = { log, durationMs ->
+                        stepCompleted(runId, log.stepIndex)
+                        store.writePending(PendingScriptRun(script.id, runId, log.stepIndex))
+                        store.append(ScriptLogEvent(
+                            event = if (log.message.startsWith("power_fallback")) "power_fallback" else "step",
+                            scriptId = script.id, runId = runId, ts = ScriptLogEvent.timestamp(),
+                            stepIndex = log.stepIndex, op = log.op, success = log.success, attempts = log.attempts,
+                            message = log.message, durationMs = durationMs,
+                        ))
+                        if (!log.success) runCatching { reporter.report(log.toEvent(script.id, runId)) }
+                    },
+                )
+            }
         } catch (error: Throwable) {
             if (error is kotlinx.coroutines.CancellationException) throw error
             store.clearPending()
-            return ScriptRunResult(success = false, errorCode = "run_exception")
+            return earlyFailure("run_exception")
         } finally {
             keepAlive.cancel()
         }
@@ -120,7 +313,7 @@ object ScriptRuntime {
         return result
     }
 
-    private class AndroidAccess(
+    internal class AndroidAccess(
         private val context: Context,
         private val capture: ScreenCapture?,
         private val service: HermesAccessibilityService,
@@ -128,7 +321,38 @@ object ScriptRuntime {
         override fun foregroundPackage(): String? =
             service.rootInActiveWindow?.packageName?.toString() ?: service.currentApp
 
+        override fun foregroundPackageFromWindows(): String? = service.foregroundPackageFromWindows()
+
+        override suspend fun frameSize(): Pair<Int, Int>? =
+            runCatching { capture?.captureLocalFrame()?.getOrNull() }.getOrNull()?.let { it.width to it.height }
+
         override suspend fun tap(x: Int, y: Int) = service.actionExecutor.tap(x, y).ok
+        override suspend fun tapTemplate(name: String, area: List<Int>?, minScore: Double,
+            offsetX: Int, offsetY: Int): String? {
+            val foreground = foregroundPackage()?.takeIf { it.isNotBlank() } ?: return null
+            val frame = capture?.captureLocalFrame(fresh = true)?.getOrNull() ?: return null
+            val searchArea = area?.let { (x, y, w, h) ->
+                if (x < 0 || y < 0 || w <= 0 || h <= 0 ||
+                    x.toLong() + w > frame.width || y.toLong() + h > frame.height
+                ) return null
+                Rect(x, y, w, h)
+            }
+            val (match, template) = withContext(Dispatchers.Default) {
+                val template = LocalVisionTemplateLoader(context).load(name) ?: return@withContext null
+                TemplateMatcher(template).find(Grayscale.fromRgb(frame), searchArea, minScore) to template
+            } ?: return null
+            if (!match.found) return null
+
+            val (width, height) = screenSize()
+            val maxX = (width - 1).coerceAtLeast(0).toLong()
+            val maxY = (height - 1).coerceAtLeast(0).toLong()
+            val x = (match.x.toLong() + template.width / 2 + offsetX).coerceIn(0L, maxX).toInt()
+            val y = (match.y.toLong() + template.height / 2 + offsetY).coerceIn(0L, maxY).toInt()
+            currentCoroutineContext().ensureActive()
+            if (ScriptRunControl.isCancelled() || !screenOn() || foregroundPackage() != foreground) return null
+            return if (tap(x, y)) "hit:${match.score}:$x,$y" else null
+        }
+
         override suspend fun tapText(text: String) = service.actionExecutor.tapText(text).ok
         override suspend fun swipe(fromX: Int, fromY: Int, toX: Int, toY: Int, durationMs: Long) =
             service.actionExecutor.swipe(fromX, fromY, toX, toY, durationMs).ok
@@ -138,13 +362,16 @@ object ScriptRuntime {
         override fun screenSize(): Pair<Int, Int> =
             context.resources.displayMetrics.let { it.widthPixels to it.heightPixels }
 
-        override suspend fun probe(expect: String, timeoutMs: Long): Boolean {
+        override suspend fun probe(expect: String, timeoutMs: Long): Boolean = probe(expect, timeoutMs, null)
+
+        override suspend fun probe(expect: String, timeoutMs: Long, game: String?): Boolean {
             val deadline = android.os.SystemClock.elapsedRealtime() + timeoutMs.coerceAtLeast(0)
             do {
                 // save_unknown=false：probe 在超时前会轮询多次，每轮都存档会把手机构建目录刷爆
                 val result = LocalVisionBridgeRoutes.handle(capture, context, buildJsonObject {
                     put("with_frame", false)
                     put("save_unknown", false)
+                    game?.let { put("game", it) }
                 })
                 if ((result.payload["page"] as? JsonPrimitive)?.content == expect) return true
                 if (android.os.SystemClock.elapsedRealtime() >= deadline) return false
@@ -157,6 +384,53 @@ object ScriptRuntime {
             return (result.payload["value"] as? JsonPrimitive)?.contentOrNull
         }
 
+        override var forceStopFailureReason: String = "unsupported"
+            private set
+
+        override suspend fun forceStop(pkg: String, waitMs: Long): Boolean {
+            fun fail(reason: String): Boolean {
+                forceStopFailureReason = reason
+                android.util.Log.w("ScriptRuntime", "force_stop failed: $reason")
+                return false
+            }
+            fun nodes() = service.rootInActiveWindow?.let { service.reader.readScreen(it).nodes }.orEmpty()
+            val stopLabels = setOf("强行停止", "强制停止", "Force stop")
+            fun matches(node: com.hermesandroid.relay.accessibility.ScreenReader.ScreenNode,
+                labels: Set<String>) = labels.any {
+                it.equals(node.text?.trim(), ignoreCase = true) ||
+                    it.equals(node.contentDescription?.trim(), ignoreCase = true)
+            }
+            try {
+                android.util.Log.i("ScriptRuntime", "force_stop open settings: $pkg")
+                val opened = service.actionExecutor.sendIntent(
+                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    "package:$pkg", null, null, null, null)
+                if (!opened.ok) return fail("open_settings")
+                delay(1_000)
+                val button = nodes().firstOrNull { it.enabled && matches(it, stopLabels) }
+                    ?: return fail("force_stop_button_missing")
+                android.util.Log.i("ScriptRuntime", "force_stop tap stop button")
+                if (!tap(button.bounds.centerX, button.bounds.centerY)) return fail("tap_stop")
+                delay(600)
+                val currentNodes = nodes()
+                val confirm = currentNodes.firstOrNull { it.enabled && it.viewId == "android:id/button1" }
+                    ?: currentNodes.firstOrNull { it.enabled && matches(it, setOf("确定", "强行停止", "OK")) }
+                if (confirm != null) {
+                    android.util.Log.i("ScriptRuntime", "force_stop tap confirmation")
+                    if (!tap(confirm.bounds.centerX, confirm.bounds.centerY)) return fail("tap_confirmation")
+                } else android.util.Log.i("ScriptRuntime", "force_stop no confirmation")
+                val wait = waitMs.coerceIn(0, 10_000)
+                android.util.Log.i("ScriptRuntime", "force_stop wait_ms=$wait")
+                delay(wait)
+                android.util.Log.i("ScriptRuntime", "force_stop complete: $pkg")
+                return true
+            } catch (cancel: kotlinx.coroutines.CancellationException) {
+                throw cancel
+            } catch (error: Exception) {
+                return fail(error.javaClass.simpleName)
+            }
+        }
+
         override suspend fun launchApp(pkg: String): Boolean {
             val intent = context.packageManager.getLaunchIntentForPackage(pkg) ?: return false
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -166,110 +440,31 @@ object ScriptRuntime {
             return runCatching { service.startActivity(intent); true }.getOrDefault(false)
         }
 
-        /**
-         * 冷启动到 home：全自动闭环，中途不问服务器、不等外部指令。
-         * ① 每 2 秒看一次画面方向，竖屏（桌面/被抢前台）就再拉起一次 App；
-         * ② 连续两次横屏才认为游戏真起来了，避免一次误判就开始乱点；
-         * ③ 之后每 intervalMs 判一次页，命中 boot 就点屏幕中心，点完 2 秒复查，最多 3 次；
-         * ④ 命中 home 立刻返回，带上从启动到进主页的毫秒数。
-         */
+        /** Window identity confirms foreground independently of frame orientation. */
         override suspend fun coldStartTo(pkg: String?, bootPage: String, homePage: String,
             tapX: Int?, tapY: Int?, bootWaitMs: Long, homeWaitMs: Long, intervalMs: Long,
-            popupPage: String, popupX: Int, popupY: Int, maxPopups: Int): String {
-            val started = monotonicMs()
-            val (screenWidth, screenHeight) = screenSize()
-            val tx = tapX ?: (screenWidth / 2)
-            val ty = tapY ?: (screenHeight / 2)
-            var landscapeStreak = 0
-            var lastLaunchAt = 0L
-            var taps = 0
-            var firstBootAt = 0L
-            var lastPage = "?"
-            var otherSince: Long? = null
-            var rescues = 0
-            var popupTaps = 0
-
-            suspend fun detectPage(): String = runCatching {
-                val result = LocalVisionBridgeRoutes.handle(capture, context, buildJsonObject {
-                    put("with_frame", false)
-                    put("save_unknown", false)
-                })
-                (result.payload["page"] as? JsonPrimitive)?.content ?: "other"
-            }.getOrDefault("other")
-
-            while (monotonicMs() - started < bootWaitMs) {
-                if (ScriptRunControl.isCancelled()) return "fail:cancelled reason=${ScriptRunControl.reason} rescue=$rescues"
-                if (!screenOn()) return "fail:screen_off rescue=$rescues"
-                val frame = runCatching { capture?.captureLocalFrame()?.getOrNull() }.getOrNull()
-                val landscape = frame != null && frame.width > frame.height
-                if (!landscape) {
-                    landscapeStreak = 0
-                    if (monotonicMs() - lastLaunchAt >= 2_000) {
-                        val name = pkg ?: return "fail:no_package rescue=$rescues"
-                        lastLaunchAt = monotonicMs()
-                        launchApp(name)
-                    }
-                    delay(2_000)
-                    continue
-                }
-                landscapeStreak++
-                if (landscapeStreak >= 2) break
-                delay(2_000)
-            }
-            if (landscapeStreak < 2) {
-                return "fail:no_landscape rescue=$rescues elapsed=${monotonicMs() - started}ms"
-            }
-
-            val pageDeadline = monotonicMs() + homeWaitMs
-            while (monotonicMs() < pageDeadline) {
-                if (ScriptRunControl.isCancelled()) return "fail:cancelled reason=${ScriptRunControl.reason} rescue=$rescues"
-                if (!screenOn()) return "fail:screen_off rescue=$rescues"
-                lastPage = detectPage()
-                if (lastPage == homePage) {
-                    return "ok:home_at_${monotonicMs() - started}ms taps=$taps popups=$popupTaps"
-                }
-                // 主页上常盖一层「信息」弹窗：判据会先命中 popup，此时点右上角 X 关掉再继续等主页。
-                // 不处理的话会一直卡在 popup，永远不会等于 home（2026-11-15 真机实测）。
-                if (lastPage == popupPage && popupTaps < maxPopups) {
-                    tap(popupX, popupY)
-                    popupTaps++
-                    delay(1_500)
-                    continue
-                }
-                val now = monotonicMs()
-                if (lastPage == "other") {
-                    val since = otherSince ?: now.also { otherSince = it }
-                    // 只在「还没点到启动页」的加载阶段自救；已经开始点 boot 之后就别再重开游戏了
-                    if (taps == 0 && pkg != null && now - since >= 20_000 && now - lastLaunchAt >= 20_000 && rescues < 3) {
-                        lastLaunchAt = now
-                        launchApp(pkg)
-                        rescues++
-                        otherSince = monotonicMs()
-                    }
-                } else {
-                    otherSince = null
-                }
-                if (lastPage == bootPage) {
-                    if (firstBootAt == 0L) firstBootAt = monotonicMs()
-                    if (taps < 3 && monotonicMs() - firstBootAt < 15_000) {
-                        tap(tx, ty)
-                        taps++
-                        delay(2_000)
-                        continue
-                    }
-                }
-                delay(intervalMs.coerceIn(300, 5_000))
-            }
-            return "fail:no_home rescue=$rescues last=$lastPage taps=$taps elapsed=${monotonicMs() - started}ms"
-        }
+            popupPage: String, popupX: Int, popupY: Int, maxPopups: Int,
+            acceptPages: List<String>, orientation: String): String = coldStartToPages(
+                pkg, bootPage, homePage, tapX, tapY, bootWaitMs, homeWaitMs, intervalMs,
+                popupPage, popupX, popupY, maxPopups, acceptPages, orientation,
+                readForeground = service::foregroundPackageFromWindows,
+                detectPage = { currentPage() ?: "other" },
+                frameSize = {
+                    runCatching { capture?.captureLocalFrame()?.getOrNull() }
+                        .getOrNull()?.let { it.width to it.height }
+                },
+            )
 
         override suspend fun back(): Boolean =
             service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
 
-        override suspend fun currentPage(): String? = runCatching {
+        override suspend fun currentPage(): String? = currentPage(null)
+
+        override suspend fun currentPage(game: String?): String? = runCatching {
             val result = LocalVisionBridgeRoutes.handle(capture, context, buildJsonObject {
                 put("with_frame", false)
                 put("save_unknown", false)
+                game?.let { put("game", it) }
             })
             (result.payload["page"] as? JsonPrimitive)?.content
         }.getOrNull()

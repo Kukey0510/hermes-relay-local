@@ -28,6 +28,8 @@ class BridgeCapabilitiesTest {
             "POST" to "/script/run",
             // 端上脚本强制终止（#断 / 熄屏），与 /script/run 同级
             "POST" to "/script/stop",
+            "POST" to "/script/resume",
+            "POST" to "/script/status",
             "POST" to "/keep_foreground",
             // block 24: replay queued run events after the server missed them.
             "POST" to "/script/flush-events",

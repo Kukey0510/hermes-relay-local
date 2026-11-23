@@ -21,17 +21,36 @@ sealed interface ScriptStep {
     val timeoutMs: Long?
     val retries: Int
 
+    data class Pause(val reason: String = "need_help", val pauseTimeoutMs: Long = 600_000,
+        override val id: String? = null, override val timeoutMs: Long? = null,
+        override val retries: Int = 0) : ScriptStep
+    data class AskServer(val reason: String = "need_help", val pauseTimeoutMs: Long = 600_000,
+        val thenSteps: List<ScriptStep> = emptyList(), override val id: String? = null,
+        override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
     data class Tap(val x: Int, val y: Int, override val id: String? = null,
         override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
+    data class TapTemplate(
+        val template: String,
+        val area: List<Int>? = null,
+        val min: Double = 0.90,
+        val optional: Boolean = false,
+        val asName: String? = null,
+        val offsetX: Int = 0,
+        val offsetY: Int = 0,
+        override val id: String? = null,
+        override val timeoutMs: Long? = null,
+        override val retries: Int = 0,
+    ) : ScriptStep
     data class TapText(val text: String, override val id: String? = null,
         override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
     data class Wait(val ms: Long, override val id: String? = null,
         override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
     data class Probe(val expect: String, override val timeoutMs: Long? = null,
-        override val id: String? = null, override val retries: Int = 0) : ScriptStep
+        override val id: String? = null, override val retries: Int = 0,
+        val game: String? = null) : ScriptStep
     data class Read(val field: String, override val id: String? = null,
         override val timeoutMs: Long? = null, override val retries: Int = 0,
-        val asName: String = field) : ScriptStep
+        val asName: String = field, val optional: Boolean = false) : ScriptStep
     data class Swipe(val fromX: Int, val fromY: Int, val toX: Int, val toY: Int,
         val durationMs: Long = 400, override val id: String? = null,
         override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
@@ -40,22 +59,40 @@ sealed interface ScriptStep {
         override val retries: Int = 0) : ScriptStep
     data class IfPage(val expect: String, val thenSteps: List<ScriptStep> = emptyList(),
         val elseSteps: List<ScriptStep> = emptyList(), override val id: String? = null,
-        override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
+        override val timeoutMs: Long? = null, override val retries: Int = 0,
+        val game: String? = null) : ScriptStep
     data class Loop(val times: Int, val maxTotalMs: Long = 600_000,
         val until: String? = null, val steps: List<ScriptStep> = emptyList(),
         override val id: String? = null, override val timeoutMs: Long? = null,
         override val retries: Int = 0, val timesFrom: String? = null) : ScriptStep
+    /** wait_ms defaults to 0 and is clamped to 0..90_000 ms. */
     data class Launch(val packageName: String? = null, val waitMs: Long = 0,
+        override val id: String? = null, override val timeoutMs: Long? = null,
+        override val retries: Int = 0) : ScriptStep
+    /** Window identity is authoritative; optional orientation checks captured frame dimensions only. */
+    data class WaitForeground(val packageName: String? = null, val orientation: String? = null,
+        override val timeoutMs: Long? = 60_000, override val id: String? = null,
+        override val retries: Int = 0) : ScriptStep {
+        init { require(orientation == null || orientation in setOf("landscape", "portrait", "any")) { "invalid wait_foreground orientation" } }
+    }
+    data class ForceStop(val packageName: String, val waitMs: Long = 1_500,
         override val id: String? = null, override val timeoutMs: Long? = null,
         override val retries: Int = 0) : ScriptStep
     /** 立刻判一次当前页（不等待），结果写进变量。纯读，不点屏。 */
     data class Page(val asName: String = "page", override val id: String? = null,
-        override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
+        override val timeoutMs: Long? = null, override val retries: Int = 0,
+        val game: String? = null) : ScriptStep
     /** 按变量分支：equals / not_equals 二选一（都没给就是 equals 空串，恒不命中）。 */
     data class IfVar(val name: String, val equals: String? = null, val notEquals: String? = null,
         val thenSteps: List<ScriptStep> = emptyList(), val elseSteps: List<ScriptStep> = emptyList(),
         override val id: String? = null, override val timeoutMs: Long? = null,
         override val retries: Int = 0) : ScriptStep
+    data class Include(val script: String, override val id: String? = null,
+        override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
+    data class SetVar(val name: String, val value: String, override val id: String? = null,
+        override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
+    data class IncrVar(val name: String, val by: Long = 1, override val id: String? = null,
+        override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
     data class Back(override val id: String? = null, override val timeoutMs: Long? = null,
         override val retries: Int = 0) : ScriptStep
     data class WaitStable(val stableFrames: Int = 3, val intervalMs: Long = 250,
@@ -69,9 +106,11 @@ sealed interface ScriptStep {
         override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
     /**
      * 冷启动到指定页的全自动流程，不依赖服务器逐步指挥：
-     * 每 2 秒检查是否横屏（不在前台就再拉起一次），连续两次横屏才开始判页；
-     * 之后每 intervalMs 判一次页，命中 bootPage 就点 tapX/tapY（默认屏幕中心），
-     * 点完 2 秒复查，最多点 3 次；命中 homePage 立即结束。
+     * 按窗口包名确认前台，连续两次命中目标包才开始判页；
+     * 之后每 intervalMs 判一次页，命中 bootPage 就点 tapX/tapY（默认当前抓帧中心，无帧时退回屏幕尺寸），
+     * 不传 x/y = 当前帧中心；显式传 x/y = 钉死坐标（单轴缺省时仅该轴取中心）。
+     * 点完 2 秒复查，最多点 3 次；先处理 popup，再接受 homePage 或 accept 中的页面。
+     * orientation 仅控制无帧时的默认中心方向，不参与前台判定。
      */
     data class ColdStart(val packageName: String? = null, val bootPage: String = "boot",
         val homePage: String = "home", val tapX: Int? = null, val tapY: Int? = null,
@@ -80,8 +119,11 @@ sealed interface ScriptStep {
         /** 主页上盖着的中心弹窗（判据里的 popup 页）；命中就点 popupX/popupY 关掉再继续等主页。 */
         val popupPage: String = "popup", val popupX: Int = 1580, val popupY: Int = 375,
         val maxPopups: Int = 3,
+        val accept: List<String> = emptyList(), val orientation: String = "landscape",
         override val id: String? = null, override val timeoutMs: Long? = null,
-        override val retries: Int = 0) : ScriptStep
+        override val retries: Int = 0) : ScriptStep {
+        init { require(orientation in setOf("landscape", "portrait", "any")) { "invalid coldStart orientation" } }
+    }
 }
 
 object ScriptStepSerializer : KSerializer<ScriptStep> {
@@ -92,6 +134,10 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
             ?: error("ScriptStep only supports JSON objects")
         fun text(name: String) = (json[name] as? JsonPrimitive)?.content
         fun required(name: String) = text(name) ?: error("missing '$name'")
+        fun game(): String? = json["game"]?.takeUnless { it == kotlinx.serialization.json.JsonNull }?.let {
+            require(it is JsonPrimitive && it.isString) { "game must be a string" }
+            it.content
+        }
         val id = text("id")
         val timeout = (json["timeout_ms"] as? JsonPrimitive)?.longOrNull
         val retries = ((json["retries"] as? JsonPrimitive)?.intOrNull ?: 0).coerceAtLeast(0)
@@ -99,24 +145,60 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
             kotlinx.serialization.json.Json.decodeFromJsonElement(this, it)
         } ?: emptyList()
         return when (val op = required("op")) {
+            "pause" -> ScriptStep.Pause(text("reason") ?: "need_help", (timeout ?: 600_000).coerceIn(0, 3_600_000), id, retries = retries)
+            "ask_server" -> ScriptStep.AskServer(text("reason") ?: "need_help", (timeout ?: 600_000).coerceIn(0, 3_600_000), steps("then"), id, retries = retries)
             "tap" -> ScriptStep.Tap(required("x").toInt(), required("y").toInt(), id, timeout, retries)
+            "tap_template" -> {
+                val template = json["template"] ?: error("missing 'template'")
+                require(template is JsonPrimitive && template.isString && template.content.isNotBlank() &&
+                    '/' !in template.content && '\\' !in template.content &&
+                    template.content != "." && template.content != "..") { "invalid 'template' filename" }
+                val area = json["area"]?.let {
+                    require(it is JsonArray && it.size == 4) { "'area' must contain four integers" }
+                    it.map { coordinate ->
+                        (coordinate as? JsonPrimitive)?.intOrNull ?: error("'area' must contain four integers")
+                    }
+                }
+                val min = json["min"]?.let {
+                    (it as? JsonPrimitive)?.content?.toDoubleOrNull()?.takeIf { score -> score.isFinite() }
+                        ?: error("invalid 'min'")
+                } ?: 0.90
+                ScriptStep.TapTemplate(
+                    template = template.content,
+                    area = area,
+                    min = min.coerceIn(0.50, 1.00),
+                    optional = (json["optional"] as? JsonPrimitive)?.booleanOrNull ?: false,
+                    asName = text("as"),
+                    offsetX = text("offset_x")?.toInt() ?: 0,
+                    offsetY = text("offset_y")?.toInt() ?: 0,
+                    id = id,
+                    timeoutMs = timeout,
+                    retries = retries,
+                )
+            }
             "tapText" -> ScriptStep.TapText(required("text"), id, timeout, retries)
             "wait" -> ScriptStep.Wait(required("ms").toLong(), id, timeout, retries)
-            "probe" -> ScriptStep.Probe(required("expect"), timeout, id, retries)
-            "read" -> ScriptStep.Read(required("field"), id, timeout, retries, text("as") ?: required("field"))
+            "probe" -> ScriptStep.Probe(required("expect"), timeout, id, retries, game())
+            "read" -> ScriptStep.Read(required("field"), id, timeout, retries, text("as") ?: required("field"),
+                (json["optional"] as? JsonPrimitive)?.booleanOrNull ?: false)
             "swipe" -> ScriptStep.Swipe(required("from_x").toInt(), required("from_y").toInt(),
                 required("to_x").toInt(), required("to_y").toInt(),
                 text("duration_ms")?.toLong() ?: 400, id, timeout, retries)
             "tapIfText" -> ScriptStep.TapIfText(required("text"),
                 (json["optional"] as? JsonPrimitive)?.booleanOrNull ?: true, id, timeout, retries)
-            "if_page" -> ScriptStep.IfPage(required("expect"), steps("then"), steps("else"), id, timeout, retries)
+            "if_page" -> ScriptStep.IfPage(required("expect"), steps("then"), steps("else"), id, timeout, retries, game())
             "loop" -> ScriptStep.Loop(required("times").toInt(),
                 text("max_total_ms")?.toLong() ?: 600_000, text("until"),
                 steps("steps"), id, timeout, retries, text("times_from"))
+            "force_stop" -> ScriptStep.ForceStop(required("package"), text("wait_ms")?.toLong() ?: 1_500, id, timeout, retries)
             "launch" -> ScriptStep.Launch(text("package"), text("wait_ms")?.toLong() ?: 0, id, timeout, retries)
-            "page" -> ScriptStep.Page(text("as") ?: "page", id, timeout, retries)
+            "wait_foreground" -> ScriptStep.WaitForeground(text("package"), text("orientation"), timeout ?: 60_000, id, retries)
+            "page" -> ScriptStep.Page(text("as") ?: "page", id, timeout, retries, game())
             "if_var" -> ScriptStep.IfVar(required("name"), text("equals"), text("not_equals"),
                 steps("then"), steps("else"), id, timeout, retries)
+            "include" -> ScriptStep.Include(required("script"), id, timeout, retries)
+            "set_var" -> ScriptStep.SetVar(required("name"), required("value"), id, timeout, retries)
+            "incr_var" -> ScriptStep.IncrVar(required("name"), text("by")?.toLong() ?: 1, id, timeout, retries)
             "back" -> ScriptStep.Back(id, timeout, retries)
             "wait_stable" -> ScriptStep.WaitStable(text("frames")?.toInt() ?: 3,
                 text("interval_ms")?.toLong() ?: 250, text("timeout_ms")?.toLong() ?: 10_000,
@@ -136,7 +218,14 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
                 text("popup_x")?.toIntOrNull() ?: 1580,
                 text("popup_y")?.toIntOrNull() ?: 375,
                 text("max_popups")?.toIntOrNull() ?: 3,
-                id, timeout, retries)
+                json["accept"]?.let { pages ->
+                    require(pages is JsonArray) { "coldStart accept must be a string array" }
+                    pages.map {
+                        require(it is JsonPrimitive && it.isString) { "coldStart accept must contain strings" }
+                        it.content
+                    }
+                } ?: emptyList(),
+                text("orientation") ?: "landscape", id, timeout, retries)
             else -> throw UnsupportedOperationException("unsupported script op: $op")
         }
     }
@@ -150,26 +239,49 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
             fields[name] = JsonArray(value.map { kotlinx.serialization.json.Json.encodeToJsonElement(this, it) })
         }
         when (value) {
+            is ScriptStep.Pause -> { put("op", "pause"); put("reason", value.reason); put("timeout_ms", value.pauseTimeoutMs.coerceIn(0, 3_600_000)) }
+            is ScriptStep.AskServer -> { put("op", "ask_server"); put("reason", value.reason)
+                put("timeout_ms", value.pauseTimeoutMs.coerceIn(0, 3_600_000)); putSteps("then", value.thenSteps) }
             is ScriptStep.Tap -> { put("op", "tap"); put("x", value.x); put("y", value.y) }
+            is ScriptStep.TapTemplate -> {
+                put("op", "tap_template")
+                put("template", value.template)
+                value.area?.let { fields["area"] = JsonArray(it.map(::JsonPrimitive)) }
+                put("min", value.min)
+                put("optional", value.optional)
+                value.asName?.let { put("as", it) }
+                put("offset_x", value.offsetX)
+                put("offset_y", value.offsetY)
+            }
             is ScriptStep.TapText -> { put("op", "tapText"); put("text", value.text) }
             is ScriptStep.Wait -> { put("op", "wait"); put("ms", value.ms) }
-            is ScriptStep.Probe -> { put("op", "probe"); put("expect", value.expect) }
+            is ScriptStep.Probe -> { put("op", "probe"); put("expect", value.expect)
+                value.game?.let { put("game", it) } }
             is ScriptStep.Read -> { put("op", "read"); put("field", value.field)
-                if (value.asName != value.field) put("as", value.asName) }
+                if (value.asName != value.field) put("as", value.asName)
+                if (value.optional) put("optional", true) }
             is ScriptStep.Swipe -> { put("op", "swipe"); put("from_x", value.fromX); put("from_y", value.fromY)
                 put("to_x", value.toX); put("to_y", value.toY); put("duration_ms", value.durationMs) }
             is ScriptStep.TapIfText -> { put("op", "tapIfText"); put("text", value.text); put("optional", value.optional) }
             is ScriptStep.IfPage -> { put("op", "if_page"); put("expect", value.expect)
+                value.game?.let { put("game", it) }
                 putSteps("then", value.thenSteps); putSteps("else", value.elseSteps) }
             is ScriptStep.Loop -> { put("op", "loop"); put("times", value.times)
                 put("max_total_ms", value.maxTotalMs); value.timesFrom?.let { put("times_from", it) }
                 value.until?.let { put("until", it) }; putSteps("steps", value.steps) }
+            is ScriptStep.ForceStop -> { put("op", "force_stop"); put("package", value.packageName); put("wait_ms", value.waitMs) }
             is ScriptStep.Launch -> { put("op", "launch"); value.packageName?.let { put("package", it) }; put("wait_ms", value.waitMs) }
-            is ScriptStep.Page -> { put("op", "page"); put("as", value.asName) }
+            is ScriptStep.WaitForeground -> { put("op", "wait_foreground")
+                value.packageName?.let { put("package", it) }; value.orientation?.let { put("orientation", it) } }
+            is ScriptStep.Page -> { put("op", "page"); put("as", value.asName)
+                value.game?.let { put("game", it) } }
             is ScriptStep.IfVar -> { put("op", "if_var"); put("name", value.name)
                 value.equals?.let { put("equals", it) }
                 value.notEquals?.let { put("not_equals", it) }
                 putSteps("then", value.thenSteps); putSteps("else", value.elseSteps) }
+            is ScriptStep.Include -> { put("op", "include"); put("script", value.script) }
+            is ScriptStep.SetVar -> { put("op", "set_var"); put("name", value.name); put("value", value.value) }
+            is ScriptStep.IncrVar -> { put("op", "incr_var"); put("name", value.name); put("by", value.by) }
             is ScriptStep.Back -> put("op", "back")
             is ScriptStep.WaitStable -> { put("op", "wait_stable"); put("frames", value.stableFrames)
                 put("interval_ms", value.intervalMs); put("timeout_ms", value.stableTimeoutMs); put("tolerance", value.tolerance) }
@@ -183,10 +295,12 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
                 put("boot_wait_ms", value.bootWaitMs); put("home_wait_ms", value.homeWaitMs)
                 put("interval_ms", value.intervalMs)
                 put("popup", value.popupPage); put("popup_x", value.popupX); put("popup_y", value.popupY)
-                put("max_popups", value.maxPopups) }
+                put("max_popups", value.maxPopups)
+                fields["accept"] = JsonArray(value.accept.map(::JsonPrimitive))
+                put("orientation", value.orientation) }
         }
         value.id?.let { put("id", it) }
-        value.timeoutMs?.let { put("timeout_ms", it) }
+        if (value !is ScriptStep.Pause && value !is ScriptStep.AskServer) value.timeoutMs?.let { put("timeout_ms", it) }
         if (value.retries != 0) put("retries", value.retries)
         (encoder as? JsonEncoder)?.encodeJsonElement(JsonObject(fields))
             ?: error("ScriptStep only supports JSON")
@@ -200,4 +314,11 @@ data class RuntimeScript(
     val steps: List<ScriptStep>,
     val vars: Map<String, JsonPrimitive> = emptyMap(),
     @SerialName("on_fail") val onFail: List<ScriptStep> = emptyList(),
+    @SerialName("hold_foreground_ms") val holdForegroundMs: Long = 0L,
+    val game: String? = null,
+    @SerialName("package") val packageName: String? = null,
+    val orientation: String? = null,
+    @SerialName("boot") val bootPage: String? = null,
+    @SerialName("home") val homePage: String? = null,
+    @SerialName("auto_evidence") val autoEvidence: Boolean = true,
 )

@@ -5,6 +5,17 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class DigestReaderTest {
+    @Test fun `ocr reads numerator and ignores whitespace`() {
+        assertEquals(10, OcrNumberDecoder.decode(" 10 / 10\n"))
+        assertEquals(0, OcrNumberDecoder.decode("0/10"))
+        assertEquals(7, OcrNumberDecoder.decode("7"))
+    }
+
+    @Test fun `ocr rejects ambiguous or overflowing text`() {
+        listOf("", "O/10", "1O/10", "/10", "10/", "1/2/3", "1.5", "1 2", "1\n2", "2147483648")
+            .forEach { assertNull(OcrNumberDecoder.decode(it)) }
+    }
+
     private fun image(vararg pixels: Int) = GrayImage(pixels.size, 1, ByteArray(pixels.size) { pixels[it].toByte() })
 
     private val templates = mapOf(

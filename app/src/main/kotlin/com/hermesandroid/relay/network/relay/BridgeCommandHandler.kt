@@ -443,11 +443,15 @@ class BridgeCommandHandler(
     ) {
         // Stopping must remain available even when Device Control is unavailable or denied.
         if (path.substringBefore('?').trimEnd('/') == "/script/stop" && method.equals("POST", ignoreCase = true)) {
-            com.hermesandroid.relay.script.runtime.ScriptRunControl.requestStop("bridge:/script/stop")
+            com.hermesandroid.relay.script.runtime.ScriptRuntime.requestStop("bridge:/script/stop")
             respond(requestId, 200, buildJsonObject {
                 put("ok", true)
                 put("stopping", true)
             })
+            return
+        }
+        if (path.substringBefore('?').trimEnd('/') == "/script/resume" && method.equals("POST", ignoreCase = true)) {
+            respond(requestId, 200, com.hermesandroid.relay.script.runtime.ScriptRuntime.resume(body))
             return
         }
         // Resolve path + method through the closed capability registry before
@@ -496,6 +500,18 @@ class BridgeCommandHandler(
                     put("required_action", "Review Bridge > Safety & capabilities on the phone")
                 },
             )
+        }
+
+        if (path.substringBefore('?').trimEnd('/') == "/script/status") {
+            val runId = (body["runId"] as? JsonPrimitive)?.content.orEmpty()
+            val run = com.hermesandroid.relay.script.runtime.ScriptRuntime.status(runId)
+            return respond(requestId, 200, buildJsonObject {
+                put("runId", runId)
+                put("state", run?.state ?: "unknown")
+                put("errorCode", run?.errorCode?.let(::JsonPrimitive) ?: kotlinx.serialization.json.JsonNull)
+                put("lastStep", run?.lastStep?.let(::JsonPrimitive) ?: kotlinx.serialization.json.JsonNull)
+                put("elapsed_ms", run?.elapsedMs ?: 0L)
+            })
         }
 
         // === v0.4.1 polish: keep auto-return idle timer alive ===
@@ -792,6 +808,18 @@ class BridgeCommandHandler(
             if (scriptId.isBlank()) return respond(requestId, 400, buildJsonObject {
                 put("error", "missing scriptId"); put("error_code", "missing_script_id")
             })
+            if ((body["async"] as? JsonPrimitive)?.booleanOrNull == true) {
+                val runId = com.hermesandroid.relay.script.runtime.ScriptRuntime.startAsync(
+                    appContext ?: service.applicationContext, screenCapture, scriptId,
+                )
+                return respond(requestId, if (runId != null) 200 else 409, buildJsonObject {
+                    put("accepted", runId != null)
+                    if (runId != null) put("runId", runId) else {
+                        put("error_code", "run_in_progress")
+                        put("error", "run_in_progress")
+                    }
+                })
+            }
             val result = com.hermesandroid.relay.script.runtime.ScriptRuntime.run(
                 appContext ?: service.applicationContext, screenCapture, scriptId,
             )

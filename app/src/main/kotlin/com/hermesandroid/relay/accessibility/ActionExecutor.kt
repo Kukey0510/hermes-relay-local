@@ -991,7 +991,7 @@ class ActionExecutor(private val service: HermesAccessibilityService) {
 
         return withContext(Dispatchers.Main) {
             try {
-                service.applicationContext.startActivity(intent)
+                service.startActivity(intent)
                 ActionResult.ok(
                     mapOf(
                         "action" to action,

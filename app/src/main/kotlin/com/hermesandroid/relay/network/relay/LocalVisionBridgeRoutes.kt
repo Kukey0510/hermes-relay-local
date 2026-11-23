@@ -6,7 +6,10 @@ import com.axiomlabs.hermesrelay.localvision.DigestReader
 import com.axiomlabs.hermesrelay.localvision.FrameArchive
 import com.axiomlabs.hermesrelay.localvision.LocalVisionRunner
 import com.axiomlabs.hermesrelay.localvision.LocalVisionResult
+import com.axiomlabs.hermesrelay.localvision.LocalVisionSpecStore
 import com.axiomlabs.hermesrelay.localvision.RgbImage
+import com.axiomlabs.hermesrelay.localvision.isValidLocalVisionGame
+import com.axiomlabs.hermesrelay.localvision.localVisionPageFiles
 import com.hermesandroid.relay.accessibility.ScreenCapture
 import java.io.File
 import kotlinx.coroutines.delay
@@ -25,33 +28,40 @@ object LocalVisionBridgeRoutes {
 
     data class Result(val status: Int, val payload: JsonObject)
 
-    private data class RunnerCache(
-        val pagesFile: File,
+    private data class RunnerKey(val directory: File, val game: String?)
+
+    private data class FileStamp(
+        val file: File,
+        val exists: Boolean,
+        val isFile: Boolean,
         val modifiedAt: Long,
         val length: Long,
+    )
+
+    private data class RunnerCache(
+        val files: List<FileStamp>,
         val runner: LocalVisionRunner,
     )
 
-    private var runnerCache: RunnerCache? = null
+    private val runnerCache = mutableMapOf<RunnerKey, RunnerCache>()
+    private val specStore = LocalVisionSpecStore()
 
     @Synchronized
-    private fun runnerFor(context: Context): LocalVisionRunner {
+    private fun runnerFor(context: Context, game: String?): LocalVisionRunner {
         val directory = File(context.filesDir, "localvision")
-        val pagesFile = File(directory, "pages.json")
-        val modifiedAt = pagesFile.lastModified()
-        val length = pagesFile.length()
-        runnerCache?.let { cached ->
-            if (cached.pagesFile == pagesFile && cached.modifiedAt == modifiedAt && cached.length == length) {
-                return cached.runner
-            }
+        val key = RunnerKey(directory, game)
+        val files = localVisionPageFiles(directory, game).map {
+            FileStamp(it, it.exists(), it.isFile, it.lastModified(), it.length())
         }
-        val runner = LocalVisionRunner(context, directory)
-        runnerCache = RunnerCache(pagesFile, modifiedAt, length, runner)
+        runnerCache[key]?.takeIf { it.files == files }?.let { return it.runner }
+        // Build eagerly under this lock so last-good specs follow request order.
+        val runner = LocalVisionRunner(context, directory, game, specStore)
+        runnerCache[key] = RunnerCache(files, runner)
         return runner
     }
 
-    private fun detect(context: Context, image: RgbImage): LocalVisionResult {
-        val runner = runnerFor(context)
+    private fun detect(context: Context, image: RgbImage, game: String?): LocalVisionResult {
+        val runner = runnerFor(context, game)
         // PageDetector owns a mutable template cache shared by requests.
         return synchronized(runner) { runner.detect(image) }
     }
@@ -61,6 +71,10 @@ object LocalVisionBridgeRoutes {
         appContext: Context?,
         body: JsonObject,
     ): Result {
+        val gameValue = body["game"]?.takeUnless { it == JsonNull }
+        if (gameValue != null && (gameValue !is JsonPrimitive || !gameValue.isString ||
+                !isValidLocalVisionGame(gameValue.content))) return error(400, "invalid_game")
+        val game = (gameValue as? JsonPrimitive)?.content
         if (screenCapture == null) return error(503, "capture_not_wired")
 
         val delayMs = ((body["delay_ms"] as? JsonPrimitive)?.intOrNull ?: 0).coerceIn(0, 5_000)
@@ -79,7 +93,7 @@ object LocalVisionBridgeRoutes {
             )
         }
         val detection = appContext?.let { ctx ->
-            detect(ctx, image)
+            detect(ctx, image, game)
         }
         val page = detection?.page ?: "other"
         val archiveTag = when {
@@ -94,6 +108,7 @@ object LocalVisionBridgeRoutes {
             put("page", page)
             put("elapsed_ms", SystemClock.elapsedRealtime() - started)
             put("source", detection?.source ?: "assets")
+            put("spec", detection?.spec ?: "assets")
             if (archived != null) put("frame_saved", archived.file.name)
             if (withFrame && frame != null) {
                 putJsonObject("frame") {
@@ -118,6 +133,11 @@ object LocalVisionBridgeRoutes {
                 put("ok", false)
                 put("error", "missing_field")
             })
+        val engine = (body["engine"] as? JsonPrimitive)?.content ?: "auto"
+        if (engine !in setOf("template", "ocr", "auto")) return Result(400, buildJsonObject {
+            put("ok", false)
+            put("error", "invalid_engine")
+        })
         val delayMs = ((body["delay_ms"] as? JsonPrimitive)?.intOrNull ?: 0).coerceIn(0, 5_000)
         val saveFrame = (body["save_frame"] as? JsonPrimitive)?.booleanOrNull ?: false
         if (delayMs > 0) delay(delayMs.toLong())
@@ -134,8 +154,16 @@ object LocalVisionBridgeRoutes {
                 put("detail", (cause.message ?: cause.toString()).take(200))
             })
         }
+        var engineUsed = if (engine == "ocr") "ocr" else "template"
         val reading = appContext?.let { context ->
-            DigestReader(context, File(context.filesDir, "localvision")).read(image, field)
+            val reader = DigestReader(context, File(context.filesDir, "localvision"))
+            if (engine == "ocr") reader.readOcr(image, field) else {
+                val template = reader.read(image, field)
+                if (engine == "auto" && template.value == null) {
+                    engineUsed = "ocr"
+                    reader.readOcr(image, field)
+                } else template
+            }
         }
         val value = reading?.value
         val archived = if (saveFrame && value == null) {
@@ -148,6 +176,8 @@ object LocalVisionBridgeRoutes {
             put("field", field)
             put("value", value?.let(::JsonPrimitive) ?: JsonNull)
             put("source", reading?.source ?: "no_context")
+            put("engine_used", engineUsed)
+            reading?.confidence?.let { put("confidence", it) }
             put("elapsed_ms", SystemClock.elapsedRealtime() - started)
             if (archived != null) put("frame_saved", archived.file.name)
         })
