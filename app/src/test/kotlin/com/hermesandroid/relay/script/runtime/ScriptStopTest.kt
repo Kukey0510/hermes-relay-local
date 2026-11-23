@@ -38,8 +38,11 @@ class ScriptStopTest {
             steps = listOf(ScriptStep.Tap(1, 1, retries = 3)), retries = 2)), access)
         assertEquals("cancelled", result.errorCode)
         assertEquals(1, access.taps)
-        assertTrue(result.logs.single().message.contains("test-stop"))
-        assertEquals("warn", result.logs.single().toEvent("stop-test", result.runId).level)
+        val loop = result.logs.single { it.op == "loop" && it.loopDepth == null && it.stepIndex == 0 }
+        assertTrue(loop.message.contains("test-stop"))
+        assertEquals("warn", loop.toEvent("stop-test", result.runId).level)
+        assertEquals(1, loop.attempts)
+        assertTrue(result.logs.none { it.op.startsWith("on_fail:") })
     }
 
     @Test fun screenOffPrecedesForegroundGuardAndSkipsOnFail() = runTest {
