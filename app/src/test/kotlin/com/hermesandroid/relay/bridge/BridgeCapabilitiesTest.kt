@@ -34,9 +34,20 @@ class BridgeCapabilitiesTest {
             // block 24: replay queued run events after the server missed them.
             "POST" to "/script/flush-events",
             "POST" to "/fs/list", "POST" to "/fs/read", "POST" to "/fs/write",
+            "POST" to "/fs/delete",
             "GET" to "/logcat", "POST" to "/logcat",
         )
         assertEquals(expected, BridgeCommandRegistry.registeredRoutes())
+    }
+
+    @Test
+    fun fileDeleteUsesDeviceInfoAndRejectsOtherMethods() {
+        assertEquals(
+            BridgeCapability.DEVICE_INFO,
+            BridgeCommandRegistry.resolve("/fs/delete", "POST")?.capability,
+        )
+        assertNull(BridgeCommandRegistry.resolve("/fs/delete", "GET"))
+        assertNull(BridgeCommandRegistry.resolve("/fs/delete", "DELETE"))
     }
 
     @Test

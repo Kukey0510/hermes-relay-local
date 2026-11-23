@@ -83,7 +83,7 @@ object BridgeCommandRegistry {
         // idea-011 r6: app-private file + log access. Sandboxed to filesDir /
         // cacheDir / externalFilesDir in FileBridgeRoutes; gated behind the
         // permanent "Device Info" grant the Bridge tab exposes.
-        listOf("/fs/list", "/fs/read", "/fs/write").forEach {
+        listOf("/fs/list", "/fs/read", "/fs/write", "/fs/delete").forEach {
             route("POST", it, permanent(BridgeCapability.DEVICE_INFO))
         }
         listOf("GET", "POST").forEach { method ->

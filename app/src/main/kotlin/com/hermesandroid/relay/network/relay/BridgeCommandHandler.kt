@@ -864,6 +864,7 @@ class BridgeCommandHandler(
             val routeResult = LocalVisionBridgeRoutes.handleRead(screenCapture, appContext, body)
             return respond(requestId, routeResult.status, routeResult.payload)
         }
+        // FileBridgeRoutes.pathMethods also dispatches POST /fs/delete after capability authorization.
         if (FileBridgeRoutes.handles(normalizedPath, method)) {
             val routeResult = FileBridgeRoutes.handle(appContext, normalizedPath, method, body)
             return respond(requestId, routeResult.status, routeResult.payload)

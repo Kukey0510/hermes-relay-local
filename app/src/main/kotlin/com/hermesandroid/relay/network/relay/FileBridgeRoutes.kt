@@ -45,6 +45,7 @@ object FileBridgeRoutes {
         "POST" to "/fs/list",
         "POST" to "/fs/read",
         "POST" to "/fs/write",
+        "POST" to "/fs/delete",
         "GET" to "/logcat",
     )
 
@@ -73,6 +74,7 @@ object FileBridgeRoutes {
                 "/fs/list" -> list(roots, body)
                 "/fs/read" -> read(roots, body)
                 "/fs/write" -> write(roots, body)
+                "/fs/delete" -> delete(roots, body)
                 else -> error("bad_request", "Unsupported route")
             }
         }.getOrElse { error("bad_request", it.message ?: it::class.java.simpleName) }
@@ -131,8 +133,11 @@ object FileBridgeRoutes {
         if (bytes.size > MAX_WRITE_BYTES) return error("too_large", "File exceeds 4 MB")
         val target = FileBridgeSandbox.resolve(roots, rel)
             ?: return error("path_outside_sandbox", "Path is outside the allowed roots")
-        if (body["mkdirs"]?.jsonPrimitive?.booleanOrNull == true && target.parentFile?.mkdirs() == false) {
-            return error("bad_request", "Could not create parent directories")
+        if (body["mkdirs"]?.jsonPrimitive?.booleanOrNull == true) {
+            val parent = target.parentFile ?: return error("bad_request", "Parent directory does not exist")
+            if (!parent.exists() && !parent.mkdirs()) {
+                return error("bad_request", "Could not create parent directories")
+            }
         }
         if (target.parentFile?.isDirectory != true) return error("bad_request", "Parent directory does not exist")
         target.writeBytes(bytes)
@@ -140,6 +145,30 @@ object FileBridgeRoutes {
             put("root", rootFor(roots, target))
             put("resolved", target.path)
             put("size", bytes.size)
+        }
+    }
+
+    private fun delete(roots: List<File>, body: JsonObject): Result {
+        val rel = string(body, "path") ?: return error("bad_request", "Missing path")
+        val target = FileBridgeSandbox.resolve(roots, rel)
+            ?: return error("path_outside_sandbox", "Path is outside the allowed roots")
+        if (roots.any { target == it.canonicalFile }) {
+            return error("path_outside_sandbox", "Cannot delete a sandbox root")
+        }
+        if (!target.exists()) return error("not_found", "Path does not exist", 404)
+        if (target.isDirectory && target.list()?.isNotEmpty() == true) {
+            return error("directory_not_empty", "Directory is not empty")
+        }
+        // File.delete never traverses children, including when a directory changes after the check.
+        if (!target.delete()) {
+            if (target.isDirectory && target.list()?.isNotEmpty() == true) {
+                return error("directory_not_empty", "Directory is not empty")
+            }
+            return error("bad_request", "Could not delete path")
+        }
+        return success {
+            put("root", rootFor(roots, target))
+            put("resolved", target.path)
         }
     }
 
