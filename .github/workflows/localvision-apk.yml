@@ -64,7 +64,7 @@ jobs:
           if [ -n "${ABI:-}" ]; then EXTRA="-Phermes.devAbi=${ABI}"; fi
           echo "extra gradle args: $EXTRA"
           ./gradlew :app:assembleSideloadDebug --no-daemon --stacktrace \
-            -Phermes.versionCode=$((10000 + ${{ github.run_number }})) $EXTRA
+            -Phermes.versionCode=$((1000000 + ${{ github.run_number }})) $EXTRA
 
       - name: List APKs
         if: always()
