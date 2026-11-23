@@ -8,9 +8,7 @@ internal fun isValidLocalVisionGame(game: String): Boolean =
 
 internal fun localVisionPageFiles(directory: File, game: String?): List<File> {
     require(game == null || isValidLocalVisionGame(game)) { "invalid game" }
-    // 指定了 game 就只认 pages/<game>.json。不再把 pages.json 挤进候选链——
-    // 那份是碧蓝的判据，混进链条会让「别的游戏忘了带 spec」静默按碧蓝判，还不报错。
-    return listOf(directory.resolve(game?.let { "pages/$it.json" } ?: "pages.json"))
+    return listOfNotNull(game?.let { directory.resolve("pages/$it.json") }, directory.resolve("pages.json"))
 }
 
 /** In-memory last-good specs; owned by the routes, never shared across app processes. */
@@ -40,9 +38,6 @@ class LocalVisionSpecStore(
                 if (previous != null) return Selection(previous, "stale", hot = true)
             }
         }
-        // 指定了 game 却拿不到它的 spec：不再回落 assets——assets 里那份 pages.json 就是碧蓝判据，
-        // 回落到它等于让别的游戏静默按碧蓝判，probe 全返 other 还找不到原因。
-        if (game != null) error("missing spec for game '$game': pages/$game.json")
         return Selection(PageSpecParser.parse(readAssets()), "assets", hot = false)
     }
 }
