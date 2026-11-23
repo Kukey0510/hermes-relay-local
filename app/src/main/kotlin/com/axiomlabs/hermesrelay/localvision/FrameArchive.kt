@@ -55,7 +55,10 @@ object FrameArchive {
             val safeTag = tag.replace(Regex("[^A-Za-z0-9_-]"), "_")
             val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
             val file = File(directory, "${timestamp}_${safeTag}.png")
-            bitmap = Bitmap.createBitmap(image.rgb, image.width, image.height, Bitmap.Config.ARGB_8888)
+            bitmap = Bitmap.createBitmap(image.width, image.height, Bitmap.Config.ARGB_8888)
+            // Mark opaque before importing RGB pixels so zero alpha cannot premultiply away their colors.
+            bitmap.setHasAlpha(false)
+            bitmap.setPixels(image.rgb, 0, image.width, 0, 0, image.width, image.height)
             val written = file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
             if (!written) {
                 file.delete()

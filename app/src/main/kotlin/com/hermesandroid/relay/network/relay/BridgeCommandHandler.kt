@@ -838,6 +838,8 @@ class BridgeCommandHandler(
                         put("step_index", log.stepIndex); put("op", log.op)
                         put("success", log.success); put("attempts", log.attempts)
                         put("message", log.message)
+                        log.loopDepth?.let { put("loopDepth", it) }
+                        log.iteration?.let { put("iteration", it) }
                     }) }
                 })
             })

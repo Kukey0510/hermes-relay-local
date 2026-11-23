@@ -53,6 +53,7 @@ class ScriptRunStore(
                 stepIndex = log.stepIndex, op = log.op, success = log.success, attempts = log.attempts,
                 message = log.message, errorCode = errorCode, stepId = log.stepId,
                 snapshotTag = snapshotTag, snapshotSaved = snapshotSaved,
+                loopDepth = log.loopDepth, iteration = log.iteration,
             )) + "\n")
         }
     }
@@ -85,6 +86,7 @@ class ScriptRunStore(
 }
 
 @Serializable
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
 data class ScriptLogEvent(
     val event: String,
     val scriptId: String,
@@ -100,8 +102,19 @@ data class ScriptLogEvent(
     val stepId: String? = null,
     val snapshotTag: String? = null,
     val snapshotSaved: Boolean? = null,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val loopDepth: Int? = null,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val iteration: Int? = null,
 ) {
     companion object {
         fun timestamp(clock: Clock = Clock.systemUTC()): String = Instant.now(clock).toString()
     }
 }
+
+internal fun ScriptRunLog.toLogEvent(scriptId: String, runId: String, durationMs: Long) = ScriptLogEvent(
+    event = if (message.startsWith("power_fallback")) "power_fallback" else "step",
+    scriptId = scriptId, runId = runId, ts = ScriptLogEvent.timestamp(),
+    stepIndex = stepIndex, op = op, success = success, attempts = attempts,
+    message = message, durationMs = durationMs, loopDepth = loopDepth, iteration = iteration,
+)

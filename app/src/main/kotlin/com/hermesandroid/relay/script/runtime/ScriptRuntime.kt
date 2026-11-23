@@ -280,12 +280,7 @@ object ScriptRuntime {
                     onStep = { log, durationMs ->
                         stepCompleted(runId, log.stepIndex)
                         store.writePending(PendingScriptRun(script.id, runId, log.stepIndex))
-                        store.append(ScriptLogEvent(
-                            event = if (log.message.startsWith("power_fallback")) "power_fallback" else "step",
-                            scriptId = script.id, runId = runId, ts = ScriptLogEvent.timestamp(),
-                            stepIndex = log.stepIndex, op = log.op, success = log.success, attempts = log.attempts,
-                            message = log.message, durationMs = durationMs,
-                        ))
+                        store.append(log.toLogEvent(script.id, runId, durationMs))
                         if (!log.success) runCatching { reporter.report(log.toEvent(script.id, runId)) }
                     },
                 )

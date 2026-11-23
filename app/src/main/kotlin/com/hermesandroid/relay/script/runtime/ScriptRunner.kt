@@ -47,7 +47,8 @@ interface ScriptAccess {
 }
 
 data class ScriptRunLog(val stepIndex: Int, val stepId: String?, val op: String,
-    val success: Boolean, val attempts: Int, val message: String)
+    val success: Boolean, val attempts: Int, val message: String,
+    val loopDepth: Int? = null, val iteration: Int? = null)
 data class ScriptRunResult(val runId: String = UUID.randomUUID().toString(), val success: Boolean,
     val errorCode: String? = null, val logs: List<ScriptRunLog> = emptyList())
 
@@ -81,7 +82,11 @@ class ScriptRunner {
         if (!running.compareAndSet(false, true)) return ScriptRunResult(runId = runId, success = false, errorCode = "run_in_progress")
         ScriptRunControl.reset()
         val logs = mutableListOf<ScriptRunLog>()
-        val variables = RunVariables(resolveScript, mutableListOf(script.id), script.id, runId, onPause).apply {
+        val variables = RunVariables(resolveScript, mutableListOf(script.id), script.id, runId, onPause,
+            recordChild = { entry, durationMs ->
+                logs += entry
+                runCatching { onStep(entry, durationMs) }
+            }).apply {
             putAll(script.vars.mapValues { it.value.content })
         }
         try {
@@ -249,7 +254,12 @@ class ScriptRunner {
                     for (iteration in 0 until times) {
                         stopOutcome(access)?.let { return it }
                         if (access.monotonicMs() - started >= maxTotalMs) { outcome = StepOutcome(true, "loop_stop:max_total_ms"); break }
-                        val child = performChildren(step.steps, access, targetPackages, variables, "loop", depth + 1)
+                        variables.loopIterations += iteration + 1
+                        val child = try {
+                            performChildren(step.steps, access, targetPackages, variables, "loop", depth + 1)
+                        } finally {
+                            variables.loopIterations.removeAt(variables.loopIterations.lastIndex)
+                        }
                         if (!child.ok) return child
                         if (access.monotonicMs() - started >= maxTotalMs) { outcome = StepOutcome(true, "loop_stop:max_total_ms"); break }
                         val until = step.until?.let { substitute(it, variables) }
@@ -430,26 +440,47 @@ class ScriptRunner {
         targetPackages: Collection<String>, variables: RunVariables, owner: String, depth: Int = 0): StepOutcome {
         if (depth > 8) return StepOutcome(false, "nesting_too_deep", "invalid_script")
         for (step in steps) {
+            val startedAt = System.nanoTime()
             var attempt = 0
             var outcome: StepOutcome
+            var rejectedBeforeAction = false
             do {
-                stopOutcome(access)?.let { return it }
-                if (step !is ScriptStep.Launch && step !is ScriptStep.ForceStop && step !is ScriptStep.ColdStart &&
+                val stopped = stopOutcome(access)
+                if (stopped != null) {
+                    outcome = stopped
+                    rejectedBeforeAction = true
+                    break
+                }
+                val guarded = if (step !is ScriptStep.Launch && step !is ScriptStep.ForceStop && step !is ScriptStep.ColdStart &&
                     step !is ScriptStep.WaitForeground && step !is ScriptStep.Page && step !is ScriptStep.IfVar &&
                     step !is ScriptStep.Loop && step !is ScriptStep.IfPage && step !is ScriptStep.Include &&
                         step !is ScriptStep.Pause && step !is ScriptStep.AskServer)
-                    ScriptGuard.rejection(access.foregroundPackage(), targetPackages)?.let { return StepOutcome(false, it, it) }
+                    ScriptGuard.rejection(access.foregroundPackage(), targetPackages) else null
+                if (guarded != null) {
+                    outcome = StepOutcome(false, guarded, guarded)
+                    rejectedBeforeAction = true
+                    break
+                }
                 attempt++
                 outcome = execute(step, access, targetPackages, variables, depth)
                 if (!outcome.isTerminal) outcome = stopOutcome(access) ?: outcome
             } while (!outcome.ok && !outcome.isTerminal && attempt <= step.retries)
+            if (variables.loopIterations.isNotEmpty() && (step is ScriptStep.Page || step is ScriptStep.Tap)) {
+                val message = if (step is ScriptStep.Tap) "${outcome.message} x=${step.x} y=${step.y}" else outcome.message
+                val entry = log(variables.stepIndex, step, outcome.ok, attempt, message).copy(
+                    loopDepth = variables.loopIterations.size,
+                    iteration = variables.loopIterations.last(),
+                )
+                variables.recordChild(entry, elapsedMs(startedAt))
+            }
+            if (rejectedBeforeAction) return outcome
             if (!outcome.ok) return StepOutcome(false, "$owner:${outcome.message}", outcome.errorCode)
         }
         return StepOutcome(true, owner)
     }
 
     private fun substitute(value: String, variables: Map<String, String>) =
-        Regex("\\$\\{([^}]+)\\}").replace(value) { variables[it.groupValues[1]] ?: it.value }
+        Regex("\\$\\{([^\\x7D]+)\\}").replace(value) { variables[it.groupValues[1]] ?: it.value }
     private fun firstNumber(value: String): String? = Regex("\\d+").find(value)?.value
 
     private fun log(index: Int, step: ScriptStep, success: Boolean, attempts: Int, message: String, prefix: String = "") =
@@ -482,9 +513,13 @@ class ScriptRunner {
         val scriptId: String,
         val runId: String,
         val onPause: suspend (ScriptEvent) -> Unit,
+        val recordChild: suspend (ScriptRunLog, Long) -> Unit,
         var stepIndex: Int = 0,
         var lastStep: String? = null,
-    ) : LinkedHashMap<String, String>()
+    ) : LinkedHashMap<String, String>() {
+        // One-based iteration of each active loop, independent of include/if nesting.
+        val loopIterations = mutableListOf<Int>()
+    }
 
     private data class StepOutcome(val ok: Boolean, val message: String, val errorCode: String? = null) {
         val isTerminal: Boolean get() = errorCode == "cancelled" || errorCode == "screen_off"

@@ -93,12 +93,12 @@ class ScriptRunnerTest {
         val fullResult = ScriptRunner().run(script(ScriptStep.Loop(3, steps = listOf(ScriptStep.Tap(1, 1)))), full)
         assertTrue(fullResult.success)
         assertEquals(3, full.tapCalls)
-        assertEquals("loop_stop:times", fullResult.logs.single().message)
+        assertEquals("loop_stop:times", fullResult.logs.last().message)
         val until = FakeAccess(probeAnswers = mutableListOf(false, true))
         val untilResult = ScriptRunner().run(script(ScriptStep.Loop(5, until = "result",
             steps = listOf(ScriptStep.Tap(1, 1)))), until)
         assertEquals(2, until.tapCalls)
-        assertEquals("loop_stop:until", untilResult.logs.single().message)
+        assertEquals("loop_stop:until", untilResult.logs.last().message)
     }
 
     @Test fun loopStopsAtMaxTotalAndRejectsInvalidBounds() = runTest {
@@ -107,7 +107,7 @@ class ScriptRunnerTest {
             steps = listOf(ScriptStep.Tap(1, 1)))), access)
         assertTrue(result.success)
         assertEquals(1, access.tapCalls)
-        assertEquals("loop_stop:max_total_ms", result.logs.single().message)
+        assertEquals("loop_stop:max_total_ms", result.logs.last().message)
         assertEquals("invalid_script", ScriptRunner().run(script(ScriptStep.Loop(0)), FakeAccess()).errorCode)
         assertEquals("invalid_script", ScriptRunner().run(script(ScriptStep.Loop(101)), FakeAccess()).errorCode)
     }
