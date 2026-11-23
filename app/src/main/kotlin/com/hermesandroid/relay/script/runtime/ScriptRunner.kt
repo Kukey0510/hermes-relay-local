@@ -65,8 +65,6 @@ internal fun meanAbsDiff(first: IntArray, second: IntArray): Int {
 class ScriptRunner {
     companion object {
         private val running = AtomicBoolean(false)
-        private val CARD_CENTERS = intArrayOf(590, 960, 1330, 1700)
-        private const val CARD_CENTER_Y = 355
     }
 
     suspend fun run(
@@ -175,7 +173,7 @@ class ScriptRunner {
         if (depth > 8) return StepOutcome(false, "nesting_too_deep", "invalid_script")
         stopOutcome(access)?.let { return it }
         // Polling primitives own their deadlines and timeout result messages.
-        val timeout = if (step is ScriptStep.Probe || step is ScriptStep.WaitForeground ||
+        val timeout = if (step is ScriptStep.Probe || step is ScriptStep.IfPage || step is ScriptStep.WaitForeground ||
             step is ScriptStep.Pause || step is ScriptStep.AskServer) null else step.timeoutMs?.coerceAtLeast(1)
         return try {
             val result = if (timeout == null) perform(step, access, targetPackages, variables, depth)
@@ -238,7 +236,10 @@ class ScriptRunner {
             }
             is ScriptStep.IfPage -> {
                 val expect = substitute(step.expect, variables)
-                val branch = if (access.probe(expect, step.timeoutMs ?: 3_000, step.game)) step.thenSteps else step.elseSteps
+                val timeout = (step.timeoutMs ?: 3_000).coerceAtLeast(1)
+                val hit = withTimeoutOrNull(timeout) { access.probe(expect, timeout, step.game) }
+                    ?: return StepOutcome(false, "timeout", "step_timeout")
+                val branch = if (hit) step.thenSteps else step.elseSteps
                 performChildren(branch, access, targetPackages, variables, "if_page", depth + 1)
             }
             is ScriptStep.Loop -> {
@@ -256,14 +257,21 @@ class ScriptRunner {
                         if (access.monotonicMs() - started >= maxTotalMs) { outcome = StepOutcome(true, "loop_stop:max_total_ms"); break }
                         variables.loopIterations += iteration + 1
                         val child = try {
-                            performChildren(step.steps, access, targetPackages, variables, "loop", depth + 1)
+                            withTimeoutOrNull(maxTotalMs - (access.monotonicMs() - started)) {
+                                performChildren(step.steps, access, targetPackages, variables, "loop", depth + 1)
+                            } ?: return StepOutcome(true, "loop_stop:max_total_ms")
                         } finally {
                             variables.loopIterations.removeAt(variables.loopIterations.lastIndex)
                         }
                         if (!child.ok) return child
                         if (access.monotonicMs() - started >= maxTotalMs) { outcome = StepOutcome(true, "loop_stop:max_total_ms"); break }
-                        val until = step.until?.let { substitute(it, variables) }
-                        if (until != null && access.probe(until, 1_000)) return StepOutcome(true, "loop_stop:until")
+                        val condition = step.untilCondition ?: step.until?.let { ScriptStep.LoopUntil(it) }
+                        if (condition != null) {
+                            val hit = withTimeoutOrNull(maxTotalMs - (access.monotonicMs() - started)) {
+                                access.probe(substitute(condition.page, variables), 1_000, condition.spec)
+                            } ?: return StepOutcome(true, "loop_stop:max_total_ms")
+                            if (hit) return StepOutcome(true, "loop_stop:until")
+                        }
                     }
                     outcome
                 }
@@ -348,18 +356,21 @@ class ScriptRunner {
                 StepOutcome(ok, if (ok) "snapshot:$tag" else "capture_failed")
             }
             is ScriptStep.TapWeakest -> {
-                val fallback = step.fallbackIndex.coerceIn(0, 3)
+                if (step.centers.size !in 1..8 || step.y !in 0..access.screenSize().second) {
+                    return StepOutcome(false, "invalid_tapWeakest_coordinates", "invalid_script")
+                }
+                val fallback = step.fallbackIndex.coerceIn(step.centers.indices)
                 val minConfidence = step.minConfidence.coerceIn(0.0, 1.0)
                 val recognition = access.recognizePowers(minConfidence)
                 val cards = recognition?.cards.orEmpty()
-                val sums = (0..3).map { index -> cards.getOrNull(index)?.takeIf { it.size == 2 && it.all { reading ->
+                val sums = step.centers.indices.map { index -> cards.getOrNull(index)?.takeIf { it.size == 2 && it.all { reading ->
                     reading.value != null && (reading.confidence < 0f || reading.confidence >= minConfidence)
                 } }
                     ?.sumOf { it.value!! } }
                 val selected = sums.withIndex().filter { it.value != null }.minByOrNull { it.value!! }?.index ?: fallback
                 val isFallback = sums.all { it == null }
-                val tapped = step.dry || access.tap(CARD_CENTERS[selected], CARD_CENTER_Y)
-                val readings = (0..3).joinToString(";") { card ->
+                val tapped = step.dry || access.tap(step.centers[selected], step.y)
+                val readings = step.centers.indices.joinToString(";") { card ->
                     val rows = cards.getOrNull(card).orEmpty()
                     "$card:${rows.getOrNull(0)?.value ?: "?"}@${rows.getOrNull(0)?.confidence ?: -1f}+" +
                         "${rows.getOrNull(1)?.value ?: "?"}@${rows.getOrNull(1)?.confidence ?: -1f}=${sums[card] ?: "?"}"

@@ -68,6 +68,23 @@ class ScriptVisionGameTest {
         assertTrue(requests.all { "game" !in it })
     }
 
+    @Test fun loopUntilForwardsSpecThroughAndroidAccessAndLegacyFormsKeepDefault() = runTest {
+        val script = Json.decodeFromString<RuntimeScript>("""{
+            "id":"loop-spec", "targetPackages":["unrelated.pkg"], "steps":[
+                {"op":"loop","times":1,"until":"home"},
+                {"op":"loop","times":1,"until":{"page":"home","spec":"jc"}},
+                {"op":"loop","times":1,"until":{"page":"home"}}
+            ]
+        }""")
+        val result = ScriptRunner().run(script, access)
+        assertTrue(result.success)
+        assertEquals(List(3) { "loop_stop:until" }, result.logs.map { it.message })
+        assertEquals(3, requests.size)
+        assertFalse("game" in requests[0])
+        assertEquals(JsonPrimitive("jc"), requests[1]["game"])
+        assertFalse("game" in requests[2])
+    }
+
     @Test fun gameSurvivesSerializationAndNonStringGamesAreRejected() {
         val operations = listOf(
             """{"op":"page"}""",

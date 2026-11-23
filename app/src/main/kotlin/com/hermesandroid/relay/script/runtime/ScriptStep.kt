@@ -11,6 +11,7 @@ import kotlinx.serialization.json.JsonEncoder
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
@@ -64,7 +65,10 @@ sealed interface ScriptStep {
     data class Loop(val times: Int, val maxTotalMs: Long = 600_000,
         val until: String? = null, val steps: List<ScriptStep> = emptyList(),
         override val id: String? = null, override val timeoutMs: Long? = null,
-        override val retries: Int = 0, val timesFrom: String? = null) : ScriptStep
+        override val retries: Int = 0, val timesFrom: String? = null,
+        val untilCondition: LoopUntil? = null) : ScriptStep
+    /** Object-form until; keeping it separate preserves the legacy String property and JSON shape. */
+    data class LoopUntil(val page: String, val spec: String? = null)
     /** wait_ms defaults to 0 and is clamped to 0..90_000 ms. */
     data class Launch(val packageName: String? = null, val waitMs: Long = 0,
         override val id: String? = null, override val timeoutMs: Long? = null,
@@ -103,7 +107,9 @@ sealed interface ScriptStep {
         override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
     data class TapWeakest(val fallbackIndex: Int = 0, val minConfidence: Double = 0.5,
         val dry: Boolean = false, override val id: String? = null,
-        override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
+        override val timeoutMs: Long? = null, override val retries: Int = 0,
+        // 兼容期默认值（碧蓝四卡两行），所有脚本补完参数后删除
+        val centers: List<Int> = listOf(590, 960, 1330, 1700), val y: Int = 355) : ScriptStep
     /**
      * 冷启动到指定页的全自动流程，不依赖服务器逐步指挥：
      * 按窗口包名确认前台，连续两次命中目标包才开始判页；
@@ -187,9 +193,27 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
             "tapIfText" -> ScriptStep.TapIfText(required("text"),
                 (json["optional"] as? JsonPrimitive)?.booleanOrNull ?: true, id, timeout, retries)
             "if_page" -> ScriptStep.IfPage(required("expect"), steps("then"), steps("else"), id, timeout, retries, game())
-            "loop" -> ScriptStep.Loop(required("times").toInt(),
-                text("max_total_ms")?.toLong() ?: 600_000, text("until"),
-                steps("steps"), id, timeout, retries, text("times_from"))
+            "loop" -> {
+                val until = json["until"]?.takeUnless { it == JsonNull }
+                val condition = when (until) {
+                    null -> null
+                    is JsonPrimitive -> {
+                        require(until.isString) { "until must be a string or condition object" }
+                        null
+                    }
+                    is JsonObject -> {
+                        val page = until["page"] as? JsonPrimitive
+                        require(page != null && page.isString) { "until.page must be a string" }
+                        val spec = until["spec"]?.takeUnless { it == JsonNull }
+                        require(spec == null || spec is JsonPrimitive && spec.isString) { "until.spec must be a string" }
+                        ScriptStep.LoopUntil(page.content, (spec as? JsonPrimitive)?.content)
+                    }
+                    else -> error("until must be a string or condition object")
+                }
+                ScriptStep.Loop(required("times").toInt(),
+                    text("max_total_ms")?.toLong() ?: 600_000, (until as? JsonPrimitive)?.content,
+                    steps("steps"), id, timeout, retries, text("times_from"), condition)
+            }
             "force_stop" -> ScriptStep.ForceStop(required("package"), text("wait_ms")?.toLong() ?: 1_500, id, timeout, retries)
             "launch" -> ScriptStep.Launch(text("package"), text("wait_ms")?.toLong() ?: 0, id, timeout, retries)
             "wait_foreground" -> ScriptStep.WaitForeground(text("package"), text("orientation"), timeout ?: 60_000, id, retries)
@@ -206,7 +230,18 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
             "snapshot" -> ScriptStep.Snapshot(text("tag") ?: "manual", id, timeout, retries)
             "tapWeakest" -> ScriptStep.TapWeakest(text("fallback_index")?.toInt() ?: 0,
                 text("min_confidence")?.toDouble() ?: 0.5,
-                (json["dry"] as? JsonPrimitive)?.booleanOrNull ?: false, id, timeout, retries)
+                (json["dry"] as? JsonPrimitive)?.booleanOrNull ?: false, id, timeout, retries,
+                centers = json["centers"]?.let { centers ->
+                    require(centers is JsonArray && centers.size in 1..8) { "centers must contain 1..8 integers" }
+                    centers.map {
+                        (it as? JsonPrimitive)?.takeUnless { coordinate -> coordinate.isString }?.intOrNull
+                            ?: error("centers must contain integers")
+                    }
+                } ?: ScriptStep.TapWeakest().centers,
+                y = json["y"]?.let {
+                    (it as? JsonPrimitive)?.takeUnless { coordinate -> coordinate.isString }?.intOrNull
+                        ?: error("y must be an integer")
+                } ?: ScriptStep.TapWeakest().y)
             "coldStart" -> ScriptStep.ColdStart(
                 text("package"), text("boot") ?: "boot", text("home") ?: "home",
                 (json["x"] as? JsonPrimitive)?.intOrNull,
@@ -268,7 +303,13 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
                 putSteps("then", value.thenSteps); putSteps("else", value.elseSteps) }
             is ScriptStep.Loop -> { put("op", "loop"); put("times", value.times)
                 put("max_total_ms", value.maxTotalMs); value.timesFrom?.let { put("times_from", it) }
-                value.until?.let { put("until", it) }; putSteps("steps", value.steps) }
+                if (value.untilCondition != null) {
+                    val condition = linkedMapOf<String, kotlinx.serialization.json.JsonElement>(
+                        "page" to JsonPrimitive(value.untilCondition.page))
+                    value.untilCondition.spec?.let { condition["spec"] = JsonPrimitive(it) }
+                    fields["until"] = JsonObject(condition)
+                } else value.until?.let { put("until", it) }
+                putSteps("steps", value.steps) }
             is ScriptStep.ForceStop -> { put("op", "force_stop"); put("package", value.packageName); put("wait_ms", value.waitMs) }
             is ScriptStep.Launch -> { put("op", "launch"); value.packageName?.let { put("package", it) }; put("wait_ms", value.waitMs) }
             is ScriptStep.WaitForeground -> { put("op", "wait_foreground")
@@ -287,7 +328,8 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
                 put("interval_ms", value.intervalMs); put("timeout_ms", value.stableTimeoutMs); put("tolerance", value.tolerance) }
             is ScriptStep.Snapshot -> { put("op", "snapshot"); put("tag", value.tag) }
             is ScriptStep.TapWeakest -> { put("op", "tapWeakest"); put("fallback_index", value.fallbackIndex)
-                put("min_confidence", value.minConfidence); put("dry", value.dry) }
+                put("min_confidence", value.minConfidence); put("dry", value.dry)
+                fields["centers"] = JsonArray(value.centers.map(::JsonPrimitive)); put("y", value.y) }
             is ScriptStep.ColdStart -> { put("op", "coldStart")
                 value.packageName?.let { put("package", it) }
                 put("boot", value.bootPage); put("home", value.homePage)
