@@ -97,6 +97,7 @@ object BridgeCommandRegistry {
             "/tap", "/tap_text", "/long_press", "/type", "/swipe", "/drag",
             "/scroll", "/press_key", "/open_app", "/return_to_hermes",
             "/send_intent", "/broadcast",
+            "/recorder/start", "/recorder/pause", "/recorder/resume", "/recorder/stop",
         ).forEach { route("POST", it, timed(BridgeCapability.SCREEN_CONTROL)) }
     }
 

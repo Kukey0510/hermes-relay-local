@@ -31,6 +31,8 @@ class BridgeCapabilitiesTest {
             "POST" to "/script/resume",
             "POST" to "/script/status",
             "POST" to "/keep_foreground",
+            "POST" to "/recorder/start", "POST" to "/recorder/pause",
+            "POST" to "/recorder/resume", "POST" to "/recorder/stop",
             // block 24: replay queued run events after the server missed them.
             "POST" to "/script/flush-events",
             "POST" to "/fs/list", "POST" to "/fs/read", "POST" to "/fs/write",

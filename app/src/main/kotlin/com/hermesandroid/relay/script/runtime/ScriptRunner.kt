@@ -15,6 +15,7 @@ interface ScriptAccess {
     /** Dimensions of an actual captured frame, or null when capture is unavailable. */
     suspend fun frameSize(): Pair<Int, Int>?
     suspend fun tap(x: Int, y: Int): Boolean
+    suspend fun longPress(x: Int, y: Int, nodeId: String?, duration: Long): Boolean = false
     /** Tap the matched template center plus offset and return "hit:<score>:<x>,<y>", or null on a miss. */
     suspend fun tapTemplate(name: String, area: List<Int>?, minScore: Double,
         offsetX: Int, offsetY: Int): String? = null
@@ -195,6 +196,9 @@ class ScriptRunner {
             is ScriptStep.Pause -> pause(step.reason, step.pauseTimeoutMs, false, emptyList(), access, targetPackages, variables, depth)
             is ScriptStep.AskServer -> pause(step.reason, step.pauseTimeoutMs, true, step.thenSteps, access, targetPackages, variables, depth)
             is ScriptStep.Tap -> StepOutcome(access.tap(step.x, step.y), "tap")
+            is ScriptStep.LongPress -> if (step.durationMs !in 300L..5_000L) {
+                StepOutcome(false, "invalid_long_press_duration", "invalid_script")
+            } else StepOutcome(access.longPress(step.x, step.y, nodeId = null, duration = step.durationMs), "long_press")
             is ScriptStep.TapTemplate -> {
                 val hit = access.tapTemplate(step.template, step.area, step.min, step.offsetX, step.offsetY)
                 if (hit != null) {
@@ -498,6 +502,7 @@ class ScriptRunner {
         ScriptRunLog(index, step.id, prefix + when (step) {
             is ScriptStep.Pause -> "pause"; is ScriptStep.AskServer -> "ask_server"
             is ScriptStep.Tap -> "tap"; is ScriptStep.TapText -> "tapText"; is ScriptStep.Wait -> "wait"
+            is ScriptStep.LongPress -> "long_press"
             is ScriptStep.TapTemplate -> "tap_template"
             is ScriptStep.Probe -> "probe"; is ScriptStep.Read -> "read"; is ScriptStep.Swipe -> "swipe"
             is ScriptStep.TapIfText -> "tapIfText"; is ScriptStep.IfPage -> "if_page"; is ScriptStep.Loop -> "loop"

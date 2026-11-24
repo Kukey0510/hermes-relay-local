@@ -103,6 +103,37 @@ class HermesAccessibilityService : AccessibilityService() {
     private val screenReader = ScreenReader()
     private val screenHasher = ScreenHasher()
     private var _actionExecutor: ActionExecutor? = null
+    private var _gestureRecorder: GestureRecorder? = null
+    val gestureRecorder: GestureRecorder
+        get() = _gestureRecorder ?: GestureRecorder(this).also { _gestureRecorder = it }
+    val hasRecorderWindows: Boolean get() = _gestureRecorder?.hasWindows == true
+    // Main-thread leases cover the entire bridge frame read, including suspension points.
+    private var recorderScreenReads = 0
+    val hasRecorderScreenReads: Boolean get() = recorderScreenReads > 0
+    fun beginRecorderScreenRead(): Boolean {
+        if (hasRecorderWindows) return false
+        recorderScreenReads++
+        return true
+    }
+    fun endRecorderScreenRead() { recorderScreenReads = (recorderScreenReads - 1).coerceAtLeast(0) }
+    private var recorderConfirmations = 0
+    val hasRecorderConfirmation: Boolean get() = recorderConfirmations > 0
+    suspend fun beginRecorderConfirmation() {
+        recorderConfirmations++
+        if (recorderConfirmations == 1) _gestureRecorder?.suspendForConfirmation()
+    }
+    fun endRecorderConfirmation() {
+        if (recorderConfirmations == 0) return
+        recorderConfirmations--
+        if (recorderConfirmations == 0) _gestureRecorder?.restoreAfterConfirmation()
+    }
+
+    suspend fun prepareRecorderForScript() { _gestureRecorder?.prepareForScript() }
+
+    private fun destroyRecorder() {
+        _gestureRecorder?.destroy()
+        _gestureRecorder = null
+    }
 
     /**
      * Service-scoped coroutine context. Started fresh in
@@ -168,6 +199,7 @@ class HermesAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        destroyRecorder() // Never restore controls or capture on reconnect.
         instance = this
         Log.i(TAG, "HermesAccessibilityService connected")
         // Feed the master-toggle cache for the lifetime of this service
@@ -213,14 +245,14 @@ class HermesAccessibilityService : AccessibilityService() {
     }
 
     override fun onInterrupt() {
-        // Called by the system when it wants us to drop any in-flight work.
-        // We don't queue long-running operations — every bridge command is
-        // fire-and-forget with its own callback — so there's nothing to
-        // cancel here.
+        // CI-UNVERIFIED: interrupt/unbind/destroy must remove both windows and discard partial results.
+        _gestureRecorder?.close(lost = true)
+        // Existing bridge commands remain fire-and-forget; recorder windows are service-owned.
         Log.i(TAG, "onInterrupt — accessibility service asked to stop work")
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
+        destroyRecorder()
         Log.i(TAG, "HermesAccessibilityService unbinding")
         if (instance === this) instance = null
         serviceScope?.cancel()
@@ -230,6 +262,7 @@ class HermesAccessibilityService : AccessibilityService() {
     }
 
     override fun onDestroy() {
+        destroyRecorder()
         if (instance === this) instance = null
         serviceScope?.cancel()
         serviceScope = null

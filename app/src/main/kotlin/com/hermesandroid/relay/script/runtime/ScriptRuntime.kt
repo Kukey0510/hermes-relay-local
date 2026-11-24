@@ -178,6 +178,11 @@ object ScriptRuntime {
         runId: String): ScriptRunResult {
         var errorCode: String? = "run_exception"
         try {
+            // CI-UNVERIFIED: no recorder window or injected recorder action may overlap script execution.
+            // Reservation already makes all new recorder commands return script_running.
+            withContext(Dispatchers.Main.immediate) {
+                HermesAccessibilityService.instance?.prepareRecorderForScript()
+            }
             val result = executeRun(context, screenCapture, scriptId, runId).copy(runId = runId)
             errorCode = result.errorCode
             return result
@@ -322,6 +327,8 @@ object ScriptRuntime {
             runCatching { capture?.captureLocalFrame()?.getOrNull() }.getOrNull()?.let { it.width to it.height }
 
         override suspend fun tap(x: Int, y: Int) = service.actionExecutor.tap(x, y).ok
+        override suspend fun longPress(x: Int, y: Int, nodeId: String?, duration: Long) =
+            service.actionExecutor.longPress(x, y, nodeId, duration).ok
         override suspend fun tapTemplate(name: String, area: List<Int>?, minScore: Double,
             offsetX: Int, offsetY: Int): String? {
             val foreground = foregroundPackage()?.takeIf { it.isNotBlank() } ?: return null

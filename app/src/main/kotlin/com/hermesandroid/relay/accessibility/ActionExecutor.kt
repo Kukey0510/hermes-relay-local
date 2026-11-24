@@ -104,10 +104,8 @@ class ActionExecutor(private val service: HermesAccessibilityService) {
          *  really asking for a regular tap. */
         private const val MIN_LONG_PRESS_DURATION_MS = 100L
 
-        /** Maximum accepted long-press duration (ms). Above this the user
-         *  has almost certainly made a mistake — anything over 3 s ties up
-         *  the gesture queue and risks ANRing the target app. */
-        private const val MAX_LONG_PRESS_DURATION_MS = 3_000L
+        /** Maximum accepted long-press duration; shared with recorded script playback. */
+        private const val MAX_LONG_PRESS_DURATION_MS = 5_000L
 
         /**
          * Maximum depth for the Tier 2 parent-walk cascade in [tapText].

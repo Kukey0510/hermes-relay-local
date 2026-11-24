@@ -115,6 +115,14 @@ fun ScriptsScreen(onOpenScript: (String) -> Unit) {
             TopAppBar(
                 title = { Text(stringResource(R.string.scripts_title)) },
                 actions = {
+                    TextButton(onClick = {
+                        val service = com.hermesandroid.relay.accessibility.HermesAccessibilityService.instance
+                        val response = service?.gestureRecorder?.showControls()
+                        if (response == null || response["ok"].toString() == "false") {
+                            android.widget.Toast.makeText(context,
+                                response?.get("error")?.toString() ?: "请先启用无障碍服务", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }) { Text("手势录制") }
                     IconButton(
                         onClick = { managingTags = true },
                         modifier = Modifier.testTag("scripts.tags.new"),

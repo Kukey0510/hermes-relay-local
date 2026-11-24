@@ -30,6 +30,9 @@ sealed interface ScriptStep {
         override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
     data class Tap(val x: Int, val y: Int, override val id: String? = null,
         override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
+    data class LongPress(val x: Int, val y: Int, val durationMs: Long = 800,
+        override val id: String? = null, override val timeoutMs: Long? = null,
+        override val retries: Int = 0) : ScriptStep
     data class TapTemplate(
         val template: String,
         val area: List<Int>? = null,
@@ -154,6 +157,11 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
             "pause" -> ScriptStep.Pause(text("reason") ?: "need_help", (timeout ?: 600_000).coerceIn(0, 3_600_000), id, retries = retries)
             "ask_server" -> ScriptStep.AskServer(text("reason") ?: "need_help", (timeout ?: 600_000).coerceIn(0, 3_600_000), steps("then"), id, retries = retries)
             "tap" -> ScriptStep.Tap(required("x").toInt(), required("y").toInt(), id, timeout, retries)
+            "long_press" -> {
+                val duration = if ("duration_ms" in json) required("duration_ms").toLong() else 800L
+                require(duration in 300L..5_000L) { "invalid_script: long_press duration_ms must be 300..5000" }
+                ScriptStep.LongPress(required("x").toInt(), required("y").toInt(), duration, id, timeout, retries)
+            }
             "tap_template" -> {
                 val template = json["template"] ?: error("missing 'template'")
                 require(template is JsonPrimitive && template.isString && template.content.isNotBlank() &&
@@ -278,6 +286,10 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
             is ScriptStep.AskServer -> { put("op", "ask_server"); put("reason", value.reason)
                 put("timeout_ms", value.pauseTimeoutMs.coerceIn(0, 3_600_000)); putSteps("then", value.thenSteps) }
             is ScriptStep.Tap -> { put("op", "tap"); put("x", value.x); put("y", value.y) }
+            is ScriptStep.LongPress -> {
+                require(value.durationMs in 300L..5_000L) { "invalid_script: long_press duration_ms must be 300..5000" }
+                put("op", "long_press"); put("x", value.x); put("y", value.y); put("duration_ms", value.durationMs)
+            }
             is ScriptStep.TapTemplate -> {
                 put("op", "tap_template")
                 put("template", value.template)

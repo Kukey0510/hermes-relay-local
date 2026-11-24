@@ -609,6 +609,13 @@ class BridgeCommandHandler(
             return
         }
 
+        val recorderRoute = path in setOf("/recorder/start", "/recorder/pause", "/recorder/resume", "/recorder/stop")
+        if (recorderRoute && com.hermesandroid.relay.script.runtime.ScriptRuntime.isRunning()) {
+            return respond(requestId, 409, buildJsonObject { put("ok", false); put("error", "script_running") })
+        }
+        if (recorderRoute && HermesAccessibilityService.instance == null) {
+            return respond(requestId, 409, buildJsonObject { put("ok", false); put("error", "recorder_lost") })
+        }
         val service = HermesAccessibilityService.instance
             ?: return respond(
                 requestId, 503,
@@ -722,7 +729,7 @@ class BridgeCommandHandler(
         // nodeId (from android_read_screen), which now gets gated.
         val bodyText = extractDestructiveVerbText(path, body, service)
         if (safetyManager != null && safetyManager.requiresConfirmation(path, bodyText)) {
-            val allowed = safetyManager.awaitConfirmation(path, bodyText)
+            val allowed = awaitRecorderSafeConfirmation(path, bodyText)
             if (!allowed) {
                 return respond(
                     requestId, 403,
@@ -803,6 +810,12 @@ class BridgeCommandHandler(
         // routes. Authorization already happened above via
         // BridgeCommandRegistry; these handlers only run for granted routes.
         val normalizedPath = path.substringBefore('?')
+        if (recorderRoute) {
+            val result = withContext(Dispatchers.Main.immediate) {
+                service.gestureRecorder.command(normalizedPath.substringAfterLast('/'))
+            }
+            return respond(requestId, if (result["ok"] == JsonPrimitive(true)) 200 else 409, result)
+        }
         if (normalizedPath == "/script/run") {
             val scriptId = body["scriptId"]?.jsonPrimitive?.content.orEmpty()
             if (scriptId.isBlank()) return respond(requestId, 400, buildJsonObject {
@@ -857,12 +870,16 @@ class BridgeCommandHandler(
             })
         }
         if (normalizedPath == LocalVisionBridgeRoutes.PATH) {
-            val routeResult = LocalVisionBridgeRoutes.handle(screenCapture, appContext, body)
-            return respond(requestId, routeResult.status, routeResult.payload)
+            return withRecorderScreenRead(requestId, service) {
+                val routeResult = LocalVisionBridgeRoutes.handle(screenCapture, appContext, body)
+                respond(requestId, routeResult.status, routeResult.payload)
+            }
         }
         if (normalizedPath == "/read") {
-            val routeResult = LocalVisionBridgeRoutes.handleRead(screenCapture, appContext, body)
-            return respond(requestId, routeResult.status, routeResult.payload)
+            return withRecorderScreenRead(requestId, service) {
+                val routeResult = LocalVisionBridgeRoutes.handleRead(screenCapture, appContext, body)
+                respond(requestId, routeResult.status, routeResult.payload)
+            }
         }
         // FileBridgeRoutes.pathMethods also dispatches POST /fs/delete after capability authorization.
         if (FileBridgeRoutes.handles(normalizedPath, method)) {
@@ -1485,7 +1502,7 @@ class BridgeCommandHandler(
                     return
                 }
                 val confirmText = "Call $number?"
-                val allowed = safetyManager.awaitConfirmation("/call", confirmText)
+                val allowed = awaitRecorderSafeConfirmation("/call", confirmText)
                 if (!allowed) {
                     respond(
                         requestId, 403,
@@ -1543,7 +1560,7 @@ class BridgeCommandHandler(
                     return
                 }
                 val confirmText = "Send '$smsBody' to $to?"
-                val allowed = safetyManager.awaitConfirmation("/send_sms", confirmText)
+                val allowed = awaitRecorderSafeConfirmation("/send_sms", confirmText)
                 if (!allowed) {
                     respond(
                         requestId, 403,
@@ -1607,7 +1624,7 @@ class BridgeCommandHandler(
                 } else {
                     "Share text from Hermes-Relay?"
                 }
-                val allowed = safetyManager.awaitConfirmation(path, confirmText)
+                val allowed = awaitRecorderSafeConfirmation(path, confirmText)
                 if (!allowed) {
                     respond(
                         requestId, 403,
@@ -1774,9 +1791,9 @@ class BridgeCommandHandler(
                 }
             }
 
-            "/screenshot" -> {
+            "/screenshot" -> withRecorderScreenRead(requestId, service) {
                 val capture = screenCapture
-                    ?: return respond(
+                    ?: return@withRecorderScreenRead respond(
                         requestId, 503,
                         buildJsonObject {
                             put("error", "ScreenCapture not wired — Bridge UI must enable screenshots first")
@@ -1866,6 +1883,33 @@ class BridgeCommandHandler(
                 requestId, 404,
                 buildJsonObject { put("error", "unknown bridge path '$path'") }
             )
+        }
+    }
+
+    private suspend fun awaitRecorderSafeConfirmation(path: String, text: String?): Boolean {
+        val service = HermesAccessibilityService.instance
+        try {
+            withContext(Dispatchers.Main.immediate) { service?.beginRecorderConfirmation() }
+            return safetyManager?.awaitConfirmation(path, text) ?: false
+        } finally {
+            withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main.immediate) {
+                service?.endRecorderConfirmation()
+            }
+        }
+    }
+
+    private suspend fun withRecorderScreenRead(requestId: String,
+        service: HermesAccessibilityService, block: suspend () -> Unit) {
+        val acquired = withContext(Dispatchers.Main.immediate) { service.beginRecorderScreenRead() }
+        if (!acquired) return respond(requestId, 409, buildJsonObject {
+            put("ok", false); put("error", "recorder_active")
+        })
+        try {
+            block()
+        } finally {
+            withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main.immediate) {
+                service.endRecorderScreenRead()
+            }
         }
     }
 
