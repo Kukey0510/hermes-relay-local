@@ -1,0 +1,237 @@
+{
+  "legacy": {
+    "version": "2026-11-24T00:00:00Z",
+    "games": {
+      "blhx": {
+        "package": "com.bilibili.azurlane"
+      },
+      "jc": {
+        "package": "com.megagame.crosscore"
+      },
+      "bb": {
+        "package": "com.palmpi.matrix"
+      }
+    },
+    "scripts": [
+      {
+        "id": "legacy-blhx-1",
+        "name": "blhx daily 1",
+        "game": "blhx",
+        "tags": [
+          "daily"
+        ],
+        "updatedAt": "2026-11-26",
+        "description": "",
+        "steps": [
+          {
+            "op": "wait",
+            "ms": 1
+          }
+        ],
+        "sourceNote": ""
+      },
+      {
+        "id": "legacy-blhx-2",
+        "name": "blhx daily 2",
+        "game": "blhx",
+        "tags": [
+          "daily"
+        ],
+        "updatedAt": "2026-11-26",
+        "description": "",
+        "steps": [
+          {
+            "op": "wait",
+            "ms": 1
+          }
+        ],
+        "sourceNote": ""
+      },
+      {
+        "id": "legacy-jc-1",
+        "name": "jc daily 1",
+        "game": "jc",
+        "tags": [
+          "daily"
+        ],
+        "updatedAt": "2026-11-26",
+        "description": "",
+        "steps": [
+          {
+            "op": "wait",
+            "ms": 1
+          }
+        ],
+        "sourceNote": ""
+      },
+      {
+        "id": "legacy-bb-1",
+        "name": "bb daily 1",
+        "game": "bb",
+        "tags": [
+          "daily"
+        ],
+        "updatedAt": "2026-11-26",
+        "description": "",
+        "steps": [
+          {
+            "op": "wait",
+            "ms": 1
+          }
+        ],
+        "sourceNote": ""
+      },
+      {
+        "id": "legacy-bb-2",
+        "name": "bb daily 2",
+        "game": "bb",
+        "tags": [
+          "daily"
+        ],
+        "updatedAt": "2026-11-26",
+        "description": "",
+        "steps": [
+          {
+            "op": "wait",
+            "ms": 1
+          }
+        ],
+        "sourceNote": ""
+      },
+      {
+        "id": "legacy-bb-3",
+        "name": "bb daily 3",
+        "game": "bb",
+        "tags": [
+          "daily"
+        ],
+        "updatedAt": "2026-11-26",
+        "description": "",
+        "steps": [
+          {
+            "op": "wait",
+            "ms": 1
+          }
+        ],
+        "sourceNote": ""
+      }
+    ]
+  },
+  "new": {
+    "blhx": {
+      "version": "2026-11-26T00:00:00Z",
+      "games": {
+        "blhx": {
+          "package": "com.bilibili.azurlane"
+        }
+      },
+      "scripts": [
+        {
+          "id": "new-blhx-1",
+          "name": "blhx daily 1",
+          "game": "blhx",
+          "tags": [
+            "daily"
+          ],
+          "updatedAt": "2026-11-26",
+          "description": "",
+          "steps": [
+            {
+              "op": "wait",
+              "ms": 1
+            }
+          ],
+          "sourceNote": ""
+        }
+      ]
+    },
+    "jc": {
+      "version": "2026-11-26T00:00:00Z",
+      "games": {
+        "jc": {
+          "package": "com.megagame.crosscore"
+        }
+      },
+      "scripts": [
+        {
+          "id": "new-jc-1",
+          "name": "jc daily 1",
+          "game": "jc",
+          "tags": [
+            "daily"
+          ],
+          "updatedAt": "2026-11-26",
+          "description": "",
+          "steps": [
+            {
+              "op": "wait",
+              "ms": 1
+            }
+          ],
+          "sourceNote": ""
+        },
+        {
+          "id": "new-jc-2",
+          "name": "jc daily 2",
+          "game": "jc",
+          "tags": [
+            "daily"
+          ],
+          "updatedAt": "2026-11-26",
+          "description": "",
+          "steps": [
+            {
+              "op": "wait",
+              "ms": 1
+            }
+          ],
+          "sourceNote": ""
+        }
+      ]
+    },
+    "bb": {
+      "version": "2026-11-26T00:00:00Z",
+      "games": {
+        "bb": {
+          "package": "com.palmpi.matrix"
+        }
+      },
+      "scripts": [
+        {
+          "id": "new-bb-1",
+          "name": "bb daily 1",
+          "game": "bb",
+          "tags": [
+            "daily"
+          ],
+          "updatedAt": "2026-11-26",
+          "description": "",
+          "steps": [
+            {
+              "op": "wait",
+              "ms": 1
+            }
+          ],
+          "sourceNote": ""
+        },
+        {
+          "id": "new-bb-2",
+          "name": "bb daily 2",
+          "game": "bb",
+          "tags": [
+            "daily"
+          ],
+          "updatedAt": "2026-11-26",
+          "description": "",
+          "steps": [
+            {
+              "op": "wait",
+              "ms": 1
+            }
+          ],
+          "sourceNote": ""
+        }
+      ]
+    }
+  }
+}

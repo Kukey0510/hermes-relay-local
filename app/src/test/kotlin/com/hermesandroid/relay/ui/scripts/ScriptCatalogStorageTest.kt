@@ -88,6 +88,64 @@ class ScriptCatalogStorageTest {
         assertEquals(listOf("new"), ScriptCatalog.decode(read()).map { it.id })
     }
 
+    @Test fun emptyNewPartitionDoesNotResurrectLegacyScriptsForThatGame() {
+        put("scripts/catalog.json", catalog(entry("old-jc"), entry("keep-bb", "bb")))
+        put("scripts/catalog/jc.json", catalog())
+        assertEquals(listOf("keep-bb"), ScriptCatalog.decode(read()).map { it.id })
+        assertEquals(setOf("jc", "bb"), ScriptCatalog.cachedGames(filesDir))
+    }
+
+    @Test fun newerPartitionWinsIdsAndDeclarationsOverLegacyFallback() {
+        val legacy = catalog(entry("same", "bb", "old"), entry("keep", "bb"))
+            .replaceFirst("{", "{\"games\":{\"jc\":{\"package\":\"old.pkg\"},\"bb\":{\"package\":\"bb.pkg\"}},")
+        val newer = catalog(entry("same", "jc", "new"))
+            .replaceFirst("{", "{\"games\":{\"jc\":{\"package\":\"new.pkg\"}},")
+        put("scripts/catalog.json", legacy)
+        put("scripts/catalog/jc.json", newer)
+        val warnings = mutableListOf<String>()
+        val merged = read { warnings += it }
+        assertEquals("new", ScriptCatalog.decode(merged).single { it.id == "same" }.name)
+        val games = (Json.parseToJsonElement(merged) as JsonObject)["games"] as JsonObject
+        assertEquals(JsonPrimitive("new.pkg"), (games["jc"] as JsonObject)["package"])
+        assertEquals(JsonPrimitive("bb.pkg"), (games["bb"] as JsonObject)["package"])
+        assertEquals(1, warnings.size)
+    }
+
+    @Test fun completeNewLayoutSurvivesCorruptObsoleteLegacyCatalog() {
+        put("scripts/catalog.json", "{broken")
+        for (game in listOf("blhx", "jc", "bb")) put("scripts/catalog/$game.json", catalog(entry(game, game)))
+        val warnings = mutableListOf<String>()
+        assertEquals(setOf("blhx", "jc", "bb"), ScriptCatalog.decode(read { warnings += it }).map { it.game }.toSet())
+        assertEquals(1, warnings.size)
+    }
+
+    @Test fun legacyFallbackCannotRestoreDeclarationsRemovedByNewPartition() {
+        val legacy = catalog(entry("old-jc"), entry("keep-bb", "bb"))
+            .replaceFirst("{", "{\"games\":{\"jc\":{\"package\":\"obsolete.pkg\"},\"bb\":{\"package\":\"bb.pkg\"}},")
+        put("scripts/catalog.json", legacy)
+        put("scripts/catalog/jc.json", catalog(entry("new-jc")))
+        val games = (Json.parseToJsonElement(read()) as JsonObject)["games"] as JsonObject
+        assertEquals(setOf("bb"), games.keys)
+    }
+
+    @Test fun missingPartitionDoesNotPullInAssetsOverAnInstalledCatalog() {
+        put("scripts/catalog/jc.json", catalog(entry("jc")))
+        assertEquals(listOf("jc"), ScriptCatalog.decode(read()).map { it.id })
+    }
+
+    @Test fun readingUnknownPartitionRetainsScriptsWithoutAddingAFourthGame() {
+        ScriptCatalog.writeForGame(filesDir, ScriptCatalog.UNKNOWN_GAME,
+            catalog(entry("no-game").replace("\"game\":\"jc\",", "")))
+        for (game in listOf("blhx", "jc", "bb")) {
+            ScriptCatalog.writeForGame(filesDir, game, catalog(entry(game, game)))
+        }
+        val entries = ScriptCatalog.decode(read())
+        assertEquals(4, entries.size)
+        assertEquals("", entries.single { it.id == "no-game" }.game)
+        assertEquals(listOf("bb", "blhx", "jc"), scriptGamesOf(entries))
+        assertEquals(4, filterScripts(entries, emptySet(), emptySet()).size)
+    }
+
     @Test fun malformedNewCatalogIsAnErrorRatherThanSilentLegacyFallback() {
         put("scripts/catalog.json", catalog(entry("old")))
         put("scripts/catalog/jc.json", "{broken")
@@ -100,6 +158,15 @@ class ScriptCatalogStorageTest {
         ScriptCatalog.writeForGame(filesDir, "jc", content)
         assertEquals(content, filesDir.resolve("scripts/catalog/jc.json").readText())
         assertEquals("legacy bytes", legacy.readText())
+        assertFalse(filesDir.resolve("scripts/catalog/jc.json.tmp").exists())
+    }
+
+    @Test fun firstWriteCreatesBothMissingDirectories() {
+        assertFalse(filesDir.resolve("scripts").exists())
+        val content = catalog(entry("first"))
+        ScriptCatalog.writeForGame(filesDir, "jc", content)
+        assertEquals(content, filesDir.resolve("scripts/catalog/jc.json").readText())
+        assertFalse(filesDir.resolve("scripts/catalog.json").exists())
         assertFalse(filesDir.resolve("scripts/catalog/jc.json.tmp").exists())
     }
 

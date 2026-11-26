@@ -1,6 +1,7 @@
 package com.hermesandroid.relay.ui.scripts
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlinx.serialization.json.Json
 
@@ -58,5 +59,23 @@ class ScriptCatalogTest {
 
         assertEquals(listOf("custom", "new"), merged.first().tags)
         assertEquals(second.tags, merged.last().tags)
+    }
+
+    @Test fun unknownPartitionIsNotAnExtraGameFilterAndScriptsRemainVisible() {
+        val entries = listOf(first.copy(game = "blhx"), second.copy(game = "jc"),
+            first.copy(id = "bb", game = "bb"), first.copy(id = "unknown", game = ""),
+            first.copy(id = "blank", game = " "))
+        assertEquals(listOf("bb", "blhx", "jc"), scriptGamesOf(entries))
+        assertEquals(entries, filterScripts(entries, emptySet(), emptySet()))
+        assertEquals(listOf("bb"), filterScripts(entries, setOf("bb"), emptySet()).map { it.id })
+    }
+
+    @Test fun blankAndNullGameDecodeWithoutCreatingAnUnknownGameName() {
+        val base = """{"id":"x","name":"X","tags":[],"updatedAt":"now","description":"","steps":[],"sourceNote":""}"""
+        for (field in listOf("", "\"game\":null,", "\"game\":\" \",", "\"games\":[\" \",\"\"],")) {
+            val entries = ScriptCatalog.decode("[" + base.replaceFirst("{", "{$field") + "]")
+            assertEquals("", entries.single().game)
+            assertTrue(scriptGamesOf(entries).isEmpty())
+        }
     }
 }

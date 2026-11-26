@@ -73,7 +73,7 @@ object ScriptEntrySerializer : KSerializer<ScriptEntry> {
 }
 
 private fun ScriptEntrySurrogate.toEntry() = ScriptEntry(
-    id, name, game.ifBlank { games.firstOrNull().orEmpty() }, tags, updatedAt, description,
+    id, name, game.takeIf(String::isNotBlank) ?: games.firstOrNull(String::isNotBlank).orEmpty(), tags, updatedAt, description,
     steps.map { (it as? JsonPrimitive)?.content ?: it.toString() }, sourceNote, startAt, games,
 )
 private fun ScriptEntry.toSurrogate() = ScriptEntrySurrogate(
@@ -85,6 +85,9 @@ data class ScriptCatalogDocument(val version: String, val scripts: List<ScriptEn
 
 internal fun filterScripts(entries: List<ScriptEntry>, selectedTags: Set<String>): List<ScriptEntry> =
     if (selectedTags.isEmpty()) entries else entries.filter { entry -> entry.tags.any(selectedTags::contains) }
+
+internal fun scriptGamesOf(entries: List<ScriptEntry>): List<String> =
+    entries.map(ScriptEntry::game).filter(String::isNotBlank).distinct().sorted()
 
 /** Block 25: the filter bar has a game row and a scenario row, so both narrow at once. */
 internal fun filterScripts(
@@ -134,8 +137,28 @@ object ScriptCatalog {
 
     internal fun readContent(filesDir: File, asset: () -> String, warn: (String) -> Unit = ::warn): String {
         val files = catalogFiles(filesDir)
-        if (files.isNotEmpty()) return mergeContents(files.map { it.readText() }, warn)
+        if (files.isNotEmpty()) {
+            val games = files.map { it.nameWithoutExtension }.toSet()
+            val legacy = legacyPartitions(filesDir, warn).filterKeys { it !in games }.values.map { content ->
+                val root = json.parseToJsonElement(content)
+                val declarations = (root as? JsonObject)?.get("games") as? JsonObject
+                if (root is JsonObject && declarations != null) {
+                    JsonObject(root + ("games" to JsonObject(declarations.filterKeys { it !in games }))).toString()
+                } else content
+            }
+            // Legacy supplies only absent partitions. New files win duplicate ids and declarations,
+            // including empty files that deliberately remove a game's old scripts.
+            return mergeContents(legacy + files.map { it.readText() }, warn)
+        }
         return preferredContent(File(filesDir, "scripts/catalog.json").takeIf(File::isFile)?.readText(), asset)
+    }
+
+    private fun legacyPartitions(filesDir: File, warn: (String) -> Unit): Map<String, String> {
+        val legacy = File(filesDir, "scripts/catalog.json").takeIf(File::isFile) ?: return emptyMap()
+        return runCatching { splitByGame(legacy.readText()) }.getOrElse {
+            warn("cannot read legacy catalog partitions: ${it.javaClass.simpleName}")
+            emptyMap()
+        }
     }
 
     /** Sort by filename so the last duplicate id has a stable winner. */
@@ -166,7 +189,7 @@ object ScriptCatalog {
     }
 
     /** Keep the original JSON: runtime fields and object steps must survive sync unchanged. */
-    internal fun splitByGame(content: String): Map<String, String> {
+    internal fun splitByGame(content: String, includeEmptyUnknown: Boolean = true): Map<String, String> {
         val root = json.parseToJsonElement(content)
         val groups = linkedMapOf<String, MutableList<JsonElement>>()
         for (entry in scripts(root)) {
@@ -179,7 +202,7 @@ object ScriptCatalog {
                 groups.getOrPut(game) { mutableListOf() }.add(entry)
             }
         }
-        if (groups.isEmpty()) groups[UNKNOWN_GAME] = mutableListOf()
+        if (groups.isEmpty() && includeEmptyUnknown) groups[UNKNOWN_GAME] = mutableListOf()
         return groups.mapValues { (_, entries) -> withScripts(root, entries) }
     }
 
@@ -223,9 +246,7 @@ object ScriptCatalog {
 
     internal fun cachedGames(filesDir: File): Set<String> {
         val files = catalogFiles(filesDir)
-        if (files.isNotEmpty()) return files.map { it.nameWithoutExtension }.toSet()
-        val legacy = File(filesDir, "scripts/catalog.json").takeIf(File::isFile) ?: return emptySet()
-        return runCatching { splitByGame(legacy.readText()).keys }.getOrDefault(emptySet())
+        return files.map { it.nameWithoutExtension }.toSet() + legacyPartitions(filesDir, {}).keys
     }
 
     internal fun cachedForGame(filesDir: File, game: String): String? {

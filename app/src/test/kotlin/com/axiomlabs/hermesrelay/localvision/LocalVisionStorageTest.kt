@@ -82,4 +82,40 @@ class LocalVisionStorageTest {
         assertTrue(runCatching { digitTemplateFile(directory, "../field", "0.png") }.isFailure)
         assertTrue(runCatching { digitTemplateFile(directory, "jc/../field", "0.png") }.isFailure)
     }
+
+    @Test fun stateAAllThreeGamesUseFlatTemplatesAndDigits() {
+        for (game in listOf("blhx", "jc", "bb")) {
+            val template = put("templates/${game}_daily.png")
+            val digit = put("digits/${game}_times/0.png")
+            assertEquals(template, localVisionTemplateFile(directory, "${game}_daily.png", game))
+            assertEquals(digit, digitTemplateFile(directory, "$game/${game}_times", "0.png"))
+        }
+    }
+
+    @Test fun stateBOnlyJcMigratedStillResolvesAllThreeGamesPerFile() {
+        for (game in listOf("blhx", "jc", "bb")) {
+            val legacyTemplate = put("templates/${game}_daily.png")
+            val legacyDigit = put("digits/${game}_times/0.png")
+            val expectedTemplate = if (game == "jc") put("templates/jc/${game}_daily.png") else legacyTemplate
+            val expectedDigit = if (game == "jc") put("digits/jc/${game}_times/0.png") else legacyDigit
+            assertEquals(expectedTemplate, localVisionTemplateFile(directory, "${game}_daily.png", game))
+            assertEquals(expectedDigit, digitTemplateFile(directory, "$game/${game}_times", "0.png"))
+        }
+        // A directory for this game also must not suppress a different missing file/character.
+        val missingTemplate = put("templates/jc_other.png")
+        val missingDigit = put("digits/jc_times/1.png")
+        assertEquals(missingTemplate, localVisionTemplateFile(directory, "jc_other.png", "jc"))
+        assertEquals(missingDigit, digitTemplateFile(directory, "jc/jc_times", "1.png"))
+    }
+
+    @Test fun stateCAllThreeGamesPreferNewTemplatesAndDigits() {
+        for (game in listOf("blhx", "jc", "bb")) {
+            put("templates/${game}_daily.png")
+            put("digits/${game}_times/0.png")
+            val template = put("templates/$game/${game}_daily.png")
+            val digit = put("digits/$game/${game}_times/0.png")
+            assertEquals(template, localVisionTemplateFile(directory, "${game}_daily.png", game))
+            assertEquals(digit, digitTemplateFile(directory, "$game/${game}_times", "0.png"))
+        }
+    }
 }

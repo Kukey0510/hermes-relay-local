@@ -145,7 +145,7 @@ class ScriptSyncProtectionTest {
         assertEquals(local, storage.readCatalog())
     }
 
-    private fun catalog(version: String) = """{"version":"$version","scripts":[]}"""
+    private fun catalog(version: String) = """{"version":"$version","full_snapshot":true,"scripts":[]}"""
     private fun storage(content: String) = FileStorage(File(temporary.newFolder(), "catalog.json").apply { writeText(content) })
     private fun manager(server: MockWebServer, storage: FileStorage, active: () -> Boolean = { false },
         log: (String) -> Unit = {}) = ScriptSyncManager(

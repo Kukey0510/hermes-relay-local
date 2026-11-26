@@ -51,6 +51,7 @@ import com.hermesandroid.relay.HermesRelayApp
 import com.hermesandroid.relay.R
 import com.hermesandroid.relay.ui.scripts.ScriptCatalog
 import com.hermesandroid.relay.ui.scripts.ScriptCatalogResult
+import com.hermesandroid.relay.ui.scripts.scriptGamesOf
 import com.hermesandroid.relay.ui.scripts.ScriptEntry
 import com.hermesandroid.relay.ui.scripts.ScriptTagStore
 import com.hermesandroid.relay.ui.scripts.ScriptApiClient
@@ -146,7 +147,7 @@ fun ScriptsScreen(onOpenScript: (String) -> Unit) {
                 )
             } else {
                 val entries = applyScriptTagOverrides(current.entries, overrides)
-                val games = entries.map(ScriptEntry::game).distinct().sorted()
+                val games = scriptGamesOf(entries)
                 val scenarioTags = scenarioTagsOf(entries, userTags)
                 LaunchedEffect(scenarioTags) { selectedTags = selectedTags.intersect(scenarioTags.toSet()) }
                 LaunchedEffect(games) { selectedGames = selectedGames.intersect(games.toSet()) }

@@ -18,6 +18,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -164,13 +165,17 @@ class ScriptSyncManager internal constructor(
         return runCatching {
             val incoming = api.getCatalog()
             val serverVersion = catalogVersion(incoming)
-            val incomingGames = ScriptCatalog.splitByGame(incoming)
+            // Absence is not deletion unless the producer explicitly declares a full snapshot.
+            val snapshotFlag = (Json.parseToJsonElement(incoming) as? JsonObject)?.get("full_snapshot") as? JsonPrimitive
+            val fullSnapshot = snapshotFlag?.let { !it.isString && it.booleanOrNull == true } == true
+            val incomingGames = ScriptCatalog.splitByGame(incoming, includeEmptyUnknown = fullSnapshot)
             // Reserve and disk replacement share the runtime lock, closing the fetch/start race.
             var blocked = false
             val updated = ScriptRuntime.updateCatalogIfIdle {
                 if (isRunActive()) { blocked = true; return@updateCatalogIfIdle }
                 var unknownVersion = false
-                for (game in incomingGames.keys + storage.catalogGames()) {
+                val games = incomingGames.keys + if (fullSnapshot) storage.catalogGames() else emptySet()
+                for (game in games) {
                     val catalog = incomingGames[game] ?: ScriptCatalog.emptyCatalog(incoming)
                     val cached = storage.readCatalogForGame(game)
                     val localVersion = cached?.let { runCatching { catalogVersion(it) }.getOrNull() }
