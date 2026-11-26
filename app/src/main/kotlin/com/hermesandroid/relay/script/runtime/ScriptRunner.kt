@@ -36,6 +36,8 @@ interface ScriptAccess {
     /** 立刻判一次当前页（不等待、不点屏）；判不出返回 null。脚本用 op "page" 调它。 */
     suspend fun currentPage(): String? = null
     suspend fun currentPage(game: String? = null): String? = currentPage()
+    /** Timing of the last page/probe operation; null keeps legacy access implementations unchanged. */
+    val pageTimings: PageTimings? get() = null
     suspend fun frameSample(): IntArray? = null
     suspend fun saveSnapshot(tag: String): Boolean = false
     suspend fun recognizePowers(minConfidence: Double): PowerRecognition? = null
@@ -81,6 +83,7 @@ class ScriptRunner {
         evidenceStore: ScriptRunStore? = null,
         onPause: suspend (ScriptEvent) -> Unit = {},
     ): ScriptRunResult {
+        if (!script.hasValidStartAt()) return ScriptRunResult(runId = runId, success = false, errorCode = "invalid_script")
         if (!running.compareAndSet(false, true)) return ScriptRunResult(runId = runId, success = false, errorCode = "run_in_progress")
         ScriptRunControl.reset()
         val logs = mutableListOf<ScriptRunLog>()
@@ -94,7 +97,8 @@ class ScriptRunner {
         try {
             runCatching { onRunStart() }
             var failure: String? = null
-            for ((index, step) in script.steps.withIndex()) {
+            for ((offset, step) in script.steps.drop(script.startAt).withIndex()) {
+                val index = script.startAt + offset
                 variables.stepIndex = index
                 val startedAt = System.nanoTime()
                 var attempt = 0
@@ -220,7 +224,10 @@ class ScriptRunner {
                 val clamped = step.ms.coerceIn(0, 30_000)
                 access.waitMs(clamped); StepOutcome(true, "wait_ms=$clamped")
             }
-            is ScriptStep.Probe -> StepOutcome(access.probe(step.expect, step.timeoutMs ?: 3_000, step.game), "probe=${step.expect}")
+            is ScriptStep.Probe -> {
+                val hit = access.probe(step.expect, step.timeoutMs ?: 3_000, step.game)
+                StepOutcome(hit, "probe=${step.expect}" + access.pageTimings?.messageSuffix().orEmpty())
+            }
             is ScriptStep.Read -> access.read(step.field)?.let { value ->
                 firstNumber(value)?.let { variables[step.asName] = it }
                 StepOutcome(true, "${step.field}=$value")
@@ -263,11 +270,13 @@ class ScriptRunner {
                         stopOutcome(access)?.let { return it }
                         if (access.monotonicMs() - started >= maxTotalMs) { outcome = StepOutcome(true, "loop_stop:max_total_ms"); break }
                         variables.loopIterations += iteration + 1
+                        variables.logPath += "loop[${iteration + 1}]"
                         val child = try {
                             withTimeoutOrNull(maxTotalMs - (access.monotonicMs() - started)) {
                                 performChildren(step.steps, access, targetPackages, variables, "loop", depth + 1)
                             } ?: return StepOutcome(true, "loop_stop:max_total_ms")
                         } finally {
+                            variables.logPath.removeAt(variables.logPath.lastIndex)
                             variables.loopIterations.removeAt(variables.loopIterations.lastIndex)
                         }
                         if (!child.ok) return child
@@ -304,7 +313,7 @@ class ScriptRunner {
             is ScriptStep.Page -> {
                 val current = access.currentPage(step.game) ?: "other"
                 variables[step.asName] = current
-                StepOutcome(true, "page=$current as=${step.asName}")
+                StepOutcome(true, "page=$current as=${step.asName}" + access.pageTimings?.messageSuffix().orEmpty())
             }
             is ScriptStep.IfVar -> {
                 val value = variables[step.name] ?: ""
@@ -324,10 +333,13 @@ class ScriptRunner {
                 } catch (_: Exception) {
                     return StepOutcome(false, "include_invalid:${step.script}", "invalid_script")
                 } ?: return StepOutcome(false, "include_missing:${step.script}", "script_not_found")
+                if (!included.hasValidStartAt()) return StepOutcome(false, "include_invalid:${step.script}", "invalid_script")
                 variables.includeStack += step.script
+                variables.logPath += "include:${step.script}"
                 try {
-                    performChildren(included.steps, access, targetPackages, variables, "include", depth + 1)
+                    performChildren(included.steps.drop(included.startAt), access, targetPackages, variables, "include", depth + 1)
                 } finally {
+                    variables.logPath.removeAt(variables.logPath.lastIndex)
                     variables.includeStack.removeAt(variables.includeStack.lastIndex)
                 }
             }
@@ -492,7 +504,11 @@ class ScriptRunner {
             if (step is ScriptStep.Log ||
                 variables.loopIterations.isNotEmpty() && (step is ScriptStep.Page || step is ScriptStep.Tap)) {
                 val message = if (step is ScriptStep.Tap) "${outcome.message} x=${step.x} y=${step.y}" else outcome.message
-                val entry = log(variables.stepIndex, step, outcome.ok, attempt, message).copy(
+                val entry = log(variables.stepIndex, step, outcome.ok, attempt, message).let { entry ->
+                    if (variables.includeStack.size > 1) entry.copy(
+                        message = "${variables.logPath.joinToString("/")}/${entry.op} ${entry.message}",
+                    ) else entry
+                }.copy(
                     loopDepth = variables.loopIterations.size.takeIf { it > 0 },
                     iteration = variables.loopIterations.lastOrNull(),
                 )
@@ -547,6 +563,7 @@ class ScriptRunner {
     ) : LinkedHashMap<String, String>() {
         // One-based iteration of each active loop, independent of include/if nesting.
         val loopIterations = mutableListOf<Int>()
+        val logPath = mutableListOf<String>()
     }
 
     private data class StepOutcome(val ok: Boolean, val message: String, val errorCode: String? = null) {

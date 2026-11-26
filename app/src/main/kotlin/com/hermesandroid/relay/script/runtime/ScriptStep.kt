@@ -138,8 +138,7 @@ sealed interface ScriptStep {
     data class TapWeakest(val fallbackIndex: Int = 0, val minConfidence: Double = 0.5,
         val dry: Boolean = false, override val id: String? = null,
         override val timeoutMs: Long? = null, override val retries: Int = 0,
-        // 兼容期默认值（碧蓝四卡两行），所有脚本补完参数后删除
-        val centers: List<Int> = listOf(590, 960, 1330, 1700), val y: Int = 355) : ScriptStep
+        val centers: List<Int>, val y: Int) : ScriptStep
     /**
      * 冷启动到指定页的全自动流程，不依赖服务器逐步指挥：
      * 按窗口包名确认前台，连续两次命中目标包才开始判页；
@@ -307,11 +306,11 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
                         (it as? JsonPrimitive)?.takeUnless { coordinate -> coordinate.isString }?.intOrNull
                             ?: error("centers must contain integers")
                     }
-                } ?: ScriptStep.TapWeakest().centers,
+                } ?: error("invalid_script: missing 'centers'"),
                 y = json["y"]?.let {
                     (it as? JsonPrimitive)?.takeUnless { coordinate -> coordinate.isString }?.intOrNull
                         ?: error("y must be an integer")
-                } ?: ScriptStep.TapWeakest().y)
+                } ?: error("invalid_script: missing 'y'"))
             "coldStart" -> ScriptStep.ColdStart(
                 text("package"), text("boot") ?: "boot", text("home") ?: "home",
                 (json["x"] as? JsonPrimitive)?.intOrNull,
@@ -436,6 +435,7 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
 }
 
 @Serializable
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
 data class RuntimeScript(
     val id: String,
     val targetPackages: List<String>,
@@ -449,4 +449,8 @@ data class RuntimeScript(
     @SerialName("boot") val bootPage: String? = null,
     @SerialName("home") val homePage: String? = null,
     @SerialName("auto_evidence") val autoEvidence: Boolean = true,
+    @SerialName("start_at") @kotlinx.serialization.json.JsonNames("startAt") val startAt: Int = 0,
 )
+
+internal fun RuntimeScript.hasValidStartAt(): Boolean =
+    startAt in steps.indices || (startAt == 0 && steps.isEmpty())

@@ -505,13 +505,8 @@ class BridgeCommandHandler(
         if (path.substringBefore('?').trimEnd('/') == "/script/status") {
             val runId = (body["runId"] as? JsonPrimitive)?.content.orEmpty()
             val run = com.hermesandroid.relay.script.runtime.ScriptRuntime.status(runId)
-            return respond(requestId, 200, buildJsonObject {
-                put("runId", runId)
-                put("state", run?.state ?: "unknown")
-                put("errorCode", run?.errorCode?.let(::JsonPrimitive) ?: kotlinx.serialization.json.JsonNull)
-                put("lastStep", run?.lastStep?.let(::JsonPrimitive) ?: kotlinx.serialization.json.JsonNull)
-                put("elapsed_ms", run?.elapsedMs ?: 0L)
-            })
+            return respond(requestId, 200,
+                com.hermesandroid.relay.script.runtime.scriptStatusJson(runId, run))
         }
 
         // === v0.4.1 polish: keep auto-return idle timer alive ===

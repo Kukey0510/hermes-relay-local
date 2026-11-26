@@ -24,9 +24,11 @@ data class ScriptEntry(
     val description: String,
     val steps: List<String>,
     val sourceNote: String,
+    val startAt: Int = 0,
 )
 
 @Serializable
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
 private data class ScriptEntrySurrogate(
     val id: String,
     val name: String,
@@ -36,6 +38,8 @@ private data class ScriptEntrySurrogate(
     val description: String,
     val steps: JsonArray,
     val sourceNote: String,
+    @kotlinx.serialization.SerialName("start_at")
+    @kotlinx.serialization.json.JsonNames("startAt") val startAt: Int = 0,
 )
 
 /** Accepts the pre-IDEA-012 singular `tag` field while always exposing a list. */
@@ -64,10 +68,10 @@ object ScriptEntrySerializer : KSerializer<ScriptEntry> {
 
 private fun ScriptEntrySurrogate.toEntry() = ScriptEntry(
     id, name, game, tags, updatedAt, description,
-    steps.map { (it as? JsonPrimitive)?.content ?: it.toString() }, sourceNote,
+    steps.map { (it as? JsonPrimitive)?.content ?: it.toString() }, sourceNote, startAt,
 )
 private fun ScriptEntry.toSurrogate() = ScriptEntrySurrogate(
-    id, name, game, tags, updatedAt, description, JsonArray(steps.map(::JsonPrimitive)), sourceNote,
+    id, name, game, tags, updatedAt, description, JsonArray(steps.map(::JsonPrimitive)), sourceNote, startAt,
 )
 
 @Serializable

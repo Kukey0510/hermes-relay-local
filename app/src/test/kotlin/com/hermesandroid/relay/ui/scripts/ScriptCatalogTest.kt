@@ -2,10 +2,25 @@ package com.hermesandroid.relay.ui.scripts
 
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import kotlinx.serialization.json.Json
 
 class ScriptCatalogTest {
     private val first = ScriptEntry("one", "One", "Game", listOf("daily"), "now", "", emptyList(), "")
     private val second = ScriptEntry("two", "Two", "Game", listOf("event", "hard"), "now", "", emptyList(), "")
+
+    @Test fun startAtAcceptsBothSpellingsAndRoundTrips() {
+        for (field in listOf("start_at", "startAt")) {
+            val source = """[{"id":"one","name":"One","game":"Game","tags":[],"updatedAt":"now","description":"","steps":[{},{}],"sourceNote":"","$field":1}]"""
+            val entry = ScriptCatalog.decode(source).single()
+            assertEquals(1, entry.startAt)
+            assertEquals(entry, Json.decodeFromString<ScriptEntry>(Json.encodeToString(ScriptEntrySerializer, entry)))
+        }
+    }
+
+    @Test fun omittedStartAtIsZero() {
+        val source = """[{"id":"one","name":"One","game":"Game","tags":[],"updatedAt":"now","description":"","steps":[],"sourceNote":""}]"""
+        assertEquals(0, ScriptCatalog.decode(source).single().startAt)
+    }
 
     @Test
     fun legacySingleTagJsonIsWrappedInList() {

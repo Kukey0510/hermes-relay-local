@@ -59,7 +59,11 @@ object ScriptRuntime {
         }
         val errors = mutableMapOf<String, String>()
         val scripts = entries.mapNotNull { entry ->
-            runCatching { json.decodeFromJsonElement<RuntimeScript>(scriptWithGameDefaults(entry, games, warn)) }.getOrElse { error ->
+            runCatching {
+                json.decodeFromJsonElement<RuntimeScript>(scriptWithGameDefaults(entry, games, warn)).also {
+                    require(it.hasValidStartAt()) { "invalid_script: start_at out of bounds" }
+                }
+            }.getOrElse { error ->
                 val id = ((entry as? JsonObject)?.get("id") as? JsonPrimitive)?.contentOrNull
                 if (id != null) errors[id] = error.message ?: error.javaClass.simpleName
                 null
@@ -104,8 +108,14 @@ object ScriptRuntime {
         val lastStep: Int? = null,
         val startedAt: Long = System.nanoTime(),
         val finishedAt: Long? = null,
+        val logs: List<ScriptRunLog> = emptyList(),
     ) {
         val elapsedMs: Long get() = ((finishedAt ?: System.nanoTime()) - startedAt) / 1_000_000
+
+        internal fun withLog(log: ScriptRunLog): RunStatus = copy(
+            lastStep = log.stepIndex,
+            logs = (logs + log).takeLast(SCRIPT_STATUS_LOG_LIMIT),
+        )
     }
 
     private val history = linkedMapOf<String, RunStatus>()
@@ -154,8 +164,8 @@ object ScriptRuntime {
         ScriptRunControl.requestStop(reason)
     }
 
-    @Synchronized private fun stepCompleted(runId: String, stepIndex: Int) {
-        history[runId]?.let { history[runId] = it.copy(lastStep = stepIndex) }
+    @Synchronized private fun stepCompleted(runId: String, log: ScriptRunLog) {
+        history[runId]?.let { history[runId] = it.withLog(log) }
     }
 
     @Synchronized private fun restoreStopRequest() {
@@ -272,7 +282,7 @@ object ScriptRuntime {
                     evidenceStore = store,
                     onRunStart = {
                         restoreStopRequest()
-                        store.writePending(PendingScriptRun(script.id, runId, 0))
+                        store.writePending(PendingScriptRun(script.id, runId, script.startAt))
                         store.append(ScriptLogEvent("run_start", script.id, runId, ScriptLogEvent.timestamp()))
                     },
                     onPause = { event ->
@@ -283,7 +293,7 @@ object ScriptRuntime {
                         reporter.report(event)
                     },
                     onStep = { log, durationMs ->
-                        stepCompleted(runId, log.stepIndex)
+                        stepCompleted(runId, log)
                         store.writePending(PendingScriptRun(script.id, runId, log.stepIndex))
                         store.append(log.toLogEvent(script.id, runId, durationMs))
                         if (!log.success) runCatching { reporter.report(log.toEvent(script.id, runId)) }
@@ -367,7 +377,11 @@ object ScriptRuntime {
 
         override suspend fun probe(expect: String, timeoutMs: Long): Boolean = probe(expect, timeoutMs, null)
 
+        override var pageTimings: PageTimings? = null
+            private set
+
         override suspend fun probe(expect: String, timeoutMs: Long, game: String?): Boolean {
+            pageTimings = PageTimings()
             val deadline = android.os.SystemClock.elapsedRealtime() + timeoutMs.coerceAtLeast(0)
             do {
                 // save_unknown=false：probe 在超时前会轮询多次，每轮都存档会把手机构建目录刷爆
@@ -376,6 +390,7 @@ object ScriptRuntime {
                     put("save_unknown", false)
                     game?.let { put("game", it) }
                 })
+                pageTimings = (pageTimings ?: PageTimings()) + PageTimings.fromPayload(result.payload)
                 if ((result.payload["page"] as? JsonPrimitive)?.content == expect) return true
                 if (android.os.SystemClock.elapsedRealtime() >= deadline) return false
                 delay(100)
@@ -463,14 +478,18 @@ object ScriptRuntime {
 
         override suspend fun currentPage(): String? = currentPage(null)
 
-        override suspend fun currentPage(game: String?): String? = runCatching {
-            val result = LocalVisionBridgeRoutes.handle(capture, context, buildJsonObject {
-                put("with_frame", false)
-                put("save_unknown", false)
-                game?.let { put("game", it) }
-            })
-            (result.payload["page"] as? JsonPrimitive)?.content
-        }.getOrNull()
+        override suspend fun currentPage(game: String?): String? {
+            pageTimings = PageTimings()
+            return runCatching {
+                val result = LocalVisionBridgeRoutes.handle(capture, context, buildJsonObject {
+                    put("with_frame", false)
+                    put("save_unknown", false)
+                    game?.let { put("game", it) }
+                })
+                pageTimings = PageTimings.fromPayload(result.payload)
+                (result.payload["page"] as? JsonPrimitive)?.content
+            }.getOrNull()
+        }
 
         override suspend fun frameSample(): IntArray? {
             val image = capture?.captureLocalFrame()?.getOrNull() ?: return null

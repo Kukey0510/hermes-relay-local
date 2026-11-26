@@ -51,7 +51,7 @@ class ScriptRunnerBreakingSafeTest {
 
     @Test fun legacyCatalogStillParsesExecutesAndUsesDefaultSpec() = runTest {
         val catalog = """[{"id":"legacy","targetPackages":["game.pkg"],"steps":[
-            {"op":"loop","times":3,"until":"home","steps":[{"op":"tapWeakest","fallback_index":2}]}
+            {"op":"loop","times":3,"until":"home","steps":[{"op":"tapWeakest","fallback_index":2,"centers":[590,960,1330,1700],"y":355}]}
         ]}]"""
         val parsed = ScriptRuntime.decodeCatalog(catalog, warn = {})
         assertEquals(1, parsed.size)
@@ -91,10 +91,10 @@ class ScriptRunnerBreakingSafeTest {
         assertTrue(result.logs.single().message.contains("power_selected"))
     }
 
-    @Test fun weakestMissingCoordinatesKeepAllFourLegacyDefaultsAndFallbackClamping() = runTest {
+    @Test fun weakestExplicitCoordinatesKeepFallbackClamping() = runTest {
         val centers = listOf(590, 960, 1330, 1700)
         for ((fallback, index) in listOf(-1 to 0, 0 to 0, 1 to 1, 2 to 2, 3 to 3, 99 to 3)) {
-            val step = decode("""{"op":"tapWeakest","fallback_index":$fallback}""") as ScriptStep.TapWeakest
+            val step = decode("""{"op":"tapWeakest","fallback_index":$fallback,"centers":[590,960,1330,1700],"y":355}""") as ScriptStep.TapWeakest
             assertEquals(centers, step.centers)
             assertEquals(355, step.y)
             val access = Access()
@@ -127,9 +127,10 @@ class ScriptRunnerBreakingSafeTest {
 
     @Test fun weakestInvalidCoordinatesReturnInvalidScriptBeforeRecognitionOrTapEvenWhenDry() = runTest {
         for (step in listOf(
-            ScriptStep.TapWeakest(centers = emptyList()),
-            ScriptStep.TapWeakest(centers = List(9) { it }),
-            ScriptStep.TapWeakest(y = -1), ScriptStep.TapWeakest(y = 1081, dry = true),
+            ScriptStep.TapWeakest(centers = emptyList(), y = 355),
+            ScriptStep.TapWeakest(centers = List(9) { it }, y = 355),
+            ScriptStep.TapWeakest(centers = listOf(590), y = -1),
+            ScriptStep.TapWeakest(centers = listOf(590), y = 1081, dry = true),
         )) {
             val access = Access()
             val result = ScriptRunner().run(script(step), access)
@@ -146,7 +147,8 @@ class ScriptRunnerBreakingSafeTest {
             """"centers":[1.5]""", """"centers":["100"]""", """"centers":null""",
             "\"y\":\"355\"", """"y":null""", """"y":1.5""",
         )) {
-            val catalog = """[{"id":"bad","targetPackages":["game.pkg"],"steps":[{"op":"tapWeakest",$fields}]}]"""
+            val coordinates = if (fields.startsWith("\"centers\"")) "$fields,\"y\":355" else "\"centers\":[590],$fields"
+            val catalog = """[{"id":"bad","targetPackages":["game.pkg"],"steps":[{"op":"tapWeakest",$coordinates}]}]"""
             assertTrue(ScriptRuntime.decodeCatalog(catalog, warn = {}).isEmpty())
             assertEquals("invalid_script", ScriptRuntime.missingScriptError("bad"))
         }

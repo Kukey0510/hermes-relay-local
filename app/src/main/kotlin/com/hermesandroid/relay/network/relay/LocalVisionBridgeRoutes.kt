@@ -90,11 +90,15 @@ object LocalVisionBridgeRoutes {
                 status = 200,
                 code = "capture_failed",
                 detail = (cause.message ?: cause.toString()).take(200),
+                captureMs = SystemClock.elapsedRealtime() - started,
+                matchMs = 0L,
             )
         }
+        val capturedAt = SystemClock.elapsedRealtime()
         val detection = appContext?.let { ctx ->
             detect(ctx, image, game)
         }
+        val matchedAt = SystemClock.elapsedRealtime()
         val page = detection?.page ?: "other"
         val archiveTag = when {
             saveFrame -> "manual"
@@ -107,6 +111,8 @@ object LocalVisionBridgeRoutes {
             put("ok", true)
             put("page", page)
             put("elapsed_ms", SystemClock.elapsedRealtime() - started)
+            put("capture_ms", capturedAt - started)
+            put("match_ms", matchedAt - capturedAt)
             put("source", detection?.source ?: "assets")
             put("spec", detection?.spec ?: "assets")
             if (archived != null) put("frame_saved", archived.file.name)
@@ -183,13 +189,16 @@ object LocalVisionBridgeRoutes {
         })
     }
 
-    private fun error(status: Int, code: String, detail: String? = null): Result = Result(
+    private fun error(status: Int, code: String, detail: String? = null,
+        captureMs: Long? = null, matchMs: Long? = null): Result = Result(
         status,
         buildJsonObject {
             put("ok", false)
             put("page", "other")
             put("error", code)
             if (detail != null) put("detail", detail)
+            captureMs?.let { put("capture_ms", it) }
+            matchMs?.let { put("match_ms", it) }
         },
     )
 }

@@ -5,6 +5,27 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class ScriptRuntimeTest {
+    @Test fun outOfRangeStartAtIsInvalidWithoutHidingGoodEntries() {
+        for (startAt in listOf(-1, 1, Int.MAX_VALUE)) {
+            val scripts = ScriptRuntime.decodeCatalog("""[
+                {"id":"bad","targetPackages":[],"steps":[{"op":"wait","ms":0}],"start_at":$startAt},
+                {"id":"good","targetPackages":[],"steps":[]}
+            ]""", warn = {})
+            assertEquals(listOf("good"), scripts.map { it.id })
+            assertEquals("invalid_script", ScriptRuntime.missingScriptError("bad"))
+        }
+    }
+
+    @Test fun missingWeakestCoordinatesAreInvalidCatalogEntries() {
+        for (fields in listOf("\"y\":355", "\"centers\":[590]", "\"dry\":true")) {
+            val scripts = ScriptRuntime.decodeCatalog("""[
+                {"id":"bad","targetPackages":[],"steps":[{"op":"tapWeakest",$fields}]}
+            ]""", warn = {})
+            assertEquals(emptyList<RuntimeScript>(), scripts)
+            assertEquals("invalid_script", ScriptRuntime.missingScriptError("bad"))
+        }
+    }
+
     @Test fun badCatalogEntryDoesNotHideAnyGoodScripts() {
         val entries = """[
             {"id":"first","targetPackages":[],"steps":[{"op":"wait","ms":200}]},
