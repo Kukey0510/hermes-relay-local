@@ -111,6 +111,30 @@ sealed interface ScriptStep {
         override val retries: Int = 0) : ScriptStep
     data class Snapshot(val tag: String = "manual", override val id: String? = null,
         override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
+    data class Pick(
+        val cards: List<List<List<Int>>>,
+        val mode: String = "min",
+        val tapX: Int? = null,
+        val tapDy: Int = 0,
+        val fallbackIndex: Int = 0,
+        val minConf: Double = 0.5,
+        val dry: Boolean = false,
+        override val id: String? = null,
+        override val timeoutMs: Long? = null,
+        override val retries: Int = 0,
+    ) : ScriptStep {
+        init {
+            require(cards.isNotEmpty() && cards.all { card ->
+                card.isNotEmpty() && card.all { area ->
+                    area.size == 4 && area[0] >= 0 && area[1] >= 0 && area[2] > 0 && area[3] > 0 &&
+                        area[0].toLong() + area[2] <= Int.MAX_VALUE &&
+                        area[1].toLong() + area[3] <= Int.MAX_VALUE
+                }
+            }) { "invalid_script: pick cards must contain nonempty groups of [x,y,w,h] regions" }
+            require(mode in setOf("min", "max")) { "invalid_script: pick mode must be min or max" }
+            require(minConf.isFinite() && minConf in 0.0..1.0) { "invalid_script: pick min_conf must be 0..1" }
+        }
+    }
     data class TapWeakest(val fallbackIndex: Int = 0, val minConfidence: Double = 0.5,
         val dry: Boolean = false, override val id: String? = null,
         override val timeoutMs: Long? = null, override val retries: Int = 0,
@@ -241,6 +265,39 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
                 text("interval_ms")?.toLong() ?: 250, text("timeout_ms")?.toLong() ?: 10_000,
                 text("tolerance")?.toInt() ?: 2, id, null, retries)
             "snapshot" -> ScriptStep.Snapshot(text("tag") ?: "manual", id, timeout, retries)
+            "pick" -> {
+                fun integer(value: kotlinx.serialization.json.JsonElement?, field: String): Int =
+                    (value as? JsonPrimitive)?.takeUnless { it.isString }?.intOrNull
+                        ?: error("invalid_script: pick $field must be an integer")
+                fun optionalInteger(field: String, default: Int): Int =
+                    if (field in json) integer(json[field], field) else default
+                val cards = json["cards"]
+                require(cards is JsonArray) { "invalid_script: pick cards must be an array" }
+                val regions = cards.map { card ->
+                    require(card is JsonArray) { "invalid_script: pick card must be an array" }
+                    card.map { area ->
+                        require(area is JsonArray) { "invalid_script: pick region must be [x,y,w,h]" }
+                        area.map { integer(it, "region coordinate") }
+                    }
+                }
+                val mode = if ("mode" in json) {
+                    val value = json["mode"]
+                    require(value is JsonPrimitive && value.isString) { "invalid_script: pick mode must be a string" }
+                    value.content
+                } else "min"
+                val minConf = if ("min_conf" in json) {
+                    (json["min_conf"] as? JsonPrimitive)?.takeUnless { it.isString }?.content?.toDoubleOrNull()
+                        ?: error("invalid_script: pick min_conf must be a number")
+                } else 0.5
+                val dry = if ("dry" in json) {
+                    (json["dry"] as? JsonPrimitive)?.takeUnless { it.isString }?.booleanOrNull
+                        ?: error("invalid_script: pick dry must be a boolean")
+                } else false
+                ScriptStep.Pick(regions, mode,
+                    if ("tap_x" in json) integer(json["tap_x"], "tap_x") else null,
+                    optionalInteger("tap_dy", 0), optionalInteger("fallback_index", 0), minConf, dry,
+                    id, timeout, retries)
+            }
             "tapWeakest" -> ScriptStep.TapWeakest(text("fallback_index")?.toInt() ?: 0,
                 text("min_confidence")?.toDouble() ?: 0.5,
                 (json["dry"] as? JsonPrimitive)?.booleanOrNull ?: false, id, timeout, retries,
@@ -346,6 +403,16 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
             is ScriptStep.WaitStable -> { put("op", "wait_stable"); put("frames", value.stableFrames)
                 put("interval_ms", value.intervalMs); put("timeout_ms", value.stableTimeoutMs); put("tolerance", value.tolerance) }
             is ScriptStep.Snapshot -> { put("op", "snapshot"); put("tag", value.tag) }
+            is ScriptStep.Pick -> {
+                put("op", "pick")
+                fields["cards"] = JsonArray(value.cards.map { card ->
+                    JsonArray(card.map { area -> JsonArray(area.map(::JsonPrimitive)) })
+                })
+                put("mode", value.mode)
+                value.tapX?.let { put("tap_x", it) }
+                put("tap_dy", value.tapDy); put("fallback_index", value.fallbackIndex)
+                put("min_conf", value.minConf); put("dry", value.dry)
+            }
             is ScriptStep.TapWeakest -> { put("op", "tapWeakest"); put("fallback_index", value.fallbackIndex)
                 put("min_confidence", value.minConfidence); put("dry", value.dry)
                 fields["centers"] = JsonArray(value.centers.map(::JsonPrimitive)); put("y", value.y) }

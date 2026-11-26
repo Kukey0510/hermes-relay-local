@@ -491,6 +491,56 @@ object ScriptRuntime {
             return FrameArchive.save(context, image, tag) != null
         }
 
+        override suspend fun pick(cards: List<List<List<Int>>>, mode: String, tapX: Int?, tapDy: Int,
+            fallbackIndex: Int, minConf: Double, dry: Boolean): String? {
+            val foreground = foregroundPackage()?.takeIf { it.isNotBlank() } ?: return null
+            val frame = capture?.captureLocalFrame(fresh = true)?.getOrNull() ?: return null
+            if (cards.isEmpty() || cards.any { card -> card.isEmpty() || card.any { area ->
+                area.size != 4 || area[0] < 0 || area[1] < 0 || area[2] <= 0 || area[3] <= 0 ||
+                    area[0].toLong() + area[2] > frame.width || area[1].toLong() + area[3] > frame.height
+            } }) return null
+            val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+            val readings = try {
+                cards.map { card -> card.map { (x, y, w, h) ->
+                    currentCoroutineContext().ensureActive()
+                    if (ScriptRunControl.isCancelled()) return null
+                    val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                    val text = try {
+                        bitmap.setPixels(frame.rgb, y * frame.width + x, frame.width, 0, 0, w, h)
+                        suspendCancellableCoroutine<Text?> { continuation ->
+                            recognizer.process(InputImage.fromBitmap(bitmap, 0)).addOnCompleteListener { task ->
+                                // ML Kit may finish after coroutine cancellation; retain pixels until then.
+                                bitmap.recycle()
+                                if (continuation.isActive) continuation.resume(if (task.isSuccessful) task.result else null)
+                            }
+                        }
+                    } catch (error: Exception) {
+                        if (error !is kotlinx.coroutines.CancellationException) bitmap.recycle()
+                        throw error
+                    }
+                    val elements = text?.textBlocks.orEmpty().flatMap { it.lines }.flatMap { it.elements }
+                        .filter { element -> element.text.any { it in '0'..'9' } }
+                        .sortedBy { it.boundingBox?.left ?: Int.MAX_VALUE }
+                    if (elements.isEmpty() || elements.any { !it.confidence.isFinite() || it.confidence < minConf }) {
+                        null
+                    } else elements.joinToString("") { element -> element.text.filter { it in '0'..'9' } }.toIntOrNull()
+                } }
+            } finally {
+                recognizer.close()
+            }
+            val selected = pickIndex(readings, mode, fallbackIndex, cards.size)
+            val area = cards[selected].first()
+            val (width, height) = screenSize()
+            val maxX = (width - 1).coerceAtLeast(0).toLong()
+            val maxY = (height - 1).coerceAtLeast(0).toLong()
+            val x = (tapX?.toLong() ?: (area[0].toLong() + area[2] / 2)).coerceIn(0L, maxX).toInt()
+            val y = (area[1].toLong() + area[3] / 2 + tapDy).coerceIn(0L, maxY).toInt()
+            currentCoroutineContext().ensureActive()
+            if (ScriptRunControl.isCancelled() || !screenOn() || foregroundPackage() != foreground) return null
+            if (dry) return "hit:$selected:$x,$y"
+            return if (tap(x, y)) "hit:$selected:$x,$y" else null
+        }
+
         override suspend fun recognizePowers(minConfidence: Double): PowerRecognition? {
             val started = android.os.SystemClock.elapsedRealtime()
             val frame = capture?.captureLocalFrame()?.getOrNull() ?: return null

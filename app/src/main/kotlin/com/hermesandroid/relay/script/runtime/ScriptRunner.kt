@@ -39,6 +39,9 @@ interface ScriptAccess {
     suspend fun frameSample(): IntArray? = null
     suspend fun saveSnapshot(tag: String): Boolean = false
     suspend fun recognizePowers(minConfidence: Double): PowerRecognition? = null
+    /** Read each card's regions, select by sum, optionally tap, and return "hit:<index>:<x>,<y>". */
+    suspend fun pick(cards: List<List<List<Int>>>, mode: String, tapX: Int?, tapDy: Int,
+        fallbackIndex: Int, minConf: Double, dry: Boolean): String? = null
     /** 冷启动到 home 页的全自动流程；返回 "ok:home_at_<ms>"、"ok:already_on_<page>" 或 "fail:<原因>"。 */
     suspend fun coldStartTo(pkg: String?, bootPage: String, homePage: String,
         tapX: Int?, tapY: Int?, bootWaitMs: Long, homeWaitMs: Long,
@@ -360,6 +363,11 @@ class ScriptRunner {
                 val ok = access.saveSnapshot(tag)
                 StepOutcome(ok, if (ok) "snapshot:$tag" else "capture_failed")
             }
+            is ScriptStep.Pick -> {
+                val hit = access.pick(step.cards, step.mode, step.tapX, step.tapDy,
+                    step.fallbackIndex, step.minConf, step.dry)
+                StepOutcome(hit != null, hit ?: "pick_failed")
+            }
             is ScriptStep.TapWeakest -> {
                 if (step.centers.size !in 1..8 || step.y !in 0..access.screenSize().second) {
                     return StepOutcome(false, "invalid_tapWeakest_coordinates", "invalid_script")
@@ -514,6 +522,7 @@ class ScriptRunner {
             is ScriptStep.Include -> "include"; is ScriptStep.SetVar -> "set_var"; is ScriptStep.IncrVar -> "incr_var"
             is ScriptStep.Log -> "log"
             is ScriptStep.Snapshot -> "snapshot"
+            is ScriptStep.Pick -> "pick"
             is ScriptStep.TapWeakest -> "tapWeakest"
             is ScriptStep.ColdStart -> "coldStart"
             is ScriptStep.WaitForeground -> "wait_foreground"
