@@ -16,9 +16,9 @@ interface ScriptAccess {
     suspend fun frameSize(): Pair<Int, Int>?
     suspend fun tap(x: Int, y: Int): Boolean
     suspend fun longPress(x: Int, y: Int, nodeId: String?, duration: Long): Boolean = false
-    /** Tap the matched template center plus offset and return "hit:<score>:<x>,<y>", or null on a miss. */
+    /** Match the template, optionally tap its center plus offset, and return "hit:<score>:<x>,<y>" or null. */
     suspend fun tapTemplate(name: String, area: List<Int>?, minScore: Double,
-        offsetX: Int, offsetY: Int): String? = null
+        offsetX: Int, offsetY: Int, tap: Boolean = true): String? = null
     suspend fun tapText(text: String): Boolean
     suspend fun swipe(fromX: Int, fromY: Int, toX: Int, toY: Int, durationMs: Long): Boolean = false
     fun screenOn(): Boolean = true
@@ -200,7 +200,7 @@ class ScriptRunner {
                 StepOutcome(false, "invalid_long_press_duration", "invalid_script")
             } else StepOutcome(access.longPress(step.x, step.y, nodeId = null, duration = step.durationMs), "long_press")
             is ScriptStep.TapTemplate -> {
-                val hit = access.tapTemplate(step.template, step.area, step.min, step.offsetX, step.offsetY)
+                val hit = access.tapTemplate(step.template, step.area, step.min, step.offsetX, step.offsetY, step.tap)
                 if (hit != null) {
                     val (_, score, point) = hit.split(':', limit = 3)
                     step.asName?.takeIf { it.isNotEmpty() }?.let { variables[it] = point }
@@ -337,6 +337,7 @@ class ScriptRunner {
                 variables[step.name] = (value + step.by).toString()
                 StepOutcome(true, "incr_var:${step.name}")
             }
+            is ScriptStep.Log -> StepOutcome(true, substitute(step.message, variables).take(300))
             is ScriptStep.Back -> {
                 val ok = access.back()
                 StepOutcome(ok, if (ok) "back" else "back_failed")
@@ -480,11 +481,12 @@ class ScriptRunner {
                 outcome = execute(step, access, targetPackages, variables, depth)
                 if (!outcome.isTerminal) outcome = stopOutcome(access) ?: outcome
             } while (!outcome.ok && !outcome.isTerminal && attempt <= step.retries)
-            if (variables.loopIterations.isNotEmpty() && (step is ScriptStep.Page || step is ScriptStep.Tap)) {
+            if (step is ScriptStep.Log ||
+                variables.loopIterations.isNotEmpty() && (step is ScriptStep.Page || step is ScriptStep.Tap)) {
                 val message = if (step is ScriptStep.Tap) "${outcome.message} x=${step.x} y=${step.y}" else outcome.message
                 val entry = log(variables.stepIndex, step, outcome.ok, attempt, message).copy(
-                    loopDepth = variables.loopIterations.size,
-                    iteration = variables.loopIterations.last(),
+                    loopDepth = variables.loopIterations.size.takeIf { it > 0 },
+                    iteration = variables.loopIterations.lastOrNull(),
                 )
                 variables.recordChild(entry, elapsedMs(startedAt))
             }
@@ -510,6 +512,7 @@ class ScriptRunner {
             is ScriptStep.Launch -> "launch"; is ScriptStep.Back -> "back"; is ScriptStep.WaitStable -> "wait_stable"
             is ScriptStep.Page -> "page"; is ScriptStep.IfVar -> "if_var"
             is ScriptStep.Include -> "include"; is ScriptStep.SetVar -> "set_var"; is ScriptStep.IncrVar -> "incr_var"
+            is ScriptStep.Log -> "log"
             is ScriptStep.Snapshot -> "snapshot"
             is ScriptStep.TapWeakest -> "tapWeakest"
             is ScriptStep.ColdStart -> "coldStart"

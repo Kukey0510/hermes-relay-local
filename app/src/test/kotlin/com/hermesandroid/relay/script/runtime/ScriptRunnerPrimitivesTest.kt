@@ -136,6 +136,8 @@ class ScriptRunnerPrimitivesTest {
         assertTrue(result.success)
         assertEquals("tap_template", result.logs.first().op)
         assertEquals("template=pool.png score=0.93 at=190,720", result.logs.first().message)
+        assertEquals(1, access.taps)
+        assertEquals(listOf(190 to 720), access.tapPoints)
         assertEquals(listOf("190,720"), access.texts)
         assertEquals(
             listOf(ScriptStep.TapTemplate("pool.png", area, 0.92, offsetX = -4, offsetY = 8)),
@@ -158,6 +160,115 @@ class ScriptRunnerPrimitivesTest {
         assertTrue(optional.success)
         assertEquals("absent:pool.png", optional.logs[1].message)
         assertEquals(listOf("previous"), access.texts)
+    }
+
+    @Test fun tapTemplateWithoutTapReportsHitAndAssignsVariable() = runTest {
+        val access = Access().apply { templateHit = "hit:0.93:190,720" }
+        val step = Json.decodeFromString<ScriptStep>(
+            """{"op":"tap_template","template":"pool.png","tap":false,"as":"pool"}""")
+        val result = ScriptRunner().run(script(steps = arrayOf(
+            step, ScriptStep.TapText("${'$'}{pool}"),
+        )), access)
+
+        assertTrue(result.success)
+        assertEquals(0, access.taps)
+        assertFalse(access.templateCalls.single().tap)
+        assertEquals(listOf("190,720"), access.texts)
+        assertEquals("template=pool.png score=0.93 at=190,720", result.logs.first().message)
+    }
+
+    @Test fun tapTemplateWithoutTapOptionalMissKeepsPreviousVariable() = runTest {
+        val access = Access()
+        val step = Json.decodeFromString<ScriptStep>(
+            """{"op":"tap_template","template":"pool.png","tap":false,"optional":true,"as":"pool"}""")
+        val result = ScriptRunner().run(script(steps = arrayOf(
+            ScriptStep.SetVar("pool", "previous"), step, ScriptStep.TapText("${'$'}{pool}"),
+        )), access)
+
+        assertTrue(result.success)
+        assertEquals(0, access.taps)
+        assertEquals("absent:pool.png", result.logs[1].message)
+        assertEquals(listOf("previous"), access.texts)
+    }
+
+    @Test fun logInsideLoopRecordsEveryIterationAndSubstitutesCurrentVariable() = runTest {
+        val access = Access().apply { templateHit = "hit:0.93:190,720" }
+        val result = ScriptRunner().run(script(steps = arrayOf(
+            ScriptStep.SetVar("cnt", "0"),
+            ScriptStep.Loop(3, steps = listOf(
+                ScriptStep.TapTemplate("pool.png", tap = false),
+                ScriptStep.IncrVar("cnt"),
+                ScriptStep.Log("order_hit template=pool n=${'$'}{cnt}"),
+            )),
+        )), access)
+
+        assertTrue(result.success)
+        val logs = result.logs.filter { it.op == "log" }
+        assertEquals(3, logs.size)
+        assertEquals(listOf(1, 2, 3), logs.map { it.iteration })
+        assertEquals(listOf(1, 1, 1), logs.map { it.loopDepth })
+        assertEquals((1..3).map { "order_hit template=pool n=$it" }, logs.map { it.message })
+        assertEquals(listOf("log", "log", "log", "loop"), result.logs.drop(1).map { it.op })
+        assertEquals(0, access.taps)
+        assertTrue(access.texts.isEmpty())
+    }
+
+    @Test fun logRecordsAtTopLevelInBranchesAndNestedLoops() = runTest {
+        val result = ScriptRunner().run(script(steps = arrayOf(
+            ScriptStep.Log("top"),
+            ScriptStep.SetVar("mode", "ready"),
+            ScriptStep.IfVar("mode", equals = "ready", thenSteps = listOf(ScriptStep.Log("branch"))),
+            ScriptStep.Loop(2, steps = listOf(
+                ScriptStep.Log("outer"),
+                ScriptStep.Loop(2, steps = listOf(ScriptStep.Log("inner"))),
+            )),
+        )), Access())
+
+        assertTrue(result.success)
+        val logs = result.logs.filter { it.op == "log" }
+        assertEquals(listOf("top", "branch", "outer", "inner", "inner", "outer", "inner", "inner"),
+            logs.map { it.message })
+        assertEquals(listOf(null, null, 1, 2, 2, 1, 2, 2), logs.map { it.loopDepth })
+        assertEquals(listOf(null, null, 1, 1, 2, 2, 1, 2), logs.map { it.iteration })
+    }
+
+    @Test fun logTruncatesToThreeHundredCharactersAfterSubstitution() = runTest {
+        val message = "订单".repeat(200)
+        val result = ScriptRunner().run(script(steps = arrayOf(
+            ScriptStep.SetVar("message", message),
+            ScriptStep.Log("${'$'}{message}"),
+            ScriptStep.Loop(1, steps = listOf(ScriptStep.Log("${'$'}{message}"))),
+        )), Access())
+
+        assertTrue(result.success)
+        val logs = result.logs.filter { it.op == "log" }
+        assertEquals(2, logs.size)
+        assertTrue(logs.all { it.message.length == 300 && it.message == message.take(300) })
+    }
+
+    @Test fun logRoundTripsFieldsAndRequiresMessage() {
+        val source = """{"op":"log","message":"n=${'$'}{cnt}","id":"hit","timeout_ms":5000,"retries":2}"""
+        val step = Json.decodeFromString<ScriptStep>(source)
+        assertEquals(ScriptStep.Log("n=${'$'}{cnt}", "hit", 5_000, 2), step)
+        assertEquals(source, Json.encodeToString(ScriptStepSerializer, step))
+        assertEquals(step, Json.decodeFromString<ScriptStep>(Json.encodeToString(ScriptStepSerializer, step)))
+        val missing = runCatching { Json.decodeFromString<ScriptStep>("""{"op":"log"}""") }.exceptionOrNull()
+        assertEquals("missing 'message'", missing?.message)
+    }
+
+    @Test fun tapTemplateSerializesOnlyFalseAndPreservesLegacyBytes() {
+        val legacy = """{"op":"tap_template","template":"pool.png","min":0.9,"optional":false,"offset_x":0,"offset_y":0}"""
+        val defaultStep = Json.decodeFromString<ScriptStep>(legacy) as ScriptStep.TapTemplate
+        val explicitTrue = Json.decodeFromString<ScriptStep>(legacy.dropLast(1) + ",\"tap\":true}")
+        assertTrue(defaultStep.tap)
+        assertEquals(defaultStep, explicitTrue)
+        assertEquals(legacy, Json.encodeToString(ScriptStepSerializer, defaultStep))
+        assertEquals(legacy, Json.encodeToString(ScriptStepSerializer, explicitTrue))
+
+        val noTap = defaultStep.copy(tap = false)
+        val encoded = Json.encodeToString(ScriptStepSerializer, noTap)
+        assertEquals(legacy.dropLast(1) + ",\"tap\":false}", encoded)
+        assertEquals(noTap, Json.decodeFromString<ScriptStep>(encoded))
     }
 
     @Test fun tapTemplateIsGuardedBeforeMatching() = runTest {
@@ -272,6 +383,7 @@ class ScriptRunnerPrimitivesTest {
         var on = true
         var tapOk = true
         var taps = 0
+        val tapPoints = mutableListOf<Pair<Int, Int>>()
         var templateHit: String? = null
         val templateCalls = mutableListOf<ScriptStep.TapTemplate>()
         var snapshotThrows = false
@@ -281,11 +393,13 @@ class ScriptRunnerPrimitivesTest {
         override fun foregroundPackageFromWindows() = foreground
         override fun screenOn() = on
         override suspend fun frameSize(): Pair<Int, Int>? = null
-        override suspend fun tap(x: Int, y: Int): Boolean { taps++; return tapOk }
+        override suspend fun tap(x: Int, y: Int): Boolean { taps++; tapPoints += x to y; return tapOk }
         override suspend fun tapTemplate(name: String, area: List<Int>?, minScore: Double,
-            offsetX: Int, offsetY: Int): String? {
-            templateCalls += ScriptStep.TapTemplate(name, area, minScore, offsetX = offsetX, offsetY = offsetY)
-            return templateHit
+            offsetX: Int, offsetY: Int, tap: Boolean): String? {
+            templateCalls += ScriptStep.TapTemplate(name, area, minScore, offsetX = offsetX, offsetY = offsetY, tap = tap)
+            val hit = templateHit ?: return null
+            val (x, y) = hit.substringAfterLast(':').split(',').map { it.toInt() }
+            return if (!tap || tap(x, y)) hit else null
         }
         override suspend fun tapText(text: String): Boolean { texts += text; return true }
         override suspend fun probe(expect: String, timeoutMs: Long) = false

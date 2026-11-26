@@ -41,6 +41,7 @@ sealed interface ScriptStep {
         val asName: String? = null,
         val offsetX: Int = 0,
         val offsetY: Int = 0,
+        val tap: Boolean = true,
         override val id: String? = null,
         override val timeoutMs: Long? = null,
         override val retries: Int = 0,
@@ -99,6 +100,8 @@ sealed interface ScriptStep {
     data class SetVar(val name: String, val value: String, override val id: String? = null,
         override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
     data class IncrVar(val name: String, val by: Long = 1, override val id: String? = null,
+        override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
+    data class Log(val message: String, override val id: String? = null,
         override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
     data class Back(override val id: String? = null, override val timeoutMs: Long? = null,
         override val retries: Int = 0) : ScriptStep
@@ -185,6 +188,7 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
                     asName = text("as"),
                     offsetX = text("offset_x")?.toInt() ?: 0,
                     offsetY = text("offset_y")?.toInt() ?: 0,
+                    tap = (json["tap"] as? JsonPrimitive)?.booleanOrNull ?: true,
                     id = id,
                     timeoutMs = timeout,
                     retries = retries,
@@ -231,6 +235,7 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
             "include" -> ScriptStep.Include(required("script"), id, timeout, retries)
             "set_var" -> ScriptStep.SetVar(required("name"), required("value"), id, timeout, retries)
             "incr_var" -> ScriptStep.IncrVar(required("name"), text("by")?.toLong() ?: 1, id, timeout, retries)
+            "log" -> ScriptStep.Log(required("message"), id, timeout, retries)
             "back" -> ScriptStep.Back(id, timeout, retries)
             "wait_stable" -> ScriptStep.WaitStable(text("frames")?.toInt() ?: 3,
                 text("interval_ms")?.toLong() ?: 250, text("timeout_ms")?.toLong() ?: 10_000,
@@ -299,6 +304,7 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
                 value.asName?.let { put("as", it) }
                 put("offset_x", value.offsetX)
                 put("offset_y", value.offsetY)
+                if (!value.tap) put("tap", false)
             }
             is ScriptStep.TapText -> { put("op", "tapText"); put("text", value.text) }
             is ScriptStep.Wait -> { put("op", "wait"); put("ms", value.ms) }
@@ -335,6 +341,7 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
             is ScriptStep.Include -> { put("op", "include"); put("script", value.script) }
             is ScriptStep.SetVar -> { put("op", "set_var"); put("name", value.name); put("value", value.value) }
             is ScriptStep.IncrVar -> { put("op", "incr_var"); put("name", value.name); put("by", value.by) }
+            is ScriptStep.Log -> { put("op", "log"); put("message", value.message) }
             is ScriptStep.Back -> put("op", "back")
             is ScriptStep.WaitStable -> { put("op", "wait_stable"); put("frames", value.stableFrames)
                 put("interval_ms", value.intervalMs); put("timeout_ms", value.stableTimeoutMs); put("tolerance", value.tolerance) }

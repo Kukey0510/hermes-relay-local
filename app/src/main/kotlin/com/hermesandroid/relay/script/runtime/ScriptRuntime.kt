@@ -330,7 +330,7 @@ object ScriptRuntime {
         override suspend fun longPress(x: Int, y: Int, nodeId: String?, duration: Long) =
             service.actionExecutor.longPress(x, y, nodeId, duration).ok
         override suspend fun tapTemplate(name: String, area: List<Int>?, minScore: Double,
-            offsetX: Int, offsetY: Int): String? {
+            offsetX: Int, offsetY: Int, tap: Boolean): String? {
             val foreground = foregroundPackage()?.takeIf { it.isNotBlank() } ?: return null
             val frame = capture?.captureLocalFrame(fresh = true)?.getOrNull() ?: return null
             val searchArea = area?.let { (x, y, w, h) ->
@@ -352,6 +352,7 @@ object ScriptRuntime {
             val y = (match.y.toLong() + template.height / 2 + offsetY).coerceIn(0L, maxY).toInt()
             currentCoroutineContext().ensureActive()
             if (ScriptRunControl.isCancelled() || !screenOn() || foregroundPackage() != foreground) return null
+            if (!tap) return "hit:${match.score}:$x,$y"
             return if (tap(x, y)) "hit:${match.score}:$x,$y" else null
         }
 
