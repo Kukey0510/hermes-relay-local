@@ -45,6 +45,7 @@ sealed interface ScriptStep {
         override val id: String? = null,
         override val timeoutMs: Long? = null,
         override val retries: Int = 0,
+        val game: String? = null,
     ) : ScriptStep
     data class TapText(val text: String, override val id: String? = null,
         override val timeoutMs: Long? = null, override val retries: Int = 0) : ScriptStep
@@ -212,6 +213,7 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
                     offsetX = text("offset_x")?.toInt() ?: 0,
                     offsetY = text("offset_y")?.toInt() ?: 0,
                     tap = (json["tap"] as? JsonPrimitive)?.booleanOrNull ?: true,
+                    game = game(),
                     id = id,
                     timeoutMs = timeout,
                     retries = retries,
@@ -361,6 +363,7 @@ object ScriptStepSerializer : KSerializer<ScriptStep> {
                 put("offset_x", value.offsetX)
                 put("offset_y", value.offsetY)
                 if (!value.tap) put("tap", false)
+                value.game?.let { put("game", it) }
             }
             is ScriptStep.TapText -> { put("op", "tapText"); put("text", value.text) }
             is ScriptStep.Wait -> { put("op", "wait"); put("ms", value.ms) }

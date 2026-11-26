@@ -222,13 +222,15 @@ class DigestReader(context: Context, private val hotReloadDir: File? = null) {
             .toMap()
     }
 
-    private fun loadTemplate(field: String, char: Char): GrayImage? {
+    private fun loadTemplate(field: String, char: Char, game: String? = null): GrayImage? {
         // '/' 不能进文件名（会被当成路径分隔符），统一存成 slash.png。
         val fileName = if (char.isLetterOrDigit()) char.toString() else "slash"
-        val relative = "digits/$field/$fileName.png"
-        val bytes = hotReloadDir?.resolve(relative)?.takeIf(File::isFile)?.let { runCatching { it.readBytes() }.getOrNull() }
-            ?: runCatching { appContext.assets.open(relative).use { it.readBytes() } }.getOrNull()
-            ?: return null
+        val paths = digitTemplatePaths(field, "$fileName.png", game)
+        val bytes = hotReloadDir?.let { digitTemplateFile(it, field, "$fileName.png", game) }
+            ?.let { runCatching { it.readBytes() }.getOrNull() }
+            ?: paths.firstNotNullOfOrNull { relative ->
+                runCatching { appContext.assets.open(relative).use { it.readBytes() } }.getOrNull()
+            } ?: return null
         val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
         val pixels = IntArray(bitmap.width * bitmap.height)
         bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
@@ -258,3 +260,18 @@ internal object OcrNumberDecoder {
         return compact.substringBefore('/').trim().toIntOrNull()
     }
 }
+
+internal fun digitTemplatePaths(field: String, name: String, game: String? = null): List<String> {
+    val parts = field.split('/')
+    require(parts.size in 1..2 && parts.all { it.isNotBlank() && it != "." && it != ".." && '\\' !in it }) {
+        "invalid field"
+    }
+    val selectedGame = game ?: parts.takeIf { it.size == 2 }?.first()
+    require(selectedGame == null || isValidLocalVisionGame(selectedGame)) { "invalid game" }
+    val fieldName = parts.last()
+    return listOfNotNull(selectedGame?.let { "digits/$it/$fieldName/$name" },
+        "digits/$fieldName/$name").distinct()
+}
+
+internal fun digitTemplateFile(directory: File, field: String, name: String, game: String? = null): File? =
+    digitTemplatePaths(field, name, game).map(directory::resolve).firstOrNull(File::isFile)

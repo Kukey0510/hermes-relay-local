@@ -73,6 +73,10 @@ internal interface ScriptSyncStorage {
     fun readCatalog(): String?
     fun backupCatalog(timestampMs: Long)
     fun writeCatalog(content: String)
+    fun catalogGames(): Set<String> = emptySet()
+    fun readCatalogForGame(game: String): String? = readCatalog()
+    fun backupCatalogForGame(game: String, timestampMs: Long) = backupCatalog(timestampMs)
+    fun writeCatalogForGame(game: String, content: String) = writeCatalog(content)
 }
 
 private class AndroidScriptSyncStorage(context: Context) : ScriptSyncStorage {
@@ -92,21 +96,31 @@ private class AndroidScriptSyncStorage(context: Context) : ScriptSyncStorage {
         set(value) { prefs.edit().apply { if (value == null) remove("pending_tags") else putString("pending_tags", json.encodeToString(serializer, value)) }.apply() }
     override fun readCatalog(): String? = ScriptCatalog.cacheFile(appContext).takeIf(File::isFile)?.readText()
     override fun backupCatalog(timestampMs: Long) = backupCatalogFile(ScriptCatalog.cacheFile(appContext), timestampMs)
-    override fun writeCatalog(content: String) = ScriptCatalog.writeCache(appContext, content)
+    override fun writeCatalog(content: String) {
+        ScriptCatalog.splitByGame(content).forEach { (game, catalog) -> writeCatalogForGame(game, catalog) }
+    }
+    override fun catalogGames(): Set<String> = ScriptCatalog.cachedGames(appContext.filesDir)
+    override fun readCatalogForGame(game: String): String? = ScriptCatalog.cachedForGame(appContext.filesDir, game)
+    override fun backupCatalogForGame(game: String, timestampMs: Long) {
+        val file = ScriptCatalog.gameCacheFile(appContext.filesDir, game)
+        if (file.isFile) backupCatalogFile(file, timestampMs)
+        else if (readCatalogForGame(game) != null) backupCatalog(timestampMs)
+    }
+    override fun writeCatalogForGame(game: String, content: String) = ScriptCatalog.writeForGame(appContext, game, content)
 }
 
 /** Back up raw bytes, including corrupt JSON; lexicographic UTC names define retention. */
 internal fun backupCatalogFile(catalog: File, timestampMs: Long) {
     if (!catalog.isFile) return
     val format = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").withZone(ZoneOffset.UTC)
-    val pattern = Regex("catalog\\.json\\.bak_\\d{8}-\\d{6}")
+    val pattern = Regex("${Regex.escape(catalog.name)}\\.bak_\\d{8}-\\d{6}")
     fun backups() = catalog.parentFile?.listFiles().orEmpty()
         .filter { it.isFile && pattern.matches(it.name) }.sortedByDescending { it.name }
     // Preserve distinct copies even when two forced refreshes land in the same second or the clock moves back.
     val latest = backups().firstOrNull()?.name?.substringAfter(".bak_")
         ?.let { Instant.from(format.parse(it)).toEpochMilli() }
     val backupTime = if (latest != null && timestampMs / 1_000 <= latest / 1_000) latest + 1_000 else timestampMs
-    catalog.copyTo(File(catalog.parentFile, "catalog.json.bak_${format.format(Instant.ofEpochMilli(backupTime))}"))
+    catalog.copyTo(File(catalog.parentFile, "${catalog.name}.bak_${format.format(Instant.ofEpochMilli(backupTime))}"))
     backups().drop(3).forEach { check(it.delete()) { "Cannot remove old catalog backup" } }
 }
 
@@ -132,7 +146,7 @@ class ScriptSyncManager internal constructor(
     }
 
     private fun catalogVersion(content: String): String? {
-        ScriptCatalog.decode(content) // A corrupt local document has unknown version and is backed up before repair.
+        ScriptCatalog.decode(content) // Preserve full validation before replacing the last good cache.
         val version = ((Json.parseToJsonElement(content) as? JsonObject)?.get("version") as? JsonPrimitive)
             ?.takeIf { it.isString }?.content ?: return null
         return version.takeIf { Regex("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z").matches(it) }
@@ -150,25 +164,35 @@ class ScriptSyncManager internal constructor(
         return runCatching {
             val incoming = api.getCatalog()
             val serverVersion = catalogVersion(incoming)
+            val incomingGames = ScriptCatalog.splitByGame(incoming)
             // Reserve and disk replacement share the runtime lock, closing the fetch/start race.
             var blocked = false
             val updated = ScriptRuntime.updateCatalogIfIdle {
                 if (isRunActive()) { blocked = true; return@updateCatalogIfIdle }
-                val cached = storage.readCatalog()
-                val localVersion = cached?.let { runCatching { catalogVersion(it) }.getOrNull() }
-                if (localVersion != null && serverVersion == null) {
-                    throw IOException("Server catalog version is unknown")
-                }
-                when {
-                    localVersion != null && serverVersion != null && serverVersion < localVersion ->
-                        log("skip: server older (server=$serverVersion, local=$localVersion)")
-                    localVersion != null && serverVersion == localVersion -> Unit
-                    else -> {
-                        storage.backupCatalog(now())
-                        storage.writeCatalog(incoming)
-                        storage.lastSyncMs = now()
+                var unknownVersion = false
+                for (game in incomingGames.keys + storage.catalogGames()) {
+                    val catalog = incomingGames[game] ?: ScriptCatalog.emptyCatalog(incoming)
+                    val cached = storage.readCatalogForGame(game)
+                    val localVersion = cached?.let { runCatching { catalogVersion(it) }.getOrNull() }
+                    if (localVersion != null && serverVersion == null) {
+                        unknownVersion = true
+                        log("skip: server version unknown (game=$game)")
+                        continue
+                    }
+                    when {
+                        localVersion != null && serverVersion != null && serverVersion < localVersion -> {
+                            val suffix = if (game == ScriptCatalog.UNKNOWN_GAME) "" else " (game=$game)"
+                            log("skip: server older (server=$serverVersion, local=$localVersion)$suffix")
+                        }
+                        localVersion != null && serverVersion == localVersion -> Unit
+                        else -> {
+                            storage.backupCatalogForGame(game, now())
+                            storage.writeCatalogForGame(game, catalog)
+                            storage.lastSyncMs = now()
+                        }
                     }
                 }
+                if (unknownVersion) throw IOException("Server catalog version is unknown")
                 state = ScriptSyncState(ScriptSyncKind.Synced, storage.lastSyncMs.takeIf { it > 0 })
             }
             if (!updated || blocked) refuseRunning() else true

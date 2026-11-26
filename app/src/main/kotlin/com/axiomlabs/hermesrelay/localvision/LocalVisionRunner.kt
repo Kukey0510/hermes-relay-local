@@ -47,7 +47,7 @@ class LocalVisionRunner(
             DetectorState(
                 PageDetector(
                     selection.pages,
-                    LocalVisionTemplateLoader(appContext, hotReloadDir) { usedTemplateFallback.set(true) },
+                    LocalVisionTemplateLoader(appContext, hotReloadDir, game) { usedTemplateFallback.set(true) },
                 ),
                 source,
                 selection.spec,
@@ -72,12 +72,15 @@ class LocalVisionRunner(
 internal class LocalVisionTemplateLoader(
     context: Context,
     private val hotReloadDir: File? = context.filesDir.resolve("localvision"),
+    private val game: String? = null,
     private val onAssetFallback: () -> Unit = {},
 ) : TemplateLoader {
     private val appContext = context.applicationContext
 
-    override fun load(name: String): GrayImage? = runCatching {
-        val hotTemplate = hotReloadDir?.resolve("templates")?.resolve(name)
+    override fun load(name: String): GrayImage? = load(name, game)
+
+    fun load(name: String, game: String?): GrayImage? = runCatching {
+        val hotTemplate = hotReloadDir?.let { localVisionTemplateFile(it, name, game) }
         val bitmap = hotTemplate?.takeIf(File::isFile)?.let { file ->
             runCatching { file.inputStream().use(BitmapFactory::decodeStream) }.getOrNull()
         } ?: run {
@@ -93,4 +96,12 @@ internal class LocalVisionTemplateLoader(
             bitmap.recycle()
         }
     }.getOrNull()
+}
+
+/** Pure filesystem selection; bitmap decoding and assets remain in the Android adapter. */
+internal fun localVisionTemplateFile(directory: File, name: String, game: String?): File? {
+    val selectedGame = game?.takeIf(String::isNotBlank)
+    require(selectedGame == null || isValidLocalVisionGame(selectedGame)) { "invalid game" }
+    return listOfNotNull(selectedGame?.let { directory.resolve("templates/$it/$name") },
+        directory.resolve("templates/$name")).firstOrNull(File::isFile)
 }

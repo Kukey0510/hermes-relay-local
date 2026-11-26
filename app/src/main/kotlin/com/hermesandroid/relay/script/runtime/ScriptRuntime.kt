@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.accessibilityservice.AccessibilityService
 import com.axiomlabs.hermesrelay.localvision.FrameArchive
 import com.axiomlabs.hermesrelay.localvision.Grayscale
+import com.axiomlabs.hermesrelay.localvision.isValidLocalVisionGame
 import com.axiomlabs.hermesrelay.localvision.LocalVisionTemplateLoader
 import com.axiomlabs.hermesrelay.localvision.Rect
 import com.axiomlabs.hermesrelay.localvision.TemplateMatcher
@@ -84,9 +85,7 @@ object ScriptRuntime {
     }
 
     fun load(context: Context, scriptId: String): RuntimeScript? {
-        val cache = ScriptCatalog.cacheFile(context)
-        val content = if (cache.isFile) cache.readText()
-            else context.assets.open("scripts.json").bufferedReader().use { it.readText() }
+        val content = ScriptCatalog.readContent(context)
         val scripts = decodeCatalog(content)
         return scripts.firstOrNull { it.id == scriptId }
     }
@@ -273,7 +272,7 @@ object ScriptRuntime {
             }) {
                 runner.run(
                     script = script,
-                    access = AndroidAccess(context, screenCapture, service),
+                    access = AndroidAccess(context, screenCapture, service, script.game),
                     runId = runId,
                     resolveScript = { id ->
                         load(context, id) ?: if (missingScriptError(id) == "invalid_script")
@@ -327,6 +326,7 @@ object ScriptRuntime {
         private val context: Context,
         private val capture: ScreenCapture?,
         private val service: HermesAccessibilityService,
+        private val templateGame: String? = null,
     ) : ScriptAccess {
         override fun foregroundPackage(): String? =
             service.rootInActiveWindow?.packageName?.toString() ?: service.currentApp
@@ -340,7 +340,11 @@ object ScriptRuntime {
         override suspend fun longPress(x: Int, y: Int, nodeId: String?, duration: Long) =
             service.actionExecutor.longPress(x, y, nodeId, duration).ok
         override suspend fun tapTemplate(name: String, area: List<Int>?, minScore: Double,
-            offsetX: Int, offsetY: Int, tap: Boolean): String? {
+            offsetX: Int, offsetY: Int, tap: Boolean): String? =
+            tapTemplate(name, area, minScore, offsetX, offsetY, tap, null)
+
+        override suspend fun tapTemplate(name: String, area: List<Int>?, minScore: Double,
+            offsetX: Int, offsetY: Int, tap: Boolean, game: String?): String? {
             val foreground = foregroundPackage()?.takeIf { it.isNotBlank() } ?: return null
             val frame = capture?.captureLocalFrame(fresh = true)?.getOrNull() ?: return null
             val searchArea = area?.let { (x, y, w, h) ->
@@ -350,7 +354,8 @@ object ScriptRuntime {
                 Rect(x, y, w, h)
             }
             val (match, template) = withContext(Dispatchers.Default) {
-                val template = LocalVisionTemplateLoader(context).load(name) ?: return@withContext null
+                val selectedGame = (game ?: templateGame)?.takeIf(::isValidLocalVisionGame)
+                val template = LocalVisionTemplateLoader(context).load(name, selectedGame) ?: return@withContext null
                 TemplateMatcher(template).find(Grayscale.fromRgb(frame), searchArea, minScore) to template
             } ?: return null
             if (!match.found) return null

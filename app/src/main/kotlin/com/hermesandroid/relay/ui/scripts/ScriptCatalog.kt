@@ -18,13 +18,14 @@ import kotlinx.serialization.json.JsonPrimitive
 data class ScriptEntry(
     val id: String,
     val name: String,
-    val game: String,
+    val game: String = "",
     val tags: List<String>,
     val updatedAt: String,
     val description: String,
     val steps: List<String>,
     val sourceNote: String,
     val startAt: Int = 0,
+    val games: List<String> = emptyList(),
 )
 
 @Serializable
@@ -32,7 +33,7 @@ data class ScriptEntry(
 private data class ScriptEntrySurrogate(
     val id: String,
     val name: String,
-    val game: String,
+    val game: String = "",
     val tags: List<String>,
     val updatedAt: String,
     val description: String,
@@ -40,6 +41,7 @@ private data class ScriptEntrySurrogate(
     val sourceNote: String,
     @kotlinx.serialization.SerialName("start_at")
     @kotlinx.serialization.json.JsonNames("startAt") val startAt: Int = 0,
+    val games: List<String> = emptyList(),
 )
 
 /** Accepts the pre-IDEA-012 singular `tag` field while always exposing a list. */
@@ -51,9 +53,13 @@ object ScriptEntrySerializer : KSerializer<ScriptEntry> {
         val jsonDecoder = decoder as? JsonDecoder ?: error("ScriptEntry only supports JSON")
         val element = jsonDecoder.decodeJsonElement()
         val objectValue = element as JsonObject
-        val compatible = if ("tags" in objectValue) objectValue else JsonObject(
-            objectValue + ("tags" to legacyTags(objectValue["tag"])),
-        )
+        val fields = objectValue.toMutableMap()
+        if ("tags" !in fields) fields["tags"] = legacyTags(objectValue["tag"])
+        // A missing/null game belongs to the unknown partition, without changing its raw JSON.
+        for (key in listOf("game", "games")) {
+            if (fields[key] == kotlinx.serialization.json.JsonNull) fields.remove(key)
+        }
+        val compatible = JsonObject(fields)
         return jsonDecoder.json.decodeFromJsonElement(delegate, compatible).toEntry()
     }
 
@@ -67,11 +73,11 @@ object ScriptEntrySerializer : KSerializer<ScriptEntry> {
 }
 
 private fun ScriptEntrySurrogate.toEntry() = ScriptEntry(
-    id, name, game, tags, updatedAt, description,
-    steps.map { (it as? JsonPrimitive)?.content ?: it.toString() }, sourceNote, startAt,
+    id, name, game.ifBlank { games.firstOrNull().orEmpty() }, tags, updatedAt, description,
+    steps.map { (it as? JsonPrimitive)?.content ?: it.toString() }, sourceNote, startAt, games,
 )
 private fun ScriptEntry.toSurrogate() = ScriptEntrySurrogate(
-    id, name, game, tags, updatedAt, description, JsonArray(steps.map(::JsonPrimitive)), sourceNote, startAt,
+    id, name, game, tags, updatedAt, description, JsonArray(steps.map(::JsonPrimitive)), sourceNote, startAt, games,
 )
 
 @Serializable
@@ -106,24 +112,84 @@ sealed interface ScriptCatalogResult {
     data object Error : ScriptCatalogResult
 }
 
-/**
- * The single script-catalog boundary. Replace [loadResult] when server delivery
- * becomes available; list and detail screens only consume its result model.
- */
+/** Shared disk boundary for both catalog screens and the script runtime. */
 object ScriptCatalog {
+    internal const val UNKNOWN_GAME = "<unknown>"
     private val json = Json { ignoreUnknownKeys = true }
+    private fun warn(message: String) { android.util.Log.w("ScriptCatalog", message) }
 
     fun load(context: Context): List<ScriptEntry> =
         (loadResult(context) as? ScriptCatalogResult.Loaded)?.entries.orEmpty()
 
     fun loadResult(context: Context): ScriptCatalogResult = runCatching {
-        val cache = cacheFile(context)
-        val asset = { context.assets.open("scripts.json").bufferedReader().use { it.readText() } }
-        decode(preferredContent(cache.takeIf(File::isFile)?.readText(), asset))
+        decode(readContent(context))
     }.fold(
         onSuccess = ScriptCatalogResult::Loaded,
         onFailure = { ScriptCatalogResult.Error },
     )
+
+    fun readContent(context: Context): String = readContent(context.filesDir, {
+        context.assets.open("scripts.json").bufferedReader().use { it.readText() }
+    }, ::warn)
+
+    internal fun readContent(filesDir: File, asset: () -> String, warn: (String) -> Unit = ::warn): String {
+        val files = catalogFiles(filesDir)
+        if (files.isNotEmpty()) return mergeContents(files.map { it.readText() }, warn)
+        return preferredContent(File(filesDir, "scripts/catalog.json").takeIf(File::isFile)?.readText(), asset)
+    }
+
+    /** Sort by filename so the last duplicate id has a stable winner. */
+    internal fun catalogFiles(filesDir: File): List<File> = File(filesDir, "scripts/catalog")
+        .listFiles().orEmpty().filter { it.isFile && it.extension == "json" }.sortedBy(File::getName)
+
+    private fun scripts(root: JsonElement): JsonArray = when (root) {
+        is JsonArray -> root
+        is JsonObject -> root["scripts"] as? JsonArray ?: error("missing scripts array")
+        else -> error("invalid catalog root")
+    }
+
+    internal fun mergeContents(contents: List<String>, warn: (String) -> Unit): String {
+        val entries = linkedMapOf<String, JsonElement>()
+        val declarations = linkedMapOf<String, JsonElement>()
+        for (content in contents) {
+            val root = json.parseToJsonElement(content)
+            ((root as? JsonObject)?.get("games") as? JsonObject)?.let { declarations.putAll(it) }
+            for (entry in scripts(root)) {
+                val id = ((entry as? JsonObject)?.get("id") as? JsonPrimitive)?.content
+                    ?: error("missing script id")
+                if (entries.put(id, entry) != null) warn("duplicate script id '$id': later catalog wins")
+            }
+        }
+        // This merged view is never used for version comparisons; those read each disk file.
+        return JsonObject(mapOf("version" to JsonPrimitive(""), "scripts" to JsonArray(entries.values.toList()),
+            "games" to JsonObject(declarations))).toString()
+    }
+
+    /** Keep the original JSON: runtime fields and object steps must survive sync unchanged. */
+    internal fun splitByGame(content: String): Map<String, String> {
+        val root = json.parseToJsonElement(content)
+        val groups = linkedMapOf<String, MutableList<JsonElement>>()
+        for (entry in scripts(root)) {
+            val script = entry as? JsonObject ?: error("invalid script")
+            val names = ((script["games"] as? JsonArray).orEmpty() + listOfNotNull(script["game"]))
+                .mapNotNull { (it as? JsonPrimitive)?.takeIf(JsonPrimitive::isString)?.content?.trim() }
+                .filter(String::isNotEmpty).distinct().ifEmpty { listOf(UNKNOWN_GAME) }
+            for (game in names) {
+                requireSafeGame(game)
+                groups.getOrPut(game) { mutableListOf() }.add(entry)
+            }
+        }
+        if (groups.isEmpty()) groups[UNKNOWN_GAME] = mutableListOf()
+        return groups.mapValues { (_, entries) -> withScripts(root, entries) }
+    }
+
+    internal fun emptyCatalog(content: String): String = withScripts(json.parseToJsonElement(content), emptyList())
+
+    private fun withScripts(root: JsonElement, entries: List<JsonElement>): String = when (root) {
+        is JsonArray -> JsonArray(entries).toString()
+        is JsonObject -> JsonObject(root + ("scripts" to JsonArray(entries))).toString()
+        else -> error("invalid catalog root")
+    }
 
     internal fun decode(content: String): List<ScriptEntry> =
         if (content.trimStart().startsWith("[")) json.decodeFromString(content)
@@ -131,14 +197,43 @@ object ScriptCatalog {
 
     internal fun preferredContent(cache: String?, asset: () -> String): String = cache ?: asset()
 
+    /** Legacy path is read-only; all replacements use [writeForGame]. */
     fun cacheFile(context: Context): File = File(context.filesDir, "scripts/catalog.json")
 
-    internal fun writeCache(context: Context, content: String) {
-        decode(content) // Validate completely before replacing the last good catalog.
-        val destination = cacheFile(context)
+    internal fun gameCacheFile(filesDir: File, game: String): File {
+        requireSafeGame(game)
+        return File(filesDir, "scripts/catalog/$game.json")
+    }
+
+    private fun requireSafeGame(game: String) {
+        require(game.isNotBlank() && game != "." && game != ".." &&
+            game.none { it == '/' || it == '\\' || it.isISOControl() }) { "invalid game" }
+    }
+
+    fun writeForGame(context: Context, game: String, catalog: String) = writeForGame(context.filesDir, game, catalog)
+
+    internal fun writeForGame(filesDir: File, game: String, catalog: String) {
+        decode(catalog) // Validate completely, then persist the original JSON without field loss.
+        val destination = gameCacheFile(filesDir, game)
         destination.parentFile?.mkdirs()
         val temporary = File(destination.parentFile, "${destination.name}.tmp")
-        temporary.writeText(content)
+        temporary.writeText(catalog)
         check(temporary.renameTo(destination) || run { temporary.copyTo(destination, overwrite = true); temporary.delete() })
+    }
+
+    internal fun cachedGames(filesDir: File): Set<String> {
+        val files = catalogFiles(filesDir)
+        if (files.isNotEmpty()) return files.map { it.nameWithoutExtension }.toSet()
+        val legacy = File(filesDir, "scripts/catalog.json").takeIf(File::isFile) ?: return emptySet()
+        return runCatching { splitByGame(legacy.readText()).keys }.getOrDefault(emptySet())
+    }
+
+    internal fun cachedForGame(filesDir: File, game: String): String? {
+        val file = gameCacheFile(filesDir, game)
+        if (file.isFile) return file.readText()
+        val legacy = File(filesDir, "scripts/catalog.json").takeIf(File::isFile) ?: return null
+        val content = legacy.readText()
+        // Corrupt bytes still reach the backup-before-repair path.
+        return runCatching { splitByGame(content)[game] }.getOrElse { content }
     }
 }

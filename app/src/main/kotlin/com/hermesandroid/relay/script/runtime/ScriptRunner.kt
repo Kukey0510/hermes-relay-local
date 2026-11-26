@@ -19,6 +19,9 @@ interface ScriptAccess {
     /** Match the template, optionally tap its center plus offset, and return "hit:<score>:<x>,<y>" or null. */
     suspend fun tapTemplate(name: String, area: List<Int>?, minScore: Double,
         offsetX: Int, offsetY: Int, tap: Boolean = true): String? = null
+    suspend fun tapTemplate(name: String, area: List<Int>?, minScore: Double,
+        offsetX: Int, offsetY: Int, tap: Boolean, game: String?): String? =
+        tapTemplate(name, area, minScore, offsetX, offsetY, tap)
     suspend fun tapText(text: String): Boolean
     suspend fun swipe(fromX: Int, fromY: Int, toX: Int, toY: Int, durationMs: Long): Boolean = false
     fun screenOn(): Boolean = true
@@ -207,7 +210,8 @@ class ScriptRunner {
                 StepOutcome(false, "invalid_long_press_duration", "invalid_script")
             } else StepOutcome(access.longPress(step.x, step.y, nodeId = null, duration = step.durationMs), "long_press")
             is ScriptStep.TapTemplate -> {
-                val hit = access.tapTemplate(step.template, step.area, step.min, step.offsetX, step.offsetY, step.tap)
+                val hit = access.tapTemplate(step.template, step.area, step.min, step.offsetX, step.offsetY, step.tap,
+                    step.game ?: templateGameForPackages(targetPackages))
                 if (hit != null) {
                     val (_, score, point) = hit.split(':', limit = 3)
                     step.asName?.takeIf { it.isNotEmpty() }?.let { variables[it] = point }
@@ -570,4 +574,17 @@ class ScriptRunner {
         val isTerminal: Boolean get() = errorCode == "cancelled" || errorCode == "screen_off"
     }
 
+}
+
+/** Known package identities from the script API contract; ambiguous/unknown targets stay legacy. */
+internal fun templateGameForPackages(packages: Collection<String>): String? {
+    val games = packages.mapNotNull { pkg ->
+        when (pkg) {
+            "com.bilibili.azurlane" -> "blhx"
+            "com.megagame.crosscore" -> "jc"
+            "com.palmpi.matrix" -> "bb"
+            else -> null
+        }
+    }.distinct()
+    return games.singleOrNull()
 }
